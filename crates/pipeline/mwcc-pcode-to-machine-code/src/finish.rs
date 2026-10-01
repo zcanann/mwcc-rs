@@ -28,8 +28,8 @@ pub struct FinishOptions {
     /// Fold `addi rX,rB,sym@l` into a following zero-displacement access
     /// even when the load's destination is rX (GC/3.0+).
     pub fold_absolute_into_own_base: bool,
-    /// The LR reload follows every saved-FPR restore (GC/3.x, Wii) instead
-    /// of preceding the final double reload.
+    /// The LR reload follows every saved-register restore (GC/3.x, Wii)
+    /// instead of preceding the final double reload or the GPR reloads.
     pub link_reload_after_float_restores: bool,
     /// The fewest saved GPRs handled by `_savegpr_N`/`_restgpr_N`.
     pub general_save_helper_minimum: usize,
@@ -135,7 +135,7 @@ pub fn finish(
     let plan = mwcc_vreg::FramePlan::with_local_region(saved, pcode.frame_local_bytes);
     let custom = !saved_float.is_empty() || helper;
     let prologue = || if custom { float_frame.prologue() } else { plan.prologue() };
-    let epilogue = || if custom { float_frame.epilogue() } else { plan.epilogue() };
+    let epilogue = || if custom || float_frame.link_reload_last { float_frame.epilogue() } else { plan.epilogue() };
     // A leaf frame neither saves nor restores the link register.
     let keep = |instruction: &Instruction| {
         makes_calls
@@ -207,6 +207,7 @@ pub fn finish(
     let exit = pcode.blocks.len() - 1;
     let mut framed_blocks = vec![false; pcode.blocks.len()];
     // Code that never returns (an endless loop) has no epilogue.
+    let mut epilogue_length = 0;
     let exit_reached = exit == 0 || (0..exit).any(|block| pcode.blocks[block].successors.contains(&exit));
     if framed && !exit_reached {
         let mut entry = wrap(prologue().into_iter().filter(|i| keep(i)).collect());
@@ -244,6 +245,7 @@ pub fn finish(
                 instruction.flags.serialize = true;
             }
         }
+        epilogue_length = epilogue.len();
         pcode.blocks[exit].instructions.extend(epilogue);
         framed_blocks[0] = true;
         framed_blocks[exit] = true;
@@ -265,6 +267,23 @@ pub fn finish(
                 pcode.blocks[exit - 1].successors.retain(|&successor| successor != exit);
                 let exit_framed = framed_blocks.pop().expect("exit flag");
                 framed_blocks[exit - 1] |= exit_framed;
+            }
+        }
+    }
+    // GC/3.x restores saved GPRs before the LR reload, in order, when body
+    // code (not a call or branch) leads into the epilogue.
+    if epilogue_length > 0 && !float_frame.generals.is_empty() && !helper && options.link_reload_after_float_restores {
+        let instructions = &mut pcode.blocks.last_mut().expect("exit block").instructions;
+        let start = instructions.len() - epilogue_length;
+        let led = start > 0 && {
+            let previous = &instructions[start - 1].instruction;
+            !previous.is_call() && !matches!(previous, Instruction::Branch { .. } | Instruction::BranchConditionalForward { .. })
+        };
+        if led {
+            for instruction in instructions[start..].iter_mut() {
+                if matches!(instruction.instruction, Instruction::LoadWord { d: 0, a: 1, .. }) {
+                    instruction.flags.serialize = true;
+                }
             }
         }
     }
@@ -1156,11 +1175,15 @@ impl FloatFrame {
             instructions.extend(self.helper_call("_restgpr"));
             instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
         } else {
-            if self.link_reload_last || self.floats.is_empty() {
+            // (GC/3.x reloads LR after every saved register.)
+            if !self.link_reload_last && self.floats.is_empty() {
                 instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
             }
             for &(register, offset) in &self.generals {
                 instructions.push(Instruction::LoadWord { d: register, a: 1, offset });
+            }
+            if self.link_reload_last {
+                instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 });
             }
         }
         instructions.push(Instruction::MoveToLinkRegister { s: 0 });

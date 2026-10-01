@@ -219,7 +219,9 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
             fold_absolute_into_own_base: request.config.build.label.starts_with("GC/3.")
                 || request.config.build.label.starts_with("Wii/"),
             link_reload_after_float_restores: behavior.saved_float_epilogue_style
-                == mwcc_versions::SavedFloatEpilogueStyle::LinkReloadAfterFloatRestores,
+                == mwcc_versions::SavedFloatEpilogueStyle::LinkReloadAfterFloatRestores
+                || request.config.build.label.starts_with("GC/3.")
+                || request.config.build.label.starts_with("Wii/"),
             general_save_helper_minimum: behavior.general_save_helper_minimum,
             use_lmw_stmw: request.config.flags.use_lmw_stmw,
         },
