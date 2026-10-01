@@ -506,6 +506,14 @@ impl Lowerer<'_, '_> {
         if early && self.pcode.variable_frame_objects == 0 {
             self.reserved_end = self.frame_cursor;
         }
+        // Loop cursors are numbered in creation order.
+        if !toggle("MWCC_PCODE_LAZY_CURSORS") {
+            for id in function.parameter_count..function.variables.len() {
+                if function.variables[id].name.starts_with("@cursor") && self.registers[id].is_none() {
+                    self.registers[id] = Some(self.fresh(function.variables[id].ty));
+                }
+            }
+        }
         if function.return_type != Type::Void && returns_through_variable {
             self.return_register = Some(self.fresh(function.return_type));
         }

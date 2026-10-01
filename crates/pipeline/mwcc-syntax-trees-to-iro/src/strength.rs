@@ -222,10 +222,18 @@ fn reduce_loop(
         collect_assigned(body, &mut assigned);
         collect_assigned(step, &mut assigned);
         collect_assigned(effects, &mut assigned);
+        // MWCC numbers the cursors in reverse evaluation order.
+        let mut discovered: Vec<Cursor> = Vec::new();
+        let mut scratch = function.clone();
+        rewrite_statements(&mut body.clone(), induction, &assigned, &mut discovered, &mut scratch);
+        for cursor in discovered.iter().rev() {
+            cursor_for(&cursor.base, cursor.stride, &mut cursors, function);
+        }
         rewrite_statements(body, induction, &assigned, &mut cursors, function);
         if cursors.is_empty() {
             continue;
         }
+        let inits_before = inits.len();
         for cursor in &cursors {
             let ty = cursor.base.ty;
             // (GC/1.0-1.2.5n fold it only while the loop still reads the
@@ -255,7 +263,8 @@ fn reduce_loop(
                 )
                 }
             };
-            inits.push(Stmt::Assign { variable: cursor.variable, value: start });
+            // (Set in evaluation order.)
+            inits.insert(inits_before, Stmt::Assign { variable: cursor.variable, value: start });
             let advance = Expr::binary(
                 BinaryOp::Add,
                 Expr { kind: ExprKind::Var(cursor.variable), ty },
@@ -344,6 +353,8 @@ fn cursor_for(base: &Expr, stride: i64, cursors: &mut Vec<Cursor>, function: &mu
     }
     let variable = function.add_temporary(base.ty);
     debug_assert_eq!(function.variables[variable].kind, VariableKind::Temporary);
+    // (The backend numbers cursors in creation order.)
+    function.variables[variable].name = format!("@cursor{variable}");
     cursors.push(Cursor { base: base.clone(), key, stride, variable });
     variable
 }
@@ -360,6 +371,7 @@ fn rewrite_statements(body: &mut [Stmt], induction: VarId, assigned: &[VarId], c
                 }
             }
             Stmt::Store { place, value, .. } => {
+                rewrite(value, induction, assigned, cursors, function);
                 if let Place::Memory { base, index, .. } = place {
                     match index.as_deref().and_then(|index| scaled(index, induction)) {
                         Some(stride) if is_invariant(base, assigned, function) => {
@@ -376,7 +388,6 @@ fn rewrite_statements(body: &mut [Stmt], induction: VarId, assigned: &[VarId], c
                         }
                     }
                 }
-                rewrite(value, induction, assigned, cursors, function);
             }
             Stmt::If { condition, then_body, else_body } => {
                 rewrite(condition, induction, assigned, cursors, function);
