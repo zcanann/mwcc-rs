@@ -154,8 +154,19 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         .filter(|local| local.array_length.is_some())
         .filter_map(|local| variables.iter().position(|variable| variable.name == local.name && variable.kind == VariableKind::Local))
         .collect();
+    // Multi-dimensional local arrays: the byte stride of one row.
+    let rows = function
+        .locals
+        .iter()
+        .filter_map(|local| {
+            let row = u32::from(local.row_bytes?);
+            let id = variables.iter().position(|variable| variable.name == local.name && variable.kind == VariableKind::Local)?;
+            Some((id, row))
+        })
+        .collect();
     let mut builder = Builder {
         arrays,
+        rows,
         return_type: function.return_type,
         unit,
         names: variables.iter().enumerate().map(|(id, variable)| (variable.name.clone(), id)).collect(),
@@ -352,6 +363,8 @@ fn has_return(statements: &[Statement]) -> bool {
 struct Builder<'a, 'u> {
     /// Frame variables that are arrays.
     arrays: Vec<VarId>,
+    /// Multi-dimensional frame arrays: variable -> row bytes.
+    rows: HashMap<VarId, u32>,
     return_type: Type,
     unit: &'a Unit<'u>,
     names: HashMap<String, VarId>,
@@ -992,6 +1005,18 @@ impl Builder<'_, '_> {
                 let base = self.aggregate_address(base)?;
                 let ty = pointee_type(*element).and_then(pointer_to).unwrap_or(Type::Pointer(*element));
                 Expr::binary(BinaryOp::Add, base, Expr::int(i64::from(*offset)), ty)
+            }
+            // A row of a multi-dimensional local array is its address.
+            Expression::Index { base, index }
+                if matches!(base.as_ref(), Expression::Variable(name) if self.names.get(name).is_some_and(|id| self.rows.contains_key(id))) =>
+            {
+                let Expression::Variable(name) = base.as_ref() else { unreachable!() };
+                let id = self.names[name];
+                let row = self.rows[&id];
+                let address = self.local_address(id);
+                let index = self.expression(index)?;
+                let ty = address.ty;
+                Expr::binary(BinaryOp::Add, address, scale(promoted(index), row), ty)
             }
             Expression::Index { base, index } => {
                 let pointer = self.pointer_sum(base, index)?;

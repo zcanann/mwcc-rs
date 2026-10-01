@@ -203,6 +203,11 @@ fn lower_function_body(
                 return Some(Some(body));
             }
         }
+        // (Only a source-declared inline, which is no ordinary definition,
+        // takes the larger limit.)
+        if inline_bodies.definition_body(name).is_some() && std::env::var_os("MWCC_PCODE_DEFINITIONS_AS_DECLARED").is_none() {
+            return None;
+        }
         let declared = inline_bodies.composable_body(name).or_else(|| inline_bodies.retained_body(name))?;
         Some((pcode_path::inline_statement_count(declared) <= 64).then_some(declared))
     };
