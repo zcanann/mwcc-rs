@@ -162,7 +162,12 @@ fn statements(body: &mut Vec<Stmt>, function: &mut Function, fold_start: bool) {
             }
         }
         let (inits, folded) = match &mut body[index] {
-            _ if !CURSORS.with(|flag| flag.get()) => (Vec::new(), false),
+            Stmt::Loop { body: inner, step, effects, .. } if !CURSORS.with(|flag| flag.get()) => {
+                (reduce_loop_offsets(inner, step, effects, initial, fold_start, function), false)
+            }
+            Stmt::Counted { body: inner, .. } if !CURSORS.with(|flag| flag.get()) => {
+                (reduce_loop_offsets(inner, &mut Vec::new(), &mut [], initial, fold_start, function), false)
+            }
             Stmt::Loop { condition, body: inner, step, effects, .. } => {
                 reduce_loop(condition.as_mut(), inner, step, effects, initial, fold_start, function)
             }
@@ -403,6 +408,11 @@ fn rewrite_statements(body: &mut [Stmt], induction: VarId, assigned: &[VarId], c
                 rewrite(value, induction, assigned, cursors, function);
                 if let Place::Memory { base, index, .. } = place {
                     match index.as_deref().and_then(|index| scaled(index, induction)) {
+                        Some(stride) if is_invariant(base, assigned, function) && offset_form(base, stride).is_some() => {
+                            let (hoisted, offset) = offset_form(base, stride).expect("checked");
+                            **base = hoisted;
+                            *index = Some(Box::new(offset));
+                        }
                         Some(stride) if is_invariant(base, assigned, function) => {
                             let cursor = cursor_for(base, stride, cursors, function);
                             let ty = base.ty;
@@ -451,6 +461,11 @@ fn rewrite_statements(body: &mut [Stmt], induction: VarId, assigned: &[VarId], c
 fn rewrite(expression: &mut Expr, induction: VarId, assigned: &[VarId], cursors: &mut Vec<Cursor>, function: &mut Function) {
     match &mut expression.kind {
         ExprKind::Load { base, index, .. } => match index.as_deref().and_then(|index| scaled(index, induction)) {
+            Some(stride) if is_invariant(base, assigned, function) && offset_form(base, stride).is_some() => {
+                let (hoisted, offset) = offset_form(base, stride).expect("checked");
+                **base = hoisted;
+                *index = Some(Box::new(offset));
+            }
             Some(stride) if is_invariant(base, assigned, function) => {
                 let cursor = cursor_for(base, stride, cursors, function);
                 let ty = base.ty;
@@ -471,6 +486,10 @@ fn rewrite(expression: &mut Expr, induction: VarId, assigned: &[VarId], cursors:
                 && is_invariant(left, assigned, function) =>
         {
             let stride = scaled(right, induction).expect("checked");
+            if let Some((hoisted, offset)) = offset_form(left, stride) {
+                expression.kind = ExprKind::Binary(BinaryOp::Add, Box::new(hoisted), Box::new(offset));
+                return;
+            }
             let cursor = cursor_for(left, stride, cursors, function);
             expression.kind = ExprKind::Var(cursor);
         }
@@ -692,4 +711,146 @@ pub fn remove_dead_inductions(function: &mut Function) {
             remove(&mut function.body, variable);
         }
     }
+}
+
+/// Strength reduction without an explicit speed goal: an address
+/// `base + i*k` reads a hoisted base indexed by an offset variable stepped
+/// with `i` (one per stride).
+fn reduce_loop_offsets(
+    body: &mut Vec<Stmt>,
+    step: &mut Vec<Stmt>,
+    effects: &mut [Stmt],
+    initial: Option<(VarId, i64)>,
+    fold_start: bool,
+    function: &mut Function,
+) -> Vec<Stmt> {
+    let update = |statement: &Stmt| match statement {
+        Stmt::Assign { variable, value } => match &value.kind {
+            ExprKind::Binary(BinaryOp::Add, left, right) if left.as_var() == Some(*variable) => {
+                right.as_int().map(|increment| (*variable, increment))
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    let inductions: Vec<(bool, usize, VarId, i64)> = step
+        .iter()
+        .enumerate()
+        .filter_map(|(position, statement)| update(statement).map(|(v, c)| (true, position, v, c)))
+        .chain(
+            body.iter()
+                .enumerate()
+                .filter_map(|(position, statement)| update(statement).map(|(v, c)| (false, position, v, c))),
+        )
+        .collect();
+    let mut inits = Vec::new();
+    let (mut step_shift, mut body_shift) = (0, 0);
+    for (in_step, position, induction, increment) in inductions {
+        let variable = &function.variables[induction];
+        if variable.frame.is_some() || variable.volatile || !mwcc_iro::is_general_word(variable.ty) {
+            continue;
+        }
+        if count_assignments(body, induction) + count_assignments(step, induction) + count_assignments(effects, induction) != 1 {
+            continue;
+        }
+        let mut assigned = Vec::new();
+        collect_assigned(body, &mut assigned);
+        collect_assigned(step, &mut assigned);
+        collect_assigned(effects, &mut assigned);
+        // Discover (base, stride) pairs in evaluation order.
+        let mut discovered: Vec<Cursor> = Vec::new();
+        let mut scratch = function.clone();
+        rewrite_statements(&mut body.clone(), induction, &assigned, &mut discovered, &mut scratch);
+        if discovered.is_empty() {
+            continue;
+        }
+        // Hoisted bases (a register variable serves as its own), then one
+        // offset per stride.
+        let mut bases: Vec<(String, Expr)> = Vec::new();
+        for cursor in &discovered {
+            if bases.iter().any(|(key, _)| *key == cursor.key) {
+                continue;
+            }
+            let base = match cursor.base.kind {
+                ExprKind::Var(_) => cursor.base.clone(),
+                _ => {
+                    let variable = function.add_temporary(cursor.base.ty);
+                    function.variables[variable].name = format!("@cursor{variable}");
+                    inits.push(Stmt::Assign { variable, value: cursor.base.clone() });
+                    Expr { kind: ExprKind::Var(variable), ty: cursor.base.ty }
+                }
+            };
+            bases.push((cursor.key.clone(), base));
+        }
+        let mut offsets: Vec<(i64, VarId)> = Vec::new();
+        for cursor in &discovered {
+            if offsets.iter().any(|(stride, _)| *stride == cursor.stride) {
+                continue;
+            }
+            let variable = function.add_temporary(mwcc_iro::Type::Int);
+            function.variables[variable].name = format!("@cursor{variable}");
+            let start = match initial {
+                Some((v, value)) if v == induction && fold_start => Expr::int(value * cursor.stride),
+                _ => Expr::binary(
+                    BinaryOp::Multiply,
+                    Expr { kind: ExprKind::Var(induction), ty: function.variables[induction].ty },
+                    Expr::int(cursor.stride),
+                    mwcc_iro::Type::Int,
+                ),
+            };
+            inits.push(Stmt::Assign { variable, value: start });
+            offsets.push((cursor.stride, variable));
+            let advance = Stmt::Assign {
+                variable,
+                value: Expr::binary(
+                    BinaryOp::Add,
+                    Expr { kind: ExprKind::Var(variable), ty: mwcc_iro::Type::Int },
+                    Expr::int(increment * cursor.stride),
+                    mwcc_iro::Type::Int,
+                ),
+            };
+            // (Each offset advances after its induction variable.)
+            let at = position + offsets.len();
+            if in_step {
+                step.insert(at + step_shift, advance);
+            } else {
+                body.insert(at + body_shift, advance);
+            }
+        }
+        if in_step {
+            step_shift += offsets.len();
+        } else {
+            body_shift += offsets.len();
+        }
+        OFFSETS.with(|table| {
+            *table.borrow_mut() = discovered
+                .iter()
+                .map(|cursor| {
+                    let base = bases.iter().find(|(key, _)| *key == cursor.key).expect("hoisted").1.clone();
+                    let offset = offsets.iter().find(|(stride, _)| *stride == cursor.stride).expect("made").1;
+                    (cursor.key.clone(), cursor.stride, base, offset)
+                })
+                .collect();
+        });
+        let mut cursors = Vec::new();
+        rewrite_statements(body, induction, &assigned, &mut cursors, function);
+        OFFSETS.with(|table| table.borrow_mut().clear());
+    }
+    inits
+}
+
+thread_local! {
+    /// While set: (base key, stride) → (base, offset variable): addresses
+    /// rewrite to `base + offset` instead of a cursor.
+    static OFFSETS: std::cell::RefCell<Vec<(String, i64, Expr, VarId)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The offset form of `base + i*stride`, while one is being made.
+fn offset_form(base: &Expr, stride: i64) -> Option<(Expr, Expr)> {
+    let key = format!("{:?}", base);
+    OFFSETS.with(|table| {
+        table.borrow().iter().find(|(k, s, ..)| *k == key && *s == stride).map(|(_, _, base, offset)| {
+            (base.clone(), Expr { kind: ExprKind::Var(*offset), ty: mwcc_iro::Type::Int })
+        })
+    })
 }

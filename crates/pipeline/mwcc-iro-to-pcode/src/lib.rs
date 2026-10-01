@@ -78,7 +78,7 @@ pub fn lower(
         returning: false,
         homes: vec![None; function.variables.len()],
         loops: Vec::new(),
-        known_constant: None,
+        known_constant: Vec::new(),
         tail_calls,
         all_tail_calls: false,
         common: HashMap::new(),
@@ -162,7 +162,7 @@ struct Lowerer<'a, 'u> {
     loops: Vec<(Label, Label)>,
     /// The variable the previous statement set to a constant (IRO knows a
     /// loop's first test from it).
-    known_constant: Option<(VarId, i64)>,
+    known_constant: Vec<(VarId, i64)>,
     /// A body that is one terminal call becomes a sibling branch.
     tail_calls: bool,
     /// Every call is in tail position (GC/3.x): each becomes a branch.
@@ -1027,16 +1027,14 @@ impl Lowerer<'_, '_> {
     }
 
     fn statement(&mut self, statement: &Stmt) -> Compilation<()> {
-        let known = self.known_constant.take();
+        let known = std::mem::take(&mut self.known_constant);
         if let Stmt::Assign { variable, value } = statement {
+            // (Other variables' assignments keep the constants known.)
+            if !contains_call(value) && !toggle("MWCC_PCODE_KNOWN_ONLY_ADJACENT") {
+                self.known_constant = known.iter().copied().filter(|&(known, _)| known != *variable).collect();
+            }
             if let Some(value) = value.as_int() {
-                self.known_constant = Some((*variable, value));
-            } else if known.is_some_and(|(known, _)| known != *variable)
-                && !contains_call(value)
-                && !toggle("MWCC_PCODE_KNOWN_ONLY_ADJACENT")
-            {
-                // (Another variable's assignment keeps it known.)
-                self.known_constant = known;
+                self.known_constant.push((*variable, value));
             }
         }
         match statement {
@@ -1113,7 +1111,7 @@ impl Lowerer<'_, '_> {
                 // IRO drops the entry jump when the first test is known true.
                 let first_test_true = self.unit.strength_reduction
                     && effects.is_empty()
-                    && condition.as_ref().is_some_and(|condition| initially_true(condition, known));
+                    && condition.as_ref().is_some_and(|condition| initially_true(condition, &known));
                 if *test_first && condition.is_some() && !first_test_true {
                     self.jump(test);
                 }
@@ -4614,13 +4612,10 @@ fn references_weighted(body: &[Stmt], variable: VarId, base: usize) -> usize {
 }
 
 /// Whether `condition` holds on entry given the preceding constant assignment.
-fn initially_true(condition: &Expr, known: Option<(VarId, i64)>) -> bool {
-    let Some((variable, value)) = known else { return false };
+fn initially_true(condition: &Expr, known: &[(VarId, i64)]) -> bool {
     let ExprKind::Binary(op, left, right) = &condition.kind else { return false };
     let (Some(id), Some(bound)) = (unpromoted(left).as_var(), right.as_int()) else { return false };
-    if id != variable {
-        return false;
-    }
+    let Some(&(_, value)) = known.iter().find(|&&(variable, _)| variable == id) else { return false };
     match op {
         BinaryOp::Less => value < bound,
         BinaryOp::LessEqual => value <= bound,
