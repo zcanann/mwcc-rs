@@ -78,6 +78,7 @@ pub fn build_unoptimized_compile(function: &ast::Function, unit: &Unit<'_>) -> C
 pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     if std::env::var("MWCC_SYNTAX_DUMP").is_ok_and(|name| name == function.name) {
         eprintln!("{:#?}", function.statements);
+        eprintln!("return {:#?}", function.return_expression);
     }
     if function.asm_body.is_some() || !function.inline_asm_blocks.is_empty() {
         return Err(unsupported("inline assembly"));
@@ -1180,6 +1181,61 @@ impl Builder<'_, '_> {
                 } else {
                     promoted(right)
                 };
+                // `long long` division, and shifts by a variable count, call
+                // the runtime (literals fold).
+                // (GC/1.3+ divide by a power of two inline: an unsigned
+                // quotient shifts, a remainder masks; a signed quotient
+                // shifts with rounding toward zero.)
+                if is_wide(ty) && matches!(op, BinaryOp::Divide | BinaryOp::Modulo) && !self.unit.branch_preserving {
+                    let mut divisor = right.clone();
+                    passes::fold(&mut divisor);
+                    if let Some(power) = divisor.as_int().filter(|d| *d > 1 && d.count_ones() == 1).map(|d| i64::from(d.trailing_zeros())) {
+                        let left = converted(promoted(left.clone()), ty);
+                        let unsigned = ty == Type::UnsignedLongLong;
+                        match op {
+                            BinaryOp::Divide if unsigned => {
+                                return Ok(Expr::binary(BinaryOp::ShiftRight, left, Expr::int(power), ty));
+                            }
+                            BinaryOp::Modulo if unsigned => {
+                                return Ok(Expr::binary(BinaryOp::BitAnd, left, Expr::typed_int((1i64 << power) - 1, ty), ty));
+                            }
+                            _ if power < 32 => {
+                                let quotient = Expr::binary(BinaryOp::Divide, left.clone(), Expr::typed_int(1i64 << power, ty), ty);
+                                if op == BinaryOp::Divide {
+                                    return Ok(quotient);
+                                }
+                                let multiple = Expr::binary(BinaryOp::ShiftLeft, quotient, Expr::int(power), ty);
+                                return Ok(Expr::binary(BinaryOp::Subtract, left, multiple, ty));
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                if is_wide(ty) && matches!(op, BinaryOp::Divide | BinaryOp::Modulo | BinaryOp::ShiftLeft | BinaryOp::ShiftRight) {
+                    let constant = |e: &Expr| {
+                        let mut folded = e.clone();
+                        passes::fold(&mut folded);
+                        folded.as_int().is_some()
+                    };
+                    let shift = matches!(op, BinaryOp::ShiftLeft | BinaryOp::ShiftRight);
+                    // (GC/1.0-1.2.5n shift by a constant through the runtime too.)
+                    let inline_shift = shift && !self.unit.branch_preserving;
+                    if !(constant(&right) && (inline_shift || constant(&left))) {
+                        let unsigned = ty == Type::UnsignedLongLong;
+                        let name = match op {
+                            BinaryOp::Divide if unsigned => "__div2u",
+                            BinaryOp::Divide => "__div2i",
+                            BinaryOp::Modulo if unsigned => "__mod2u",
+                            BinaryOp::Modulo => "__mod2i",
+                            BinaryOp::ShiftLeft => "__shl2i",
+                            _ if unsigned => "__shr2u",
+                            _ => "__shr2i",
+                        };
+                        let left = converted(promoted(left), ty);
+                        let right = if shift { right } else { converted(right, ty) };
+                        return Ok(Expr { kind: ExprKind::Call { name: name.to_owned(), arguments: vec![left, right] }, ty });
+                    }
+                }
                 Expr::binary(op, promoted(left), right, ty)
             }
             Expression::Unary { operator, operand } => {

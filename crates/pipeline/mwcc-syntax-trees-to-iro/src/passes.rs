@@ -331,6 +331,9 @@ pub fn run_unoptimized(function: &mut Function) {
                 Some(Expr { kind: ExprKind::Float(value), ty: expression.ty })
             }
             ExprKind::Binary(op, left, right) => match (left.as_int(), right.as_int()) {
+                (Some(_), Some(_)) if mwcc_iro::is_wide(expression.ty) || mwcc_iro::is_wide(left.ty) || mwcc_iro::is_wide(right.ty) => {
+                    fold_wide(*op, left, right, expression.ty).map(|value| Expr::typed_int(value, expression.ty))
+                }
                 (Some(_), Some(_)) => fold_typed(*op, left, right).map(|value| Expr::typed_int(value, expression.ty)),
                 _ => None,
             },
@@ -921,6 +924,27 @@ fn fold_once(expression: &Expr) -> Option<Expr> {
         return Some(folded);
     }
     match &expression.kind {
+        // A literal widened to `long long` (by its own signedness), or a
+        // wide literal narrowed to a word.
+        ExprKind::Convert(operand) if mwcc_iro::is_wide(expression.ty) && operand.as_int().is_some() => {
+            let value = operand.as_int()?;
+            // (A signed literal is its value: folded words stay in range, and
+            // a literal beyond them is exact; an unsigned word zero-extends.)
+            let value = if !mwcc_iro::is_wide(operand.ty) && mwcc_iro::is_unsigned(operand.ty) {
+                value & 0xffff_ffff
+            } else {
+                value
+            };
+            Some(Expr::typed_int(value, expression.ty))
+        }
+        ExprKind::Convert(operand)
+            if matches!(expression.ty, Type::Int | Type::UnsignedInt)
+                && mwcc_iro::is_wide(operand.ty)
+                && operand.as_int().is_some() =>
+        {
+            let value = operand.as_int()?;
+            Some(Expr::typed_int(if expression.ty == Type::UnsignedInt { value & 0xffff_ffff } else { i64::from(value as i32) }, expression.ty))
+        }
         // Integer and pointer casts of a literal are the literal, typed.
         ExprKind::Convert(operand)
             if matches!(expression.ty, Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. })
@@ -949,6 +973,9 @@ fn fold_once(expression: &Expr) -> Option<Expr> {
                 }
             }
             if left.as_int().is_some() && right.as_int().is_some() {
+                if mwcc_iro::is_wide(expression.ty) || mwcc_iro::is_wide(left.ty) || mwcc_iro::is_wide(right.ty) {
+                    return Some(Expr::typed_int(fold_wide(*op, left, right, expression.ty)?, expression.ty));
+                }
                 return Some(Expr::typed_int(fold_typed(*op, left, right)?, expression.ty));
             }
             // `x << 0`, `x >> 0`, `x + 0`, `x - 0`, `x | 0`, `x ^ 0` are `x`.
@@ -1049,6 +1076,35 @@ fn fold_float(expression: &Expr) -> Option<Expr> {
 /// 32-bit arithmetic on two literals.
 /// Fold two literal operands; a relation between unsigned words compares
 /// unsigned.
+/// A `long long` operation on literals (64-bit, wrapping).
+pub fn fold_wide(op: BinaryOp, left: &Expr, right: &Expr, ty: Type) -> Option<i64> {
+    let (a, b) = (left.as_int()?, right.as_int()?);
+    let unsigned = ty == Type::UnsignedLongLong || left.ty == Type::UnsignedLongLong || right.ty == Type::UnsignedLongLong;
+    let value = match op {
+        BinaryOp::Add => a.wrapping_add(b),
+        BinaryOp::Subtract => a.wrapping_sub(b),
+        BinaryOp::Multiply => a.wrapping_mul(b),
+        BinaryOp::BitAnd => a & b,
+        BinaryOp::BitOr => a | b,
+        BinaryOp::BitXor => a ^ b,
+        BinaryOp::ShiftLeft if (0..64).contains(&b) => a.wrapping_shl(b as u32),
+        BinaryOp::ShiftRight if (0..64).contains(&b) && unsigned => ((a as u64) >> b) as i64,
+        BinaryOp::ShiftRight if (0..64).contains(&b) => a >> b,
+        BinaryOp::Divide if b != 0 && unsigned => ((a as u64) / (b as u64)) as i64,
+        BinaryOp::Divide if b != 0 => a.wrapping_div(b),
+        BinaryOp::Modulo if b != 0 && unsigned => ((a as u64) % (b as u64)) as i64,
+        BinaryOp::Modulo if b != 0 => a.wrapping_rem(b),
+        BinaryOp::Less => i64::from(if unsigned { (a as u64) < (b as u64) } else { a < b }),
+        BinaryOp::Greater => i64::from(if unsigned { (a as u64) > (b as u64) } else { a > b }),
+        BinaryOp::LessEqual => i64::from(if unsigned { (a as u64) <= (b as u64) } else { a <= b }),
+        BinaryOp::GreaterEqual => i64::from(if unsigned { (a as u64) >= (b as u64) } else { a >= b }),
+        BinaryOp::Equal => i64::from(a == b),
+        BinaryOp::NotEqual => i64::from(a != b),
+        _ => return None,
+    };
+    Some(value)
+}
+
 fn fold_typed(op: BinaryOp, left: &Expr, right: &Expr) -> Option<i64> {
     let (a, b) = (left.as_int()?, right.as_int()?);
     let unsigned = |ty: Type| mwcc_iro::is_unsigned(ty) && !mwcc_iro::is_narrow(ty);
@@ -1098,6 +1154,10 @@ fn fold_chain(op: BinaryOp, left: &Expr, right: &Expr, ty: Type) -> Option<Expr>
     let outer = right.as_int()?;
     let ExprKind::Binary(inner_op, inner_left, inner_right) = &left.kind else { return None };
     let inner = inner_right.as_int()?;
+    // (Not across a widening to `long long`: the inner word wraps first.)
+    if mwcc_iro::is_wide(ty) != mwcc_iro::is_wide(left.ty) {
+        return None;
+    }
     use BinaryOp::*;
     let (op, value) = match (*inner_op, op) {
         (ShiftRight, ShiftRight) | (ShiftLeft, ShiftLeft) if inner + outer < 32 => (op, inner + outer),

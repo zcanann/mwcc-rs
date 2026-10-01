@@ -3,6 +3,14 @@
 
 use super::*;
 
+/// A wide constant (possibly a converted word constant).
+pub(super) fn long_constant(expression: &Expr) -> Option<i64> {
+    match &expression.kind {
+        ExprKind::Convert(inner) => inner.as_int(),
+        _ => expression.as_int(),
+    }
+}
+
 pub(super) fn is_wide(ty: Type) -> bool {
     matches!(ty, Type::LongLong | Type::UnsignedLongLong)
 }
@@ -133,6 +141,146 @@ impl Lowerer<'_, '_> {
                 self.emit_plain(make(d_low, a_low, b_low));
                 self.emit_plain(make(d_high, a_high, b_high));
                 Ok((d_high, d_low))
+            }
+            ExprKind::Binary(BinaryOp::Multiply, left, right) => {
+                let (a_high, a_low) = self.wide(left)?;
+                // `hi = mulhwu(al, bl) + ah*bl + al*bh`, `lo = al*bl`.
+                if let Some(constant) = right.as_int() {
+                    let low_word = i64::from(constant as i32);
+                    let b_low = self.temporary();
+                    self.load_constant(b_low, low_word)?;
+                    let carry = self.temporary();
+                    self.emit_plain(Instruction::MultiplyHighWordUnsigned { d: carry, a: a_low, b: b_low });
+                    let cross = self.temporary();
+                    self.emit_plain(Instruction::MultiplyLow { d: cross, a: a_high, b: b_low });
+                    let d_low = self.temporary();
+                    match i16::try_from(low_word) {
+                        Ok(immediate) => self.emit_plain(Instruction::MultiplyImmediate { d: d_low, a: a_low, immediate }),
+                        Err(_) => self.emit_plain(Instruction::MultiplyLow { d: d_low, a: a_low, b: b_low }),
+                    }
+                    let mut d_high = self.temporary();
+                    self.emit_plain(Instruction::Add { d: d_high, a: carry, b: cross });
+                    if constant >> 32 != 0 {
+                        let b_high = self.temporary();
+                        self.load_constant(b_high, constant >> 32)?;
+                        let other = self.temporary();
+                        self.emit_plain(Instruction::MultiplyLow { d: other, a: a_low, b: b_high });
+                        let sum = self.temporary();
+                        self.emit_plain(Instruction::Add { d: sum, a: d_high, b: other });
+                        d_high = sum;
+                    }
+                    return Ok((d_high, d_low));
+                }
+                let (b_high, b_low) = self.wide(right)?;
+                let carry = self.temporary();
+                self.emit_plain(Instruction::MultiplyHighWordUnsigned { d: carry, a: a_low, b: b_low });
+                let cross = self.temporary();
+                self.emit_plain(Instruction::MultiplyLow { d: cross, a: a_high, b: b_low });
+                let other = self.temporary();
+                self.emit_plain(Instruction::MultiplyLow { d: other, a: a_low, b: b_high });
+                let partial = self.temporary();
+                self.emit_plain(Instruction::Add { d: partial, a: carry, b: cross });
+                let d_low = self.temporary();
+                self.emit_plain(Instruction::MultiplyLow { d: d_low, a: a_low, b: b_low });
+                let d_high = self.temporary();
+                self.emit_plain(Instruction::Add { d: d_high, a: partial, b: other });
+                Ok((d_high, d_low))
+            }
+            ExprKind::Binary(op @ (BinaryOp::ShiftLeft | BinaryOp::ShiftRight), left, right) => {
+                let signed = expression.ty == Type::LongLong;
+                let Some(count) = right.as_int().filter(|count| (0..64).contains(count)) else {
+                    // A variable count: `__shl2i`, `__shr2u`, `__shr2i`.
+                    let helper = match (op, signed) {
+                        (BinaryOp::ShiftLeft, _) => "__shl2i",
+                        (_, false) => "__shr2u",
+                        (_, true) => "__shr2i",
+                    };
+                    return self.wide_helper(helper, left, right);
+                };
+                let (high, low) = self.wide(left)?;
+                let count = count as u8;
+                let (d_high, d_low) = (self.temporary(), self.temporary());
+                match (op, count) {
+                    (_, 0) => return Ok((high, low)),
+                    // (By 32, the words move.)
+                    (BinaryOp::ShiftLeft, 32) => {
+                        self.emit_plain(Instruction::Or { a: d_high, s: low, b: low });
+                        self.load_constant(d_low, 0)?;
+                    }
+                    (_, 32) => {
+                        self.emit_plain(Instruction::Or { a: d_low, s: high, b: high });
+                        if signed {
+                            self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: d_high, s: high, shift: 31 });
+                        } else {
+                            self.load_constant(d_high, 0)?;
+                        }
+                    }
+                    (BinaryOp::ShiftLeft, 1..=31) => {
+                        self.emit_plain(Instruction::ShiftLeftImmediate { a: d_low, s: low, shift: count });
+                        self.emit_plain(Instruction::ShiftLeftImmediate { a: d_high, s: high, shift: count });
+                        self.emit_plain(Instruction::RotateAndMaskInsert { a: d_high, s: low, shift: count, begin: 32 - count, end: 31 });
+                    }
+                    (BinaryOp::ShiftLeft, _) => {
+                        self.emit_plain(Instruction::ShiftLeftImmediate { a: d_high, s: low, shift: count - 32 });
+                        self.load_constant(d_low, 0)?;
+                    }
+                    (_, 1..=31) => {
+                        self.emit_plain(if signed {
+                            Instruction::ShiftRightAlgebraicImmediate { a: d_high, s: high, shift: count }
+                        } else {
+                            Instruction::ShiftRightLogicalImmediate { a: d_high, s: high, shift: count }
+                        });
+                        self.emit_plain(Instruction::RotateAndMask { a: d_low, s: low, shift: 32 - count, begin: 0, end: 31 });
+                        self.emit_plain(Instruction::RotateAndMaskInsert { a: d_low, s: high, shift: 32 - count, begin: 0, end: count - 1 });
+                    }
+                    _ => {
+                        self.emit_plain(if signed {
+                            Instruction::ShiftRightAlgebraicImmediate { a: d_low, s: high, shift: count - 32 }
+                        } else {
+                            Instruction::ShiftRightLogicalImmediate { a: d_low, s: high, shift: count - 32 }
+                        });
+                        if signed {
+                            self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: d_high, s: high, shift: 31 });
+                        } else {
+                            self.load_constant(d_high, 0)?;
+                        }
+                    }
+                }
+                Ok((d_high, d_low))
+            }
+            // A signed quotient by 2^k (k < 32): an arithmetic shift whose
+            // carry (negative, with bits shifted out) rounds toward zero.
+            ExprKind::Binary(BinaryOp::Divide, left, right)
+                if expression.ty == Type::LongLong
+                    && right.as_int().is_some_and(|d| d > 1 && d.count_ones() == 1 && d.trailing_zeros() < 32) =>
+            {
+                let power = right.as_int().expect("checked").trailing_zeros() as u8;
+                let (high, low) = self.wide(left)?;
+                let marked = self.temporary();
+                self.emit_plain(Instruction::Or { a: marked, s: high, b: high });
+                let d_low = self.temporary();
+                self.emit_plain(Instruction::RotateAndMask { a: d_low, s: low, shift: 32 - power, begin: 0, end: 31 });
+                self.emit_plain(Instruction::RotateAndMaskInsert { a: marked, s: low, shift: 0, begin: 32 - power, end: 31 });
+                self.emit_plain(Instruction::RotateAndMaskInsert { a: d_low, s: high, shift: 32 - power, begin: 0, end: power - 1 });
+                let shifted = self.temporary();
+                self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: shifted, s: marked, shift: power });
+                let (r_low, r_high) = (self.temporary(), self.temporary());
+                self.emit_plain(Instruction::AddToZeroExtended { d: r_low, a: d_low });
+                self.emit_plain(Instruction::AddToZeroExtended { d: r_high, a: shifted });
+                Ok((r_high, r_low))
+            }
+            // Division calls the runtime: `__div2u`, `__div2i`, `__mod2u`, `__mod2i`.
+            ExprKind::Binary(op @ (BinaryOp::Divide | BinaryOp::Modulo), left, right) => {
+                let signed = expression.ty == Type::LongLong;
+                let helper = match (op, signed) {
+                    (BinaryOp::Divide, false) => "__div2u",
+                    (BinaryOp::Divide, true) => "__div2i",
+                    (_, false) => "__mod2u",
+                    (_, true) => "__mod2i",
+                };
+                let ty = expression.ty;
+                let right = if is_wide(right.ty) { (**right).clone() } else { Expr { kind: ExprKind::Convert(right.clone()), ty } };
+                self.wide_helper(helper, left, &right)
             }
             ExprKind::Unary(UnaryOp::Negate, operand) => {
                 let (high, low) = self.wide(operand)?;
@@ -355,5 +503,21 @@ impl Lowerer<'_, '_> {
         let borrow = self.temporary();
         self.emit_plain(Instruction::SubtractFromExtended { d: borrow, a: filler, b: filler });
         Ok(borrow)
+    }
+}
+
+impl Lowerer<'_, '_> {
+    /// A runtime helper's wide result (`r3:r4`).
+    fn wide_helper(&mut self, name: &str, left: &Expr, right: &Expr) -> Compilation<(u32, u32)> {
+        let left = if is_wide(left.ty) {
+            left.clone()
+        } else {
+            Expr { kind: ExprKind::Convert(Box::new(left.clone())), ty: Type::LongLong }
+        };
+        self.call(name, &[left, right.clone()], Type::Void, None)?;
+        let (high, low) = (self.temporary(), self.temporary());
+        self.emit_plain(Instruction::Or { a: high, s: 3, b: 3 });
+        self.emit_plain(Instruction::Or { a: low, s: 4, b: 4 });
+        Ok((high, low))
     }
 }

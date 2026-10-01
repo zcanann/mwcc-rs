@@ -19,7 +19,7 @@ use mwcc_machine_code::{Instruction, RelocationKind, RelocationTarget};
 use mwcc_pcode::{AttachedRelocation, Block, Class, PCodeFunction, PInstr, Register, ReturnRegisters};
 
 mod wide;
-use wide::is_wide;
+use wide::{is_wide, long_constant};
 
 /// A lowered function.
 #[derive(Debug, Clone)]
@@ -762,16 +762,28 @@ impl Lowerer<'_, '_> {
     /// `b callee` after marshaling the arguments of a call in tail position.
     fn tail_call(&mut self, call: &Expr) -> Compilation<()> {
         let ExprKind::Call { name, arguments } = &call.kind else { return Err(unsupported("tail call")) };
-        let mut values = Vec::new();
-        for argument in arguments {
-            values.push(self.expression(argument)?.0);
-        }
         if arguments.iter().any(|argument| is_float(argument.ty)) || is_float(call.ty) {
             return Err(unsupported("floating sibling call"));
         }
-        for (index, value) in values.into_iter().enumerate() {
-            let register = FIRST_GENERAL_ARGUMENT + index as u32;
-            self.emit_plain(Instruction::Or { a: register, s: value, b: value });
+        // (A wide argument takes an odd-aligned pair.)
+        let mut placed: Vec<(u32, u32)> = Vec::new();
+        let mut general = FIRST_GENERAL_ARGUMENT;
+        for argument in arguments {
+            if is_wide(argument.ty) {
+                general += 1 - general % 2;
+                let (high, low) = self.wide(argument)?;
+                placed.push((general, high));
+                placed.push((general + 1, low));
+                general += 2;
+            } else {
+                placed.push((general, self.expression(argument)?.0));
+                general += 1;
+            }
+        }
+        for &(register, value) in &placed {
+            if value != register || !is_wide_call(call) {
+                self.emit_plain(Instruction::Or { a: register, s: value, b: value });
+            }
         }
         // A variadic callee still gets its CR1 marker (no floating arguments).
         if self.unit.variadic_callees.contains(name) && !toggle("MWCC_PCODE_NO_TAIL_VARIADIC_MARKER") {
@@ -782,7 +794,7 @@ impl Lowerer<'_, '_> {
             kind: RelocationKind::Rel24,
             target: RelocationTarget::External(name.clone()),
         });
-        branch.implicit_uses = (0..arguments.len()).map(|i| Register::general(FIRST_GENERAL_ARGUMENT + i as u32)).collect();
+        branch.implicit_uses = placed.iter().map(|&(register, _)| Register::general(register)).collect();
         self.emit(branch);
         self.start_block(false);
         Ok(())
@@ -4192,7 +4204,10 @@ impl Lowerer<'_, '_> {
                     && !is_float(argument.ty)
                     && !toggle("MWCC_PCODE_O0_ARGUMENT_TEMPORARIES");
                 if is_wide(argument.ty) {
-                    wide_values[index] = Some(self.wide(argument)?);
+                    // (A constant loads with the other constants.)
+                    if long_constant(argument).is_none() {
+                        wide_values[index] = Some(self.wide(argument)?);
+                    }
                     continue;
                 }
                 // A constant argument is loaded straight into its register.
@@ -4213,6 +4228,15 @@ impl Lowerer<'_, '_> {
         let mut argument_registers = Vec::new();
         let (mut general, mut float) = (FIRST_GENERAL_ARGUMENT, 1);
         for (index, value) in values.into_iter().enumerate() {
+            if let Some(constant) = long_constant(&arguments[index]).filter(|_| is_wide(arguments[index].ty) && wide_values[index].is_none()) {
+                general += 1 - general % 2;
+                self.load_constant(general, constant >> 32)?;
+                self.load_constant(general + 1, i64::from(constant as i32))?;
+                argument_registers.push(Register::general(general));
+                argument_registers.push(Register::general(general + 1));
+                general += 2;
+                continue;
+            }
             if let Some((high, low)) = wide_values[index] {
                 general += 1 - general % 2;
                 for (register, value) in [(general, high), (general + 1, low)] {
@@ -4850,6 +4874,11 @@ fn narrow_mask(ty: Type) -> u32 {
 }
 
 /// Whether an expression contains a call.
+/// A call with a wide argument or result.
+fn is_wide_call(call: &Expr) -> bool {
+    is_wide(call.ty) || matches!(&call.kind, ExprKind::Call { arguments, .. } if arguments.iter().any(|argument| is_wide(argument.ty)))
+}
+
 fn contains_call(expression: &Expr) -> bool {
     format!("{:?}", expression.kind).contains("Call {")
 }
