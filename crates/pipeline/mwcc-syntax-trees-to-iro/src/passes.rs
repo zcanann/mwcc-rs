@@ -172,9 +172,9 @@ fn replace_fields(body: Vec<Stmt>, id: VarId, map: &HashMap<i32, VarId>, keep: b
 
 /// Run every pass in order. Branch-preserving builds (GC/1.0-1.2.5n) form
 /// no sign-mask idioms and keep two-way assignments as branches.
-pub fn run(function: &mut Function, branch_preserving: bool, reassociates_sums: bool) {
+pub fn run(function: &mut Function, branch_preserving: bool, reassociates_sums: bool, unrolling: bool) {
     let enabled = |name: &str| std::env::var_os(format!("MWCC_IRO_NO_{name}")).is_none();
-    if enabled("UNROLL") && !branch_preserving {
+    if enabled("UNROLL") && !branch_preserving && unrolling {
         unroll(&mut function.body);
         merge_constant_updates(&mut function.body);
     }

@@ -1088,7 +1088,13 @@ impl Lowerer<'_, '_> {
                 Ok(())
             }
             Stmt::Loop { test_first, condition, body, step, effects } => {
-                if !self.unoptimized && effects.is_empty() && counted(condition.as_ref(), body, step) && !makes_calls(body) {
+                // (-O3 counts them in CTR, -O4 unrolls them; -O1/-O2 keep
+                // the plain loop.)
+                if self.unit.strength_reduction
+                    && effects.is_empty()
+                    && counted(condition.as_ref(), body, step)
+                    && !makes_calls(body)
+                {
                     return Err(unsupported("counted loop (unrolling not modeled)"));
                 }
                 let top = self.new_join_label();
@@ -1096,7 +1102,7 @@ impl Lowerer<'_, '_> {
                 let test = self.new_label();
                 let exit = self.new_label();
                 // IRO drops the entry jump when the first test is known true.
-                let first_test_true = !self.unoptimized
+                let first_test_true = self.unit.strength_reduction
                     && effects.is_empty()
                     && condition.as_ref().is_some_and(|condition| initially_true(condition, known));
                 if *test_first && condition.is_some() && !first_test_true {
@@ -1870,6 +1876,14 @@ impl Lowerer<'_, '_> {
                         self.emit_plain(Instruction::Add { d: address, a, b });
                         return self.load(ty, address, 0, None, target);
                     }
+                    return self.indexed_load(ty, a, b, target);
+                }
+                // (-O1/-O2: an absolute array's index first.)
+                if let Some(index) = index.as_deref().filter(|_| {
+                    !self.unit.strength_reduction && self.absolute_base(base) && !toggle("MWCC_PCODE_O2_ADDRESS_FIRST")
+                }) {
+                    let (b, _) = self.expression(index)?;
+                    let (a, _) = self.base_expression(base)?;
                     return self.indexed_load(ty, a, b, target);
                 }
                 let (a, _) = self.base_expression(base)?;
@@ -3674,6 +3688,14 @@ impl Lowerer<'_, '_> {
                 } else {
                     (a, 0, Some(b), None)
                 }
+            }
+            // (-O1/-O2: an absolute array's index first.)
+            Place::Memory { base, index: Some(index), offset }
+                if !self.unit.strength_reduction && self.absolute_base(base) && !toggle("MWCC_PCODE_O2_ADDRESS_FIRST") =>
+            {
+                let (b, _) = self.expression(index)?;
+                let (a, _) = self.base_expression(base)?;
+                (a, i16::try_from(*offset).map_err(|_| unsupported("large member offset"))?, Some(b), None)
             }
             Place::Memory { base, index, offset } => {
                 let (base, _) = self.base_expression(base)?;

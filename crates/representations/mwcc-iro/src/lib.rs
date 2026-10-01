@@ -92,6 +92,8 @@ pub struct Unit<'a> {
     pub reassociates_sums: bool,
     /// Loop strength reduction (`-O3`/`-O4`).
     pub strength_reduction: bool,
+    /// Loop unrolling (`-O4`).
+    pub unrolling: bool,
     /// GC/3.x and Wii test a promoted unsigned narrow value signed (`cmpwi`)
     /// unless it needed extending; earlier builds test it logically.
     pub signed_promoted_truth: bool,
