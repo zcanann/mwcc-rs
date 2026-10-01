@@ -1136,10 +1136,12 @@ impl Lowerer<'_, '_> {
             Stmt::Loop { test_first, condition, body, step, effects } => {
                 // (-O3 counts them in CTR, -O4 unrolls them; -O1/-O2 keep
                 // the plain loop.)
+                // (A loop the unroller did not take stays a plain loop.)
                 if self.unit.strength_reduction
                     && effects.is_empty()
                     && counted(condition.as_ref(), body, step)
                     && !makes_calls(body)
+                    && toggle("MWCC_PCODE_REFUSE_COUNTED_LOOPS")
                 {
                     return Err(unsupported("counted loop (unrolling not modeled)"));
                 }
