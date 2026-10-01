@@ -63,6 +63,7 @@ pub fn lower_vtable_adjustor_thunks(
 pub struct SourceFunctionFacts<'a> {
     pub variable_function_types:
         &'a HashMap<(String, String), mwcc_syntax_trees::SourceFunctionType>,
+    pub global_function_types: &'a HashMap<String, mwcc_syntax_trees::SourceFunctionType>,
     pub variable_reference_counts: &'a HashMap<String, HashMap<String, usize>>,
     /// Source language, independent of C++ name mangling or extern-C linkage.
     pub is_cxx: bool,
@@ -248,6 +249,14 @@ fn lower_function_body(
         globals,
         fixed_address_arrays,
         call_return_types,
+        pointer_return_type: &|owner, name| {
+            let signature = if owner.is_empty() {
+                source_facts.global_function_types.get(name)
+            } else {
+                source_facts.variable_function_types.get(&(owner.to_owned(), name.to_owned()))
+            };
+            signature.map(|signature| signature.return_type.declared_type)
+        },
         variadic_callees: variadic_definitions,
         prototyped: prototyped_names,
         call_parameter_types,

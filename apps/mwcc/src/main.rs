@@ -1092,6 +1092,7 @@ fn compile(
                 parameter_fundamentals: &unit.function_parameter_fundamentals,
                 local_fundamentals: &unit.function_local_fundamentals,
                 variable_function_types: &unit.function_variable_function_types,
+                global_function_types: &unit.global_function_types,
                 variable_reference_counts: &unit.function_variable_reference_counts,
             },
             function_config,

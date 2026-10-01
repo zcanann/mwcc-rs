@@ -3461,6 +3461,15 @@ impl Parser {
                         && *self.peek_at(4) == Token::BracketOpen;
                     let function_pointer = if pointer_to_rows {
                         None
+                    } else if matches!(self.peek(), Token::Identifier(_))
+                        && *self.peek_at(1) == Token::ParenOpen
+                    {
+                        // A function-typed parameter `RET name(params)` is
+                        // adjusted to a pointer to that function.
+                        let name_position = self.position;
+                        let name = self.parse_identifier()?;
+                        let callback_type = self.parse_cxx_function_type(callback_return_type)?;
+                        Some((name, Some(name_position), callback_type))
                     } else {
                         self.try_cxx_function_pointer_declarator(callback_return_type)?
                     };

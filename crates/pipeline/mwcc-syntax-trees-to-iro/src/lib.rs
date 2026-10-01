@@ -214,6 +214,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         rows,
         folded,
         return_type: function.return_type,
+        function_name: &function.name,
         unit,
         names: variables.iter().enumerate().map(|(id, variable)| (variable.name.clone(), id)).collect(),
         variables: &variables,
@@ -430,6 +431,8 @@ struct Builder<'a, 'u> {
     /// Folded `static const` scalar locals: name -> value.
     folded: HashMap<String, Expr>,
     return_type: Type,
+    /// The function's name (its pointer variables' signatures are keyed by it).
+    function_name: &'a str,
     unit: &'a Unit<'u>,
     names: HashMap<String, VarId>,
     variables: &'a [Variable],
@@ -541,7 +544,7 @@ impl Builder<'_, '_> {
     fn effects_inner(&mut self, expression: &Expression) -> Compilation<Vec<Stmt>> {
         Ok(match expression {
             Expression::Call { name, arguments } => evaluated(self.call(name, arguments, true)?),
-            Expression::CallThrough { target, arguments } => vec![Stmt::Eval(self.indirect_call(target, arguments, true)?)],
+            Expression::CallThrough { target, arguments } => vec![Stmt::Eval(self.indirect_call(target, arguments, true, None)?)],
             Expression::Cast { target_type: Type::Void, operand } => match operand.as_ref() {
                 Expression::Call { name, arguments } => evaluated(self.call(name, arguments, true)?),
                 // A discarded variable still counts as a reference (-O0
@@ -1449,12 +1452,20 @@ impl Builder<'_, '_> {
     }
 
     /// A call; `discarded` when its result is unused (a `void` callee is fine).
-    /// A call through a function pointer: `mtctr` + `bctrl`. The callee's
-    /// type is not tracked, so only a discarded result is modeled.
-    fn indirect_call(&mut self, target: &Expression, arguments: &[Expression], discarded: bool) -> Compilation<Expr> {
-        if !discarded {
-            return Err(unsupported("value of an indirect call"));
-        }
+    /// A call through a function pointer: `mtctr` + `bctrl`. Its value is
+    /// modeled when the pointer's declared return type is known.
+    fn indirect_call(
+        &mut self,
+        target: &Expression,
+        arguments: &[Expression],
+        discarded: bool,
+        return_type: Option<Type>,
+    ) -> Compilation<Expr> {
+        let ty = match return_type {
+            _ if discarded => Type::Void,
+            Some(ty) if is_value_type(ty) => ty,
+            _ => return Err(unsupported("value of an indirect call")),
+        };
         if arguments.len() > ARGUMENT_REGISTERS {
             return Err(unsupported("stack-passed arguments"));
         }
@@ -1470,7 +1481,7 @@ impl Builder<'_, '_> {
             }
             values.push(value);
         }
-        Ok(Expr { kind: ExprKind::Call { name: mwcc_iro::INDIRECT_CALL.to_owned(), arguments: values }, ty: Type::Void })
+        Ok(Expr { kind: ExprKind::Call { name: mwcc_iro::INDIRECT_CALL.to_owned(), arguments: values }, ty })
     }
 
     /// A call MWCC expands inline: the arguments are assigned to the
@@ -1682,7 +1693,9 @@ impl Builder<'_, '_> {
         let pointer_variable = self.names.contains_key(name)
             || self.unit.globals.get(name).is_some_and(|global| !global.is_function);
         if pointer_variable {
-            return self.indirect_call(&Expression::Variable(name.to_owned()), arguments, discarded);
+            let owner = if self.names.contains_key(name) { self.function_name } else { "" };
+            let return_type = (self.unit.pointer_return_type)(owner, name);
+            return self.indirect_call(&Expression::Variable(name.to_owned()), arguments, discarded, return_type);
         }
         {
             {

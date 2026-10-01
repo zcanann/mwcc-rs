@@ -47,6 +47,10 @@ pub const INDIRECT_CALL: &str = "@indirect";
 pub struct Unit<'a> {
     pub globals: &'a HashMap<String, GlobalInfo>,
     pub call_return_types: &'a HashMap<String, Type>,
+    /// The return type of the function a pointer variable calls, when its
+    /// declaration is known: (function, variable), with an empty function
+    /// for a global.
+    pub pointer_return_type: &'a dyn Fn(&str, &str) -> Option<Type>,
     /// Calls the compiler expands inline (`__cntlzw`, `__sync`, ...).
     pub is_intrinsic: &'a dyn Fn(&str, usize) -> bool,
     /// Callees declared with `...`.

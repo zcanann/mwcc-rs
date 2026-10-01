@@ -203,6 +203,7 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
     let unit = mwcc_iro::Unit {
         globals: &globals,
         call_return_types: request.call_return_types,
+        pointer_return_type: request.pointer_return_type,
         is_intrinsic: request.is_intrinsic,
         variadic_callees: request.variadic_callees,
         prototyped: request.prototyped,

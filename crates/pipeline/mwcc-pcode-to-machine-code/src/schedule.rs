@@ -452,6 +452,13 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
                 }
             }
             let Some(index) = chosen else { break };
+            if trace() {
+                let ready: Vec<String> = (0..count)
+                    .filter(|&c| issuable(c))
+                    .map(|c| format!("{}:h{}d{}r{}", c, nodes[c].height, deadline[c], release_count(c, &remaining_predecessors)))
+                    .collect();
+                eprintln!("  cycle {cycle} pick {index} {:?} from {}", instructions[index].instruction, ready.join(" "));
+            }
             issued[index] = true;
             order.push(index);
             issued_this_cycle += 1;
@@ -492,6 +499,13 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
     for index in order {
         instructions.push(slots[index].take().expect("each index issues once"));
     }
+}
+
+/// `MWCC_SCHED_TRACE`: print each pick with the ready candidates
+/// (index:height, deadline, released successors).
+fn trace() -> bool {
+    static TRACE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *TRACE.get_or_init(|| std::env::var_os("MWCC_SCHED_TRACE").is_some())
 }
 
 fn same_cycle_release() -> bool {
