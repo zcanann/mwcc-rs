@@ -2844,7 +2844,110 @@ impl Lowerer<'_, '_> {
         })
     }
 
+    /// A struct assignment: MWCC's block copy. -O4 moves words (whatever
+    /// the alignment) in 8-byte load/load/store/store pairs, then a word,
+    /// half and byte tail; above 64 bytes the pairs run in a `ctr` loop
+    /// through pre-decremented pointers with update forms. -O0 moves units
+    /// of the struct's alignment the same way, looping above 16 bytes.
+    fn block_copy(&mut self, place: &Place, size: u32, align: u8, value: &Expr) -> Compilation<()> {
+        let ExprKind::Load { base: source, index: None, offset: source_offset } = &value.kind else {
+            return Err(unsupported("struct copy from this value"));
+        };
+        let destination = match place {
+            Place::Memory { base, index: None, offset } => (base.as_ref().clone(), *offset),
+            Place::Global(name) => (
+                Expr { kind: ExprKind::GlobalAddress(name.clone()), ty: Type::StructPointer { element_size: size } },
+                0,
+            ),
+            _ => return Err(unsupported("struct copy to this place")),
+        };
+        let unit: u32 = if self.unoptimized { u32::from(align.clamp(1, 4)) } else { 4 };
+        let limit = if self.unoptimized { 16 } else { 64 };
+        let (s, _) = self.expression(source)?;
+        let (s, s_offset) = self.displacement(s, *source_offset)?;
+        let (d, _) = self.expression(&destination.0)?;
+        let (d, d_offset) = self.displacement(d, destination.1)?;
+        if size <= limit {
+            let mut at = 0u32;
+            while size - at >= 8 {
+                // An 8-byte chunk as unit pairs.
+                let chunk_end = at + 8;
+                while at < chunk_end {
+                    let (first, second) = (self.temporary(), self.temporary());
+                    self.emit_based(copy_load(unit, first, s, at_offset(s_offset, at)?, false), s);
+                    self.emit_based(copy_load(unit, second, s, at_offset(s_offset, at + unit)?, false), s);
+                    self.emit_based(copy_store(unit, first, d, at_offset(d_offset, at)?, false), d);
+                    self.emit_based(copy_store(unit, second, d, at_offset(d_offset, at + unit)?, false), d);
+                    at += 2 * unit;
+                }
+            }
+            while at < size {
+                let width = if self.unoptimized { unit } else { tail_width(size - at) };
+                self.copy_single(width, s, at_offset(s_offset, at)?, d, at_offset(d_offset, at)?);
+                at += width;
+            }
+            return Ok(());
+        }
+        // The loop: pointers one unit back, `size / (2 * unit)` pairs.
+        let pairs = size / unit / 2;
+        // (Optimized, the count loads first; -O0 after the pointers.)
+        let count = self.temporary();
+        if !self.unoptimized {
+            let value = i16::try_from(pairs).map_err(|_| unsupported("a large struct copy"))?;
+            let mut li = PInstr::new(Instruction::AddImmediate { d: count, a: 0, immediate: value });
+            li.flags.serialize = !toggle("MWCC_PCODE_FREE_COPY_MTCTR");
+            self.emit(li);
+        }
+        let ds = self.temporary();
+        self.emit_based(Instruction::AddImmediate { d: ds, a: d, immediate: at_offset(d_offset, 0)? - unit as i16 }, d);
+        let ss = self.temporary();
+        self.emit_based(Instruction::AddImmediate { d: ss, a: s, immediate: at_offset(s_offset, 0)? - unit as i16 }, s);
+        if self.unoptimized {
+            self.load_constant(count, i64::from(pairs))?;
+        }
+        // (`mtctr` stays after the pointer setup.)
+        let mut mtctr = PInstr::new(Instruction::MoveToCountRegister { s: count });
+        mtctr.flags.serialize = !toggle("MWCC_PCODE_FREE_COPY_MTCTR");
+        self.emit(mtctr);
+        let top = self.new_join_label();
+        self.place_label(top);
+        let (first, second) = (self.temporary(), self.temporary());
+        self.emit_based(copy_load(unit, first, ss, unit as i16, false), ss);
+        let mut loaded = PInstr::new(copy_load(unit, second, ss, 2 * unit as i16, true));
+        loaded.not_r0.push(ss);
+        self.emit(loaded);
+        self.emit_based(copy_store(unit, first, ds, unit as i16, false), ds);
+        let mut stored = PInstr::new(copy_store(unit, second, ds, 2 * unit as i16, true));
+        stored.not_r0.push(ds);
+        stored.implicit_defs.push(Register::general(ds));
+        self.emit(stored);
+        self.branch(Instruction::BranchConditionalForward { options: 16, condition_bit: 0, target: 0 }, top);
+        // The tail, from the updated pointers.
+        let done = pairs * 2 * unit;
+        let mut at = done;
+        while at < size {
+            let width = if self.unoptimized { unit } else { tail_width(size - at) };
+            let relative = (at - done + unit) as i16;
+            self.copy_single(width, ss, relative, ds, relative);
+            at += width;
+        }
+        Ok(())
+    }
+
+    /// One unit of a block copy (its tail).
+    fn copy_single(&mut self, width: u32, s: u32, source_offset: i16, d: u32, destination_offset: i16) {
+        let value = self.temporary();
+        self.emit_based(copy_load(width, value, s, source_offset, false), s);
+        self.emit_based(copy_store(width, value, d, destination_offset, false), d);
+    }
+
     fn store(&mut self, place: &Place, ty: Type, value: &Expr) -> Compilation<()> {
+        if let Type::Struct { size, align } = ty {
+            if toggle("MWCC_PCODE_NO_STRUCT_COPY") {
+                return Err(unsupported("struct copy"));
+            }
+            return self.block_copy(place, size, align, value);
+        }
         if is_float(ty) != is_float(value.ty) {
             return Err(unsupported("store of a value in the other register class"));
         }
@@ -2983,6 +3086,47 @@ impl Lowerer<'_, '_> {
 }
 
 use mwcc_syntax_trees_to_iro::passes::fits_unconverted as mwcc_syntax_trees_to_iro_fits;
+
+/// A block copy's load of one unit (`width` bytes), optionally updating
+/// the base.
+fn copy_load(width: u32, d: u32, a: u32, offset: i16, update: bool) -> Instruction {
+    match (width, update) {
+        (4, false) => Instruction::LoadWord { d, a, offset },
+        (4, true) => Instruction::LoadWordWithUpdate { d, a, offset },
+        (2, false) => Instruction::LoadHalfwordZero { d, a, offset },
+        (2, true) => Instruction::LoadHalfZeroWithUpdate { d, a, offset },
+        (_, false) => Instruction::LoadByteZero { d, a, offset },
+        (_, true) => Instruction::LoadByteZeroWithUpdate { d, a, offset },
+    }
+}
+
+/// A block copy's store of one unit.
+fn copy_store(width: u32, s: u32, a: u32, offset: i16, update: bool) -> Instruction {
+    match (width, update) {
+        (4, false) => Instruction::StoreWord { s, a, offset },
+        (4, true) => Instruction::StoreWordWithUpdate { s, a, offset },
+        (2, false) => Instruction::StoreHalfword { s, a, offset },
+        (2, true) => Instruction::StoreHalfwordWithUpdate { s, a, offset },
+        (_, false) => Instruction::StoreByte { s, a, offset },
+        (_, true) => Instruction::StoreByteWithUpdate { s, a, offset },
+    }
+}
+
+/// `base + delta` as a displacement.
+fn at_offset(base: i16, delta: u32) -> Compilation<i16> {
+    i16::try_from(i32::from(base) + delta as i32).map_err(|_| unsupported("a large struct copy offset"))
+}
+
+/// The widest unit (word, half, byte) a remaining tail allows.
+fn tail_width(remaining: u32) -> u32 {
+    if remaining >= 4 {
+        4
+    } else if remaining >= 2 {
+        2
+    } else {
+        1
+    }
+}
 
 /// A memory place's identity (base, index, offset).
 fn place_key(base: &Expr, index: Option<&Expr>, offset: i32) -> String {

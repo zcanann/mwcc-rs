@@ -64,6 +64,8 @@ fn is_address_of(e: &Expr, id: VarId) -> bool {
 fn scan_fields(body: &mut [Stmt], id: VarId, fields: &mut Vec<(i32, Type)>, escapes: &mut bool) {
     fn expression(e: &mut Expr, id: VarId, fields: &mut Vec<(i32, Type)>, escapes: &mut bool) {
         match &e.kind {
+            // A whole-struct copy reads the object as memory.
+            ExprKind::Load { base, .. } if matches!(e.ty, Type::Struct { .. }) && base.mentions(id) => *escapes = true,
             ExprKind::Load { base, index: None, offset } if is_address_of(base, id) => fields.push((*offset, e.ty)),
             ExprKind::LocalAddress(x) if *x == id => *escapes = true,
             _ => children(e, &mut |child| expression(child, id, fields, escapes)),
@@ -71,6 +73,10 @@ fn scan_fields(body: &mut [Stmt], id: VarId, fields: &mut Vec<(i32, Type)>, esca
     }
     for statement in body {
         match statement {
+            Stmt::Store { place: Place::Memory { base, .. }, ty: Type::Struct { .. }, value } if base.mentions(id) => {
+                *escapes = true;
+                expression(value, id, fields, escapes);
+            }
             Stmt::Store { place: Place::Memory { base, index: None, offset }, ty, value } if is_address_of(base, id) => {
                 fields.push((*offset, *ty));
                 expression(value, id, fields, escapes);

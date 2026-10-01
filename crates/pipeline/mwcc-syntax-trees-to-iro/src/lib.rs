@@ -400,6 +400,12 @@ impl Builder<'_, '_> {
             }
         }
         let (place, ty) = self.place(target)?;
+        // A struct assignment copies the source object's bytes.
+        if matches!(ty, Type::Struct { .. }) && std::env::var_os("MWCC_IRO_NO_STRUCT_COPY").is_none() {
+            let source = self.address_of(value)?;
+            let value = Expr { kind: ExprKind::Load { base: Box::new(source), index: None, offset: 0 }, ty };
+            return Ok(vec![Stmt::Store { place, ty, value }]);
+        }
         Ok(vec![Stmt::Store { place, ty, value: assigned(self.expression(value)?, ty) }])
     }
 
@@ -577,10 +583,8 @@ impl Builder<'_, '_> {
             Statement::Store { target, value } if matches!(target, Expression::BitFieldRead { .. }) => {
                 return self.assignment(target, value);
             }
-            Statement::Store { target, value } => {
-                let (place, ty) = self.place(target)?;
-                Stmt::Store { place, ty, value: assigned(self.expression(value)?, ty) }
-            }
+            // (A struct store copies its source through `assignment`.)
+            Statement::Store { target, value } => return self.assignment(target, value),
             Statement::If { condition, then_body, else_body } => Stmt::If {
                 condition: promoted(self.expression(condition)?),
                 then_body: self.statements(then_body)?,
@@ -610,6 +614,14 @@ impl Builder<'_, '_> {
             }
             Expression::Dereference { pointer } => {
                 let pointer = self.expression(pointer)?;
+                // `*p` of a struct pointer: the object itself (a block copy's
+                // destination; its alignment is unknown, which -O0 needs).
+                if let Type::StructPointer { element_size } = pointer.ty {
+                    if element_size > 0 && !self.unit.unoptimized {
+                        let ty = Type::Struct { size: element_size, align: 4 };
+                        return Ok((Place::Memory { base: Box::new(pointer), index: None, offset: 0 }, ty));
+                    }
+                }
                 match self.element(pointer)? {
                     Some((base, index, offset, ty)) => Ok((Place::Memory { base, index, offset }, ty)),
                     None => Err(unsupported("store through a non-scalar pointer")),
