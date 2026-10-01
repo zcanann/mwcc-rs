@@ -3446,7 +3446,10 @@ impl Lowerer<'_, '_> {
         self.float_constants.clear();
         self.common.retain(|key, _| !key.starts_with('&') && !key.contains('@') && !key.starts_with('*'));
         let result = self.result_for(ty, target);
-        self.copy(ty, result, result_register(ty));
+        // (A result wanted in the result register stays there.)
+        if result != result_register(ty) {
+            self.copy(ty, result, result_register(ty));
+        }
         Ok(result)
     }
 }
