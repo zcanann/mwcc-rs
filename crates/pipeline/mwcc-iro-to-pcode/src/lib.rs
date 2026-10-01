@@ -2243,8 +2243,18 @@ impl Lowerer<'_, '_> {
                 contains_call(left)
             } else if refined && constant(left) {
                 false
-            } else if refined && constant(right) {
+            // (-O0: a constant follows an operand loaded from memory, and
+            // the variable of a self-update `x = x + k`.)
+            } else if refined
+                && constant(right)
+                && !(self.unoptimized
+                    && (matches!(left.kind, ExprKind::Load { .. })
+                        || left.as_var().is_some_and(|id| self.homes[id].is_some() || target.is_some() && self.registers[id] == target)))
+            {
                 true
+            } else if self.unoptimized && !toggle("MWCC_PCODE_O0_FLOAT_REORDER") {
+                // (-O0 otherwise keeps source order.)
+                false
             } else if refined && right.as_var().is_some() && matches!(left.kind, ExprKind::Binary(..)) {
                 true
             } else if refined && left.as_var().is_some() && !toggle("MWCC_PCODE_FLOAT_COMPUTED_FIRST") {
