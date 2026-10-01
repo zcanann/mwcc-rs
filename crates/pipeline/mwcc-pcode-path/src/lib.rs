@@ -28,12 +28,10 @@ pub fn install() {
 pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
     let behavior = Behavior::resolve(request.config);
     let unoptimized = behavior.optimization == mwcc_versions::Optimization::O0;
-    if behavior.optimization != mwcc_versions::Optimization::O4 && !unoptimized {
-        // Lower levels skip IRO passes and keep stack-resident variables;
-        // only the -O4 pipeline is modeled so far.
-        return Err(mwcc_core::Diagnostic::error(
-            "PCode lowering: only -O4 is modeled (not yet supported)",
-        ));
+    // -O2/-O3 take the -O4 pipeline (unscheduled: MWCC schedules by
+    // default only at -O4); their own transformations are not modeled.
+    if behavior.optimization == mwcc_versions::Optimization::O1 {
+        return Err(mwcc_core::Diagnostic::error("PCode lowering: -O1 is not modeled (not yet supported)"));
     }
     if behavior.integer_select_style == mwcc_versions::IntegerSelectStyle::BranchPreserving {
         // Selects and comparison values are modeled on the branchless builds.
