@@ -89,8 +89,8 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         return Err(unsupported("stack-passed parameters"));
     }
     let taken = addresses_taken(function);
-    // -O0: a local only initialized at its declaration (never mentioned
-    // again) is no register variable: it lives in the frame.
+    // -O0: a local only initialized at its declaration or assigned (never
+    // read) is no register variable: it lives in the frame.
     let mentioned = if unit.unoptimized && std::env::var_os("MWCC_IRO_O0_NO_INIT_ONLY_FRAME").is_none() {
         format!(
             "{:?}{:?}{:?}{:?}",
@@ -104,7 +104,10 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
     };
     let initialized_only = |local: &ast::LocalDeclaration| {
         unit.unoptimized
-            && local.initializer.is_some()
+            // (Or one assigned exactly once and never read: its store stays.)
+            && (local.initializer.is_some()
+                || std::env::var_os("MWCC_IRO_O0_WRITE_ONLY_REGISTERS").is_none()
+                    && mentioned.matches(&format!("Assign {{ name: {:?}", local.name)).count() == 1)
             && local.array_length.is_none()
             && !mentioned.is_empty()
             && !mentioned.contains(&format!("Variable({:?})", local.name))
