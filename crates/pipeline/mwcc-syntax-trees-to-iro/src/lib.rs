@@ -43,6 +43,9 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
         passes::scalarize(&mut built.function, unit.keeps_struct_stores);
     }
     passes::run(&mut built.function, unit.branch_preserving, unit.reassociates_sums);
+    if unit.strength_reduction && std::env::var_os("MWCC_IRO_NO_CONSTANT_PROPAGATION").is_none() {
+        strength::propagate_constants(&mut built.function);
+    }
     if unit.strength_reduction && std::env::var_os("MWCC_IRO_NO_STRENGTH_REDUCTION").is_none() {
         strength::strength_reduce(&mut built.function);
     }

@@ -417,3 +417,95 @@ fn rewrite(expression: &mut Expr, induction: VarId, assigned: &[VarId], cursors:
         }
     }
 }
+
+/// Constant propagation (`-O3`/`-O4`): a local assigned once, at the top
+/// level, an integer or a global's address is that value
+/// wherever it is read.
+pub fn propagate_constants(function: &mut Function) {
+    let mut position = 0;
+    while position < function.body.len() {
+        let candidate = match &function.body[position] {
+            Stmt::Assign { variable, value } if constant(value) => Some((*variable, value.clone())),
+            _ => None,
+        };
+        let Some((variable, value)) = candidate else {
+            position += 1;
+            continue;
+        };
+        let local = &function.variables[variable];
+        let eligible = local.kind == VariableKind::Local
+            && local.frame.is_none()
+            && !local.volatile
+            && !local.raw
+            && count_assignments(&function.body, variable) == 1
+            && uses(&function.body[..position], variable) == 0
+            // (An address used as a memory base stays in its variable.)
+            && (value.as_int().is_some() || !based(&function.body, variable));
+        if !eligible {
+            position += 1;
+            continue;
+        }
+        let value = Expr { kind: value.kind, ty: local.ty };
+        crate::passes::substitute(&mut function.body[position + 1..], variable, &value);
+        function.body.remove(position);
+    }
+}
+
+/// (An address plus an offset stays in its variable.)
+fn constant(value: &Expr) -> bool {
+    matches!(value.kind, ExprKind::Int(_) | ExprKind::GlobalAddress(_))
+}
+
+/// Whether `variable` is the base of a load or store address.
+fn based(body: &[Stmt], variable: VarId) -> bool {
+    fn base_is(base: &Expr, variable: VarId) -> bool {
+        match &base.kind {
+            ExprKind::Var(id) => *id == variable,
+            ExprKind::Binary(BinaryOp::Add | BinaryOp::Subtract, left, _) => base_is(left, variable),
+            _ => false,
+        }
+    }
+    fn expression(e: &Expr, variable: VarId) -> bool {
+        match &e.kind {
+            ExprKind::Load { base, index, .. } => {
+                base_is(base, variable)
+                    || expression(base, variable)
+                    || index.as_deref().is_some_and(|index| expression(index, variable))
+            }
+            ExprKind::Unary(_, operand) | ExprKind::Convert(operand) => expression(operand, variable),
+            ExprKind::Binary(_, left, right) => expression(left, variable) || expression(right, variable),
+            ExprKind::Select { condition, when_true, when_false } => {
+                expression(condition, variable) || expression(when_true, variable) || expression(when_false, variable)
+            }
+            ExprKind::Call { arguments, .. } => arguments.iter().any(|argument| expression(argument, variable)),
+            ExprKind::Idiom(_) => true,
+            _ => false,
+        }
+    }
+    body.iter().any(|statement| match statement {
+        Stmt::Assign { value, .. } | Stmt::Eval(value) | Stmt::SetReturn(value) => expression(value, variable),
+        Stmt::Return(value) => value.as_ref().is_some_and(|value| expression(value, variable)),
+        Stmt::Store { place, value, .. } => {
+            expression(value, variable)
+                || match place {
+                    Place::Memory { base, index, .. } => {
+                        base_is(base, variable)
+                            || expression(base, variable)
+                            || index.as_deref().is_some_and(|index| expression(index, variable))
+                    }
+                    Place::Global(_) => false,
+                }
+        }
+        Stmt::If { condition, then_body, else_body } => {
+            expression(condition, variable) || based(then_body, variable) || based(else_body, variable)
+        }
+        Stmt::Loop { condition, body, step, effects, .. } => {
+            condition.as_ref().is_some_and(|condition| expression(condition, variable))
+                || based(body, variable)
+                || based(step, variable)
+                || based(effects, variable)
+        }
+        Stmt::Switch { value, arms, .. } => expression(value, variable) || arms.iter().any(|arm| based(arm, variable)),
+        Stmt::Break | Stmt::Continue | Stmt::Goto(_) | Stmt::Label(_) => false,
+    })
+}
