@@ -916,6 +916,39 @@ impl Parser {
                         }
                         continue;
                     }
+                    // `static u32 cmd[4];` — zero storage, as at function scope.
+                    if let (Some(length), Token::Semicolon | Token::Comma) = (explicit, self.peek()) {
+                        let element_bytes = match declared_type {
+                            Type::Struct { size, .. } => size as u32,
+                            Type::Pointer(_) | Type::StructPointer { .. } => 4,
+                            other => other.width() as u32 / 8,
+                        };
+                        self.variable_types.insert(name.clone(), declared_type);
+                        if let Some(tag) = &struct_tag {
+                            self.variable_structs.insert(name.clone(), tag.clone());
+                        }
+                        self.variable_array_bytes.insert(name.clone(), element_bytes * length as u32);
+                        block_locals.push(LocalDeclaration {
+                            declared_type,
+                            name: name.clone(),
+                            initializer: None,
+                            is_volatile,
+                            array_length: Some(length),
+                            is_static: true,
+                            data_bytes: None,
+                            data_relocations: Vec::new(),
+                            is_const: self.last_type_was_const,
+                            attribute_alignment,
+                            row_bytes: (inner_elements > 1)
+                                .then(|| inner_elements.saturating_mul(element_bytes as u16)),
+                        });
+                        local_names.insert(name);
+                        if !self.eat_keyword(Token::Comma) {
+                            self.expect(Token::Semicolon)?;
+                            return Ok(());
+                        }
+                        continue;
+                    }
                     // `static double pow_10[8] = { 1e1, … };` — parse the
                     // image exactly like a function-level static array.
                     self.expect(Token::Equals)?;

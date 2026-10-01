@@ -5249,6 +5249,38 @@ impl Parser {
             // `f32 proj[12];` — reuse that machinery (frame codegen still defers it;
             // task #19). Extra brackets/stars/initializers are unmeasured.
             if let Some((element, total, _inner)) = self.last_array_typedef.take() {
+                // A row-pointer typedef local (`MtxPtr m;`): an element pointer
+                // whose subscripts stride by rows, as `T (*m)[N]`.
+                if !is_static && total == 0 && _inner > 0 {
+                    let stride = u16::try_from(u32::from(_inner) * u32::from(element.width()) / 8)
+                        .map_err(|_| Diagnostic::error("a row pointer stride is out of range"))?;
+                    let pointer_type = Type::Pointer(pointee_of(element)?);
+                    loop {
+                        let name = self.parse_identifier()?;
+                        self.decayed_row_pointers.insert(name.clone(), (element, stride));
+                        let initializer = if self.eat_keyword(Token::Equals) { Some(self.expression()?) } else { None };
+                        locals.push(LocalDeclaration {
+                            declared_type: pointer_type,
+                            name: name.clone(),
+                            initializer,
+                            is_volatile,
+                            array_length: None,
+                            is_static: false,
+                            data_bytes: None,
+                            data_relocations: Vec::new(),
+                            is_const: false,
+                            attribute_alignment: None,
+                            row_bytes: None,
+                        });
+                        local_lines.push(Some(declaration_line));
+                        self.variable_types.insert(name, pointer_type);
+                        if !self.eat_keyword(Token::Comma) {
+                            break;
+                        }
+                    }
+                    self.expect(Token::Semicolon)?;
+                    continue;
+                }
                 if is_static || total == 0 {
                     return Err(Diagnostic::error("a static or row-pointer array-typedef local is not supported yet (roadmap)"));
                 }
@@ -6402,6 +6434,8 @@ impl Parser {
                 ) || self.typedefs.contains_key(word)
                     || self.struct_typedefs.contains_key(word)
                     || self.struct_pointer_typedefs.contains_key(word)
+                    // (A row-pointer typedef, `typedef f32 (*MtxPtr)[4];`, is a pointer.)
+                    || self.row_pointer_typedefs.contains_key(word)
                     || (self.cplusplus
                         && (matches!(word.as_str(), "bool" | "wchar_t" | "class" | "union")
                             || self.enum_types.contains_key(word)
