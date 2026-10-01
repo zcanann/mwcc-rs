@@ -898,6 +898,33 @@ impl Builder<'_, '_> {
                     UnaryOperator::LogicalNot => Expr::unary(UnaryOp::LogicalNot, operand, Type::Int),
                 }
             }
+            // -O0: the value is a register variable assigned on each path.
+            Expression::Conditional { condition, when_true, when_false, .. }
+                if self.unit.unoptimized && self.guarded == 0 && std::env::var_os("MWCC_IRO_O0_SELECT_VALUE").is_none() =>
+            {
+                let condition = promoted(self.expression(condition)?);
+                let outer = std::mem::take(&mut self.pending);
+                let posts = self.post.len();
+                let when_true = promoted(self.expression(when_true)?);
+                let mut then_body = std::mem::take(&mut self.pending);
+                let when_false = promoted(self.expression(when_false)?);
+                let mut else_body = std::mem::take(&mut self.pending);
+                self.pending = outer;
+                if self.post.len() != posts {
+                    return Err(unsupported("post-increment in a conditional operand"));
+                }
+                let ty = if is_float(when_true.ty) || is_float(when_false.ty) {
+                    if when_true.ty == Type::Double || when_false.ty == Type::Double { Type::Double } else { Type::Float }
+                } else {
+                    arithmetic_type(when_true.ty, when_false.ty)
+                };
+                let id = self.variables.len() + self.temporaries.len();
+                self.temporaries.push(Variable { name: format!("@c{id}"), ty, kind: VariableKind::Local, frame: None });
+                then_body.push(Stmt::Assign { variable: id, value: converted(when_true, ty) });
+                else_body.push(Stmt::Assign { variable: id, value: converted(when_false, ty) });
+                self.pending.push(Stmt::If { condition, then_body, else_body });
+                Expr { kind: ExprKind::Var(id), ty }
+            }
             Expression::Conditional { condition, when_true, when_false, .. } => {
                 let condition = promoted(self.expression(condition)?);
                 let when_true = promoted(self.guarded_expression(when_true)?);

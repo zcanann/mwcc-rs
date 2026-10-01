@@ -1561,6 +1561,30 @@ impl Lowerer<'_, '_> {
                 }
                 Ok(result)
             }
+            // A conditional value: each arm computed into one register on
+            // its own path.
+            ExprKind::Select { condition, when_true, when_false }
+                if is_float(ty) == is_float(when_true.ty)
+                    && is_float(ty) == is_float(when_false.ty)
+                    && !toggle("MWCC_PCODE_NO_BRANCH_SELECT") =>
+            {
+                let d = self.result_for(ty, target);
+                let otherwise = self.new_label();
+                let join = self.new_label();
+                self.branch_on(condition, false, otherwise)?;
+                let (value, _) = self.expression_with_target(when_true, Some(d))?;
+                if value != d {
+                    self.copy(ty, d, value);
+                }
+                self.jump(join);
+                self.place_label(otherwise);
+                let (value, _) = self.expression_with_target(when_false, Some(d))?;
+                if value != d {
+                    self.copy(ty, d, value);
+                }
+                self.place_label(join);
+                Ok((d, ty))
+            }
             ExprKind::Select { .. } => Err(unsupported("conditional expression")),
             ExprKind::Idiom(idiom) => self.idiom(idiom, target),
             ExprKind::Unary(UnaryOp::LogicalNot, operand) => {
