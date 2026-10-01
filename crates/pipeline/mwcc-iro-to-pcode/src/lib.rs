@@ -2608,6 +2608,20 @@ impl Lowerer<'_, '_> {
         let unsigned = is_unsigned(ty);
         let divisor = right.as_int().map(|value| value as i32).filter(|&value| value != 0);
         let Some(divisor) = divisor else {
+            return self.divide_registers(op, left, right, ty, target);
+        };
+        let magnitude = divisor.unsigned_abs();
+        let power_of_two = if unsigned { (divisor as u32).is_power_of_two() } else { magnitude.is_power_of_two() && magnitude < 0x8000_0000 };
+        if !power_of_two && !self.unit.magic_division {
+            return self.divide_registers(op, left, right, ty, target);
+        }
+        self.constant_division(op, left, divisor, ty, target)
+    }
+
+    /// `divw`/`divwu` (and `mullw; subf` for a remainder).
+    fn divide_registers(&mut self, op: BinaryOp, left: &Expr, right: &Expr, ty: Type, target: Option<u32>) -> Compilation<(u32, Type)> {
+        let unsigned = is_unsigned(ty);
+        {
             let (x, _) = self.expression(left)?;
             let (y, _) = self.expression(right)?;
             let quotient = if op == BinaryOp::Divide { self.result(target) } else { self.temporary() };
@@ -2623,8 +2637,14 @@ impl Lowerer<'_, '_> {
             self.emit_plain(Instruction::MultiplyLow { d: product, a: quotient, b: y });
             let d = self.result(target);
             self.emit_plain(Instruction::SubtractFrom { d, a: product, b: x });
-            return Ok((d, ty));
-        };
+            Ok((d, ty))
+        }
+    }
+
+    /// Division by a nonzero constant: shifts for a power of two, else the
+    /// magic-number multiply.
+    fn constant_division(&mut self, op: BinaryOp, left: &Expr, divisor: i32, ty: Type, target: Option<u32>) -> Compilation<(u32, Type)> {
+        let unsigned = is_unsigned(ty);
         let magnitude = divisor.unsigned_abs();
         if unsigned && (divisor as u32).is_power_of_two() {
             let k = (divisor as u32).trailing_zeros() as u8;
