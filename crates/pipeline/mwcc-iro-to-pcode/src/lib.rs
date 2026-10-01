@@ -1583,7 +1583,9 @@ impl Lowerer<'_, '_> {
                     self.emit(li);
                     d
                 } else {
-                    self.absolute_address_into(name, target)
+                    // (GC/3.x keeps a memory base's halves in one register.)
+                    let tied = self.unit.tied_halves && std::ptr::eq(expression, self.memory_base as *const Expr);
+                    self.absolute_address_into(name, target, tied)
                 };
                 if shared {
                     self.common.insert(key, (d, ty, Vec::new()));
@@ -1909,7 +1911,9 @@ impl Lowerer<'_, '_> {
         let high = ((value - i32::from(low)) >> 16) as i16;
         self.emit_plain(Instruction::AddImmediateShifted { d: register, a: 0, immediate: high });
         if low != 0 {
-            self.emit_based(Instruction::AddImmediate { d: register, a: register, immediate: low }, register);
+            let mut addi = PInstr::new(Instruction::AddImmediate { d: register, a: register, immediate: low });
+            addi.not_r0.push(register);
+            self.emit(addi);
         }
         Ok(())
     }
@@ -1984,18 +1988,19 @@ impl Lowerer<'_, '_> {
 
     /// `lis; addi` forming an absolute symbol's address.
     fn absolute_address(&mut self, name: &str) -> u32 {
-        self.absolute_address_into(name, None)
+        self.absolute_address_into(name, None, false)
     }
 
-    fn absolute_address_into(&mut self, name: &str, target: Option<u32>) -> u32 {
+    fn absolute_address_into(&mut self, name: &str, target: Option<u32>, tied: bool) -> u32 {
         let external = || RelocationTarget::External(name.to_owned());
-        let high = self.temporary();
+        let high = if tied { self.result(target) } else { self.temporary() };
         let mut lis = PInstr::new(Instruction::AddImmediateShifted { d: high, a: 0, immediate: 0 });
         lis.relocation = Some(AttachedRelocation { kind: RelocationKind::Addr16Ha, target: external() });
         self.emit(lis);
-        let d = self.result(target);
+        let d = if tied { high } else { self.result(target) };
         let mut addi = PInstr::new(Instruction::AddImmediate { d, a: high, immediate: 0 });
         addi.relocation = Some(AttachedRelocation { kind: RelocationKind::Addr16Lo, target: external() });
+        addi.flags.in_place = tied;
         addi.not_r0.push(high);
         self.emit(addi);
         d

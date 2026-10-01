@@ -69,6 +69,9 @@ pub struct Unit<'a> {
     /// GC/3.x computes `x == K`'s difference as `x - K` (`addi`), earlier
     /// builds as `K - x` (`subfic`).
     pub equality_subtracts_constant: bool,
+    /// GC/3.x keeps the `lis; addi` of an absolute address used as a memory
+    /// base in one register.
+    pub tied_halves: bool,
     /// GC/3.x and Wii test a promoted unsigned narrow value signed (`cmpwi`)
     /// unless it needed extending; earlier builds test it logically.
     pub signed_promoted_truth: bool,
