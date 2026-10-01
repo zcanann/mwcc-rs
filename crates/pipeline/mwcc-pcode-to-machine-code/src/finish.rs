@@ -407,8 +407,11 @@ fn propagate_physical_copies(pcode: &mut PCodeFunction) -> bool {
         for block in &pcode.blocks {
             let mut active: Vec<(u32, u32)> = Vec::new();
             for instruction in &block.instructions {
+                let written = instruction.defs(class);
                 for used in instruction.uses(class) {
-                    if active.iter().any(|&(v, _)| v == used) {
+                    // (A use by an in-place update of `v` itself cannot
+                    // read rN.)
+                    if active.iter().any(|&(v, _)| v == used) && !written.contains(&used) {
                         *reachable_uses.entry(used).or_default() += 1;
                     }
                 }
@@ -475,10 +478,12 @@ fn propagate_physical_copies(pcode: &mut PCodeFunction) -> bool {
             for instruction in &mut block.instructions {
                 // Partially propagated copies leave other copies reading `v`.
                 let skip_partial = instruction.copy(class).is_some();
+                let written = instruction.defs(class);
                 let active_here: Vec<(u32, u32)> = active
                     .iter()
                     .copied()
                     .filter(|copy| !(skip_partial && partial.contains(copy)))
+                    .filter(|(v, _)| !written.contains(v))
                     .collect();
                 let active = &mut active;
                 if !active_here.is_empty() {
@@ -549,6 +554,10 @@ fn forward_physical_reads(pcode: &mut PCodeFunction) {
             let mut active: Vec<(u32, u32)> = Vec::new();
             for (index, instruction) in block.instructions.iter_mut().enumerate() {
                 if !active.is_empty() && instruction.copy(class).is_none() {
+                    // (Not a register the instruction also writes: an
+                    // in-place update such as `rlwimi`.)
+                    let written = instruction.defs(class);
+                    let active: Vec<(u32, u32)> = active.iter().copied().filter(|(v, _)| !written.contains(v)).collect();
                     let active = &active;
                     mwcc_vreg::for_each_register(&mut instruction.instruction, |role, operand_class, field| {
                         if role == RegisterRole::Use && operand_class == class {
