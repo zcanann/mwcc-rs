@@ -12,6 +12,7 @@ pub fn strength_reduce(function: &mut Function, fold_start: bool, cursors: bool)
     let first_cursor = function.variables.len();
     let mut body = std::mem::take(&mut function.body);
     CURSORS.with(|flag| flag.set(cursors));
+    KNOWN.with(|known| known.borrow_mut().clear());
     statements(&mut body, function, fold_start);
     if std::env::var_os("MWCC_IRO_NO_CURSOR_COPIES").is_none() {
         let whole = body.clone();
@@ -126,18 +127,30 @@ thread_local! {
 }
 
 fn statements(body: &mut Vec<Stmt>, function: &mut Function, fold_start: bool) {
+    // Constants known here: inherited, then those this list assigns.
+    let mut known: Vec<(VarId, i64)> = KNOWN.with(|known| known.borrow().clone());
     let mut index = 0;
     while index < body.len() {
         // Inner loops first.
+        let inherit = |known: &Vec<(VarId, i64)>| KNOWN.with(|cell| *cell.borrow_mut() = known.clone());
         match &mut body[index] {
             Stmt::If { then_body, else_body, .. } => {
+                inherit(&known);
                 statements(then_body, function, fold_start);
+                inherit(&known);
                 statements(else_body, function, fold_start);
             }
-            Stmt::Loop { body: inner, .. } | Stmt::Counted { body: inner, .. } => statements(inner, function, fold_start),
-            Stmt::Switch { arms, .. } => arms.iter_mut().for_each(|arm| statements(arm, function, fold_start)),
+            Stmt::Loop { body: inner, .. } | Stmt::Counted { body: inner, .. } => {
+                inherit(&Vec::new());
+                statements(inner, function, fold_start)
+            }
+            Stmt::Switch { arms, .. } => {
+                inherit(&Vec::new());
+                arms.iter_mut().for_each(|arm| statements(arm, function, fold_start))
+            }
             _ => {}
         }
+        CONTEXT.with(|context| *context.borrow_mut() = known.clone());
         let initial = match index.checked_sub(1).map(|previous| &body[previous]) {
             Some(Stmt::Assign { variable, value }) => value.as_int().map(|value| (*variable, value)),
             _ => None,
@@ -190,6 +203,40 @@ fn statements(body: &mut Vec<Stmt>, function: &mut Function, fold_start: bool) {
             body.insert(before_start + offset, constant);
         }
         index += count + 1;
+        // (What the statements just passed assign.)
+        for statement in &body[index - count - 1..index] {
+            match statement {
+                Stmt::Assign { variable, value } => {
+                    known.retain(|(known, _)| known != variable);
+                    if let Some(value) = value.as_int() {
+                        known.push((*variable, value));
+                    }
+                }
+                other => {
+                    let mut assigned = Vec::new();
+                    collect_assigned(std::slice::from_ref(other), &mut assigned);
+                    known.retain(|(known, _)| !assigned.contains(known));
+                }
+            }
+        }
+    }
+}
+
+thread_local! {
+    /// Constants known on entry to the statement list being walked.
+    static KNOWN: std::cell::RefCell<Vec<(VarId, i64)>> = const { std::cell::RefCell::new(Vec::new()) };
+    /// Constants known before the loop being reduced.
+    static CONTEXT: std::cell::RefCell<Vec<(VarId, i64)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// The induction's known start: the statement before the loop (`true`), or
+/// a constant known from enclosing code.
+fn known_start(initial: Option<(VarId, i64)>, induction: VarId) -> Option<(i64, bool)> {
+    match initial {
+        Some((variable, value)) if variable == induction => Some((value, true)),
+        _ => CONTEXT.with(|context| {
+            context.borrow().iter().find(|(variable, _)| *variable == induction).map(|&(_, value)| (value, false))
+        }),
     }
 }
 
@@ -271,8 +318,9 @@ fn reduce_loop(
             // (GC/1.0-1.2.5n fold it only while the loop still reads the
             // induction variable's value.)
             let fold = fold_start || uses(body, induction) > usize::from(!in_step);
-            let start = match initial {
-                Some((variable, value)) if variable == induction && fold => {
+            let start = match known_start(initial, induction) {
+                Some((value, adjacent)) if fold => {
+                    folded &= adjacent;
                     let offset = value * cursor.stride;
                     if offset == 0 {
                         cursor.base.clone()
@@ -789,8 +837,8 @@ fn reduce_loop_offsets(
             }
             let variable = function.add_temporary(mwcc_iro::Type::Int);
             function.variables[variable].name = format!("@cursor{variable}");
-            let start = match initial {
-                Some((v, value)) if v == induction && fold_start => Expr::int(value * cursor.stride),
+            let start = match known_start(initial, induction) {
+                Some((value, _)) if fold_start => Expr::int(value * cursor.stride),
                 _ => Expr::binary(
                     BinaryOp::Multiply,
                     Expr { kind: ExprKind::Var(induction), ty: function.variables[induction].ty },
@@ -853,4 +901,39 @@ fn offset_form(base: &Expr, stride: i64) -> Option<(Expr, Expr)> {
             (base.clone(), Expr { kind: ExprKind::Var(*offset), ty: mwcc_iro::Type::Int })
         })
     })
+}
+
+/// An induction update in a count-register loop that nothing after reads
+/// (not the loop, not the code after it) goes.
+pub fn remove_dead_counted_updates(function: &mut Function) {
+    fn walk(body: &mut [Stmt], read_later: &dyn Fn(VarId) -> bool, in_loop: bool) {
+        for index in 0..body.len() {
+            let (before, after) = body.split_at_mut(index + 1);
+            let statement = &mut before[index];
+            let later = |variable: VarId| uses(after, variable) > 0 || read_later(variable);
+            match statement {
+                Stmt::If { then_body, else_body, .. } => {
+                    walk(then_body, &later, in_loop);
+                    walk(else_body, &later, in_loop);
+                }
+                Stmt::Counted { body: inner, .. } if !in_loop => {
+                    let dead: Vec<VarId> = inner
+                        .iter()
+                        .filter_map(|statement| match statement {
+                            Stmt::Assign { variable, value } if value.mentions(*variable) => Some(*variable),
+                            _ => None,
+                        })
+                        .filter(|&variable| {
+                            uses(inner, variable) == 1 && count_assignments(inner, variable) == 1 && !later(variable)
+                        })
+                        .collect();
+                    inner.retain(|statement| !matches!(statement, Stmt::Assign { variable, .. } if dead.contains(variable)));
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut body = std::mem::take(&mut function.body);
+    walk(&mut body, &|_| false, false);
+    function.body = body;
 }

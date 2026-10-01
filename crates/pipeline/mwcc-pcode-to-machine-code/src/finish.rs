@@ -362,11 +362,15 @@ pub fn finish(
         );
 
     // Drop jumps to the next block and return inline from a frameless function.
+    // (A target reaches the exit through empty blocks.)
+    let exits = |pcode: &PCodeFunction, target: usize| {
+        target <= exit_block && (target..exit_block).all(|b| pcode.blocks[b].instructions.is_empty())
+    };
     for block in 0..pcode.blocks.len() {
         let last = pcode.blocks[block].instructions.last().map(|instruction| instruction.instruction.clone());
         if let Some(Instruction::BranchConditionalForward { options, condition_bit, target }) = last {
             // A conditional branch to a bare `blr` is a conditional return.
-            if frameless_exit && target == exit_block {
+            if frameless_exit && options != 16 && exits(&pcode, target) && !toggle("MWCC_PCODE_EXIT_ONLY_DIRECT") {
                 pcode.blocks[block].instructions.last_mut().expect("branch").instruction =
                     Instruction::BranchConditionalToLinkRegister { options, condition_bit };
             }

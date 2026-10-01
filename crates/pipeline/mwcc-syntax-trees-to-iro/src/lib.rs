@@ -48,7 +48,6 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     if unit.strength_reduction && !unit.branch_preserving && std::env::var_os("MWCC_IRO_NO_PARTIAL_UNROLL").is_none() {
         unroll::unroll_partially(&mut built.function, unit.unrolling);
         passes::for_each_expression(&mut built.function.body, &mut |expression| passes::fold(expression));
-        passes::for_each_expression(&mut built.function.body, &mut |expression| passes::algebra(expression));
         passes::displacements(&mut built.function.body);
     }
     if unit.strength_reduction && std::env::var_os("MWCC_IRO_NO_CONSTANT_PROPAGATION").is_none() {
@@ -57,6 +56,7 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     if unit.strength_reduction && std::env::var_os("MWCC_IRO_NO_STRENGTH_REDUCTION").is_none() {
         strength::strength_reduce(&mut built.function, !unit.branch_preserving, unit.unrolling);
         strength::remove_dead_inductions(&mut built.function);
+        strength::remove_dead_counted_updates(&mut built.function);
     }
     if unit.branch_preserving && std::env::var_os("MWCC_IRO_NO_UNINDEXED").is_none() {
         let absolute = |name: &str| unit.globals.get(name).is_some_and(|global| !global.small_data);

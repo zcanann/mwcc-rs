@@ -10,7 +10,7 @@ use crate::passes::substitute;
 pub fn unroll_partially(function: &mut Function, unrolling: bool) {
     let mut body = std::mem::take(&mut function.body);
     UNROLLING.with(|flag| flag.set(unrolling));
-    statements(&mut body);
+    statements(&mut body, function);
     function.body = body;
 }
 
@@ -18,22 +18,22 @@ thread_local! {
     static UNROLLING: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
-fn statements(body: &mut Vec<Stmt>) {
+fn statements(body: &mut Vec<Stmt>, function: &mut Function) {
     for statement in body.iter_mut() {
         match statement {
             Stmt::If { then_body, else_body, .. } => {
-                statements(then_body);
-                statements(else_body);
+                statements(then_body, function);
+                statements(else_body, function);
             }
-            Stmt::Loop { body, .. } => statements(body),
-            Stmt::Switch { arms, .. } => arms.iter_mut().for_each(statements),
+            Stmt::Loop { body, .. } => statements(body, function),
+            Stmt::Switch { arms, .. } => arms.iter_mut().for_each(|arm| statements(arm, function)),
             _ => {}
         }
     }
     let mut index = 1;
     while index < body.len() {
         let rest = &body[index + 1..];
-        let Some(replacement) = unrolled(&body[index - 1], &body[index], &|variable| reads(rest, variable) > 0) else {
+        let Some(replacement) = unrolled(&body[index - 1], &body[index], &|variable| reads(rest, variable) > 0, function) else {
             index += 1;
             continue;
         };
@@ -44,7 +44,12 @@ fn statements(body: &mut Vec<Stmt>) {
 }
 
 /// The statements replacing `statement`, a loop started by `before`.
-fn unrolled(before: &Stmt, statement: &Stmt, live_after: &dyn Fn(VarId) -> bool) -> Option<Vec<Stmt>> {
+fn unrolled(
+    before: &Stmt,
+    statement: &Stmt,
+    live_after: &dyn Fn(VarId) -> bool,
+    function: &mut Function,
+) -> Option<Vec<Stmt>> {
     let Stmt::Assign { variable, value: start } = before else { return None };
     let start = start.as_int()?;
     let Stmt::Loop { test_first: true, condition: Some(condition), body, step, effects } = statement else { return None };
@@ -63,50 +68,26 @@ fn unrolled(before: &Stmt, statement: &Stmt, live_after: &dyn Fn(VarId) -> bool)
         _ => return None,
     };
     let ExprKind::Binary(op, left, right) = &condition.kind else { return None };
-    // (Without unrolling, a loop up to an invariant variable counts in CTR
-    // too: `mtctr n - i0`, skipped unless `n > i0`.)
-    if let (Some(tested), Some(bound), 1, BinaryOp::Less, false) =
-        (left.as_var(), right.as_var(), direction, op, UNROLLING.with(|flag| flag.get()))
-    {
-        let plain = |statement: &Stmt| {
-            !format!("{statement:?}").contains("Call {")
-                && match statement {
-                    Stmt::Assign { variable: assigned, .. } => *assigned != variable && *assigned != bound,
-                    Stmt::Store { .. } => true,
-                    _ => false,
-                }
-        };
-        if tested != variable || body.is_empty() || !body.iter().all(plain) {
-            return None;
-        }
-        let ty = right.ty;
-        let count = if start == 0 {
-            (**right).clone()
-        } else {
-            Expr::binary(BinaryOp::Subtract, (**right).clone(), Expr::int(start), ty)
-        };
-        let guard = Expr { kind: ExprKind::Binary(BinaryOp::Greater, right.clone(), Box::new(Expr::int(start))), ty: condition.ty };
-        let mut counted = body.clone();
-        counted.push(step[0].clone());
-        return Some(vec![Stmt::Counted { count, guard: Some(guard), body: counted }]);
-    }
-    let (Some(tested), Some(end)) = (left.as_var(), right.as_int()) else { return None };
-    if tested != variable {
+    if left.as_var() != Some(variable) {
         return None;
     }
-    let trips = match (direction, op) {
-        (1, BinaryOp::Less) => end - start,
-        (-1, BinaryOp::NotEqual | BinaryOp::Greater) if end == 0 => start,
+    // The bound: a constant, or (counting up) an invariant variable.
+    let bound = right.as_var();
+    let (end, trips) = match (right.as_int(), bound, direction, op) {
+        (Some(end), _, 1, BinaryOp::Less) => (end, end - start),
+        (Some(0), _, -1, BinaryOp::NotEqual | BinaryOp::Greater) => (0, start),
+        (None, Some(_), 1, BinaryOp::Less) => (0, i64::MAX),
         _ => return None,
     };
     if trips < 1 {
         return None;
     }
-    // A straight-line, call-free body that leaves the induction alone.
+    // A straight-line, call-free body that leaves the induction (and the
+    // bound) alone.
     let plain = |statement: &Stmt| {
         !format!("{statement:?}").contains("Call {")
             && match statement {
-                Stmt::Assign { variable: assigned, .. } => *assigned != variable,
+                Stmt::Assign { variable: assigned, .. } => *assigned != variable && Some(*assigned) != bound,
                 Stmt::Store { .. } => true,
                 _ => false,
             }
@@ -141,37 +122,6 @@ fn unrolled(before: &Stmt, statement: &Stmt, live_after: &dyn Fn(VarId) -> bool)
         })
         .sum::<i64>()
         .max(1);
-    let limit = 48 / cost;
-    if limit < 2 {
-        return None;
-    }
-    let smooth = {
-        let mut remaining = trips;
-        for prime in [2, 3, 5, 7] {
-            while remaining % prime == 0 {
-                remaining /= prime;
-            }
-        }
-        remaining == 1
-    };
-    let factor = if !UNROLLING.with(|flag| flag.get()) {
-        1
-    } else if direction < 0 {
-        // Counting down: completely to 10, else by the largest divisor
-        // that is at most 10.
-        if cost > 4 {
-            return None;
-        }
-        if trips <= 10 { trips } else { (1..=10).rev().find(|f| trips % f == 0).unwrap_or(1) }
-    } else if smooth && trips <= limit {
-        trips
-    } else if trips <= limit {
-        trips - 1
-    } else {
-        limit.min(trips / 2)
-    };
-    let passes = trips / factor;
-    let left_over = trips % factor;
     let ty = left.ty;
     let at = |k: i64| -> Expr {
         if k == 0 {
@@ -210,6 +160,87 @@ fn unrolled(before: &Stmt, statement: &Stmt, live_after: &dyn Fn(VarId) -> bool)
         variable: v,
         value: Expr::binary(BinaryOp::Add, Expr { kind: ExprKind::Var(v), ty: vty }, Expr::int(by), vty),
     };
+    if let Some(bound) = bound {
+        let n = Expr { kind: ExprKind::Var(bound), ty: right.ty };
+        let entered = Expr { kind: ExprKind::Binary(BinaryOp::Greater, Box::new(n.clone()), Box::new(Expr::int(start))), ty: condition.ty };
+        let mut rest = body.clone();
+        rest.push(advance(variable, 1, ty));
+        let remainder = |guard: Expr| Stmt::Counted {
+            count: Expr::binary(BinaryOp::Subtract, n.clone(), Expr { kind: ExprKind::Var(variable), ty }, ty),
+            guard: Some(guard),
+            body: rest.clone(),
+        };
+        if !UNROLLING.with(|flag| flag.get()) {
+            // `mtctr n - i0`, skipped unless `n > i0`.
+            let count = if start == 0 { n.clone() } else { Expr::binary(BinaryOp::Subtract, n.clone(), Expr::int(start), ty) };
+            return Some(vec![Stmt::Counted { count, guard: Some(entered), body: rest }]);
+        }
+        // Eight copies per pass while `n - i0 > 8`, the rest one at a time.
+        let past = function.add_temporary(right.ty);
+        let past_expr = Expr { kind: ExprKind::Var(past), ty: right.ty };
+        let span = if start == 0 { n.clone() } else { Expr::binary(BinaryOp::Subtract, n.clone(), Expr::int(start), right.ty) };
+        let mut main = Vec::new();
+        for k in 0..8 {
+            main.extend(copy(k, false));
+        }
+        for &(_, v, c) in &inductions {
+            main.push(advance(v, 8 * c, induction_type(body, v)));
+        }
+        main.push(advance(variable, 8, ty));
+        let unsigned = mwcc_iro::Type::UnsignedInt;
+        let passes = Expr::binary(
+            BinaryOp::ShiftRight,
+            Expr::binary(BinaryOp::Add, Expr { ty: unsigned, ..past_expr.clone() }, Expr::int(7 - start), unsigned),
+            Expr::int(3),
+            unsigned,
+        );
+        let unrolled_loop = Stmt::Counted {
+            count: passes,
+            guard: Some(Expr { kind: ExprKind::Binary(BinaryOp::Greater, Box::new(past_expr.clone()), Box::new(Expr::int(start))), ty: condition.ty }),
+            body: main,
+        };
+        let long = Expr { kind: ExprKind::Binary(BinaryOp::Greater, Box::new(span), Box::new(Expr::int(8))), ty: condition.ty };
+        return Some(vec![Stmt::If {
+            condition: entered,
+            then_body: vec![
+                Stmt::Assign { variable: past, value: Expr::binary(BinaryOp::Subtract, n.clone(), Expr::int(8), right.ty) },
+                Stmt::If { condition: long, then_body: vec![unrolled_loop], else_body: Vec::new() },
+                remainder(condition.clone()),
+            ],
+            else_body: Vec::new(),
+        }]);
+    }
+    let limit = 48 / cost;
+    if limit < 2 {
+        return None;
+    }
+    let smooth = {
+        let mut remaining = trips;
+        for prime in [2, 3, 5, 7] {
+            while remaining % prime == 0 {
+                remaining /= prime;
+            }
+        }
+        remaining == 1
+    };
+    let factor = if !UNROLLING.with(|flag| flag.get()) {
+        1
+    } else if direction < 0 {
+        // Counting down: completely to 10, else by the largest divisor
+        // that is at most 10.
+        if cost > 4 {
+            return None;
+        }
+        if trips <= 10 { trips } else { (1..=10).rev().find(|f| trips % f == 0).unwrap_or(1) }
+    } else if smooth && trips <= limit {
+        trips
+    } else if trips <= limit {
+        trips - 1
+    } else {
+        limit.min(trips / 2)
+    };
+    let passes = trips / factor;
+    let left_over = trips % factor;
     let keep_induction = left_over > 0 || live_after(variable);
     let mut out = Vec::new();
     let mut main = Vec::new();
