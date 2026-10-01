@@ -1257,14 +1257,20 @@ impl Builder<'_, '_> {
                 }
             }
             let expression = !is_float(ty)
-                && value.ty == ty
+                && !is_float(value.ty)
                 && pure(&value, &self.variables)
                 && std::env::var_os("MWCC_IRO_NO_INLINE_EXPRESSIONS").is_none();
             if (constant || variable || expression)
                 && !body_assigns(&inlined.body, base + index)
                 && std::env::var_os("MWCC_IRO_NO_INLINE_CONSTANTS").is_none()
             {
-                passes::substitute(&mut inlined.body, base + index, &Expr { kind: value.kind.clone(), ty });
+                // (Converted to the parameter's type where it differs.)
+                let substituted = if expression && !constant && value.ty != ty {
+                    Expr { kind: ExprKind::Convert(Box::new(value.clone())), ty }
+                } else {
+                    Expr { kind: value.kind.clone(), ty }
+                };
+                passes::substitute(&mut inlined.body, base + index, &substituted);
                 continue;
             }
             self.pending.push(Stmt::Assign { variable: base + index, value });
