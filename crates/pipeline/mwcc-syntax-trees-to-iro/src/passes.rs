@@ -22,7 +22,10 @@ use mwcc_iro::{Place, Variable, VariableKind,
 /// its frame slot; reads use the register.
 pub fn scalarize(function: &mut Function, keeps_struct_stores: bool) {
     let candidates: Vec<VarId> = (0..function.variables.len())
-        .filter(|&id| function.variables[id].frame.is_some() && function.variables[id].kind == VariableKind::Local)
+        .filter(|&id| {
+            let variable = &function.variables[id];
+            variable.frame.is_some() && variable.kind == VariableKind::Local && !variable.volatile
+        })
         .collect();
     for id in candidates {
         let mut fields: Vec<(i32, Type)> = Vec::new();
@@ -51,6 +54,7 @@ pub fn scalarize(function: &mut Function, keeps_struct_stores: bool) {
                 frame: None,
                 initialized: false,
             raw: false,
+            volatile: false,
             });
         }
         let keep = keeps_struct_stores && matches!(function.variables[id].ty, Type::Struct { .. });

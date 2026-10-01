@@ -138,6 +138,9 @@ pub struct Variable {
     pub initialized: bool,
     /// A narrow copy held as loaded (unextended); each read extends it.
     pub raw: bool,
+    /// A `volatile` local: it stays in its frame slot, every access a memory
+    /// operation.
+    pub volatile: bool,
 }
 
 /// A function at the IRO level.
@@ -159,7 +162,7 @@ pub struct Function {
 impl Function {
     pub fn add_temporary(&mut self, ty: Type) -> VarId {
         let id = self.variables.len();
-        self.variables.push(Variable { name: format!("@t{id}"), ty, kind: VariableKind::Temporary, frame: None, initialized: false, raw: false });
+        self.variables.push(Variable { name: format!("@t{id}"), ty, kind: VariableKind::Temporary, frame: None, initialized: false, raw: false, volatile: false });
         id
     }
 }
