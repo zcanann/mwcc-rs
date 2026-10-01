@@ -92,6 +92,9 @@ pub struct Unit<'a> {
     pub reassociates_sums: bool,
     /// Loop strength reduction (`-O3`/`-O4`).
     pub strength_reduction: bool,
+    /// GC/1.3-2.x subtract a word converted to signed `long long` with a
+    /// zero high word.
+    pub zero_wide_subtrahends: bool,
     /// Loop unrolling and pointer cursors (`-O3,p`/`-O4,p`: an explicit
     /// speed goal).
     pub unrolling: bool,
@@ -424,6 +427,9 @@ pub fn is_general_word(ty: Type) -> bool {
 }
 
 pub fn is_unsigned(ty: Type) -> bool {
+    if ty == Type::UnsignedLongLong {
+        return true;
+    }
     matches!(
         ty,
         Type::UnsignedInt | Type::UnsignedChar | Type::UnsignedShort | Type::Pointer(_) | Type::StructPointer { .. }
@@ -438,6 +444,11 @@ pub fn is_float(ty: Type) -> bool {
 /// A scalar held in one general or floating-point register.
 pub fn is_value_type(ty: Type) -> bool {
     is_general_word(ty) || is_float(ty)
+}
+
+/// A 64-bit integer (`long long`), held in a register pair.
+pub fn is_wide(ty: Type) -> bool {
+    matches!(ty, Type::LongLong | Type::UnsignedLongLong)
 }
 
 pub fn is_narrow(ty: Type) -> bool {
@@ -513,7 +524,7 @@ pub fn width(ty: Type) -> u32 {
     match ty {
         Type::Char | Type::UnsignedChar => 1,
         Type::Short | Type::UnsignedShort => 2,
-        Type::Double => 8,
+        Type::Double | Type::LongLong | Type::UnsignedLongLong => 8,
         _ => 4,
     }
 }

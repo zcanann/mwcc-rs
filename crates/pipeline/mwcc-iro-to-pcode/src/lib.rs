@@ -18,6 +18,9 @@ use mwcc_iro::{
 use mwcc_machine_code::{Instruction, RelocationKind, RelocationTarget};
 use mwcc_pcode::{AttachedRelocation, Block, Class, PCodeFunction, PInstr, Register, ReturnRegisters};
 
+mod wide;
+use wide::is_wide;
+
 /// A lowered function.
 #[derive(Debug, Clone)]
 pub struct Lowered {
@@ -47,6 +50,7 @@ pub fn lower(
     let returns = match function.return_type {
         Type::Void => ReturnRegisters::None,
         ty if is_general_word(ty) => ReturnRegisters::General,
+        ty if is_wide(ty) => ReturnRegisters::GeneralPair,
         Type::Float | Type::Double => ReturnRegisters::Float,
         other => return Err(unsupported(format!("return type {other:?}"))),
     };
@@ -55,6 +59,7 @@ pub fn lower(
         function,
         pcode: PCodeFunction { strings: function.strings.clone(), ..PCodeFunction::new(function.name.clone(), returns) },
         registers: vec![None; function.variables.len()],
+        registers_hi: vec![None; function.variables.len()],
         raw_narrow: function.variables.iter().map(|variable| variable.raw && is_narrow(variable.ty)).collect(),
         makes_calls: false,
         target: None,
@@ -110,6 +115,8 @@ struct Lowerer<'a, 'u> {
     pcode: PCodeFunction,
     /// Virtual register of each variable (temporaries on first assignment).
     registers: Vec<Option<u32>>,
+    /// The high words of wide (`long long`) variables.
+    registers_hi: Vec<Option<u32>>,
     /// A narrow parameter held as it arrived: each block re-extends it at
     /// its first use (MWCC does not extend once on entry).
     raw_narrow: Vec<bool>,
@@ -444,8 +451,19 @@ impl Lowerer<'_, '_> {
             return self.lower_unoptimized(calls);
         }
         let (mut general_argument, mut float_argument) = (FIRST_GENERAL_ARGUMENT, 1);
+        let mut wide_incoming = Vec::new();
         for id in 0..function.parameter_count {
             let ty = function.variables[id].ty;
+            if is_wide(ty) {
+                if general_argument % 2 == 0 {
+                    general_argument += 1;
+                }
+                let (high, low) = self.wide_registers(id);
+                wide_incoming.push((high, general_argument));
+                wide_incoming.push((low, general_argument + 1));
+                general_argument += 2;
+                continue;
+            }
             let register = self.fresh(ty);
             self.registers[id] = Some(register);
             self.raw_narrow[id] = is_narrow(ty)
@@ -523,7 +541,8 @@ impl Lowerer<'_, '_> {
                 }
             }
         }
-        if function.return_type != Type::Void && returns_through_variable {
+        // (A wide result goes straight to r3:r4.)
+        if function.return_type != Type::Void && returns_through_variable && !is_wide(function.return_type) {
             self.return_register = Some(self.fresh(function.return_type));
         }
         self.pcode.begin_coalesce_window();
@@ -531,6 +550,11 @@ impl Lowerer<'_, '_> {
         self.pcode.referenced_general_parameters = (0..function.parameter_count)
             .filter(|&id| !is_float(function.variables[id].ty) && references(&function.body, id) > 0)
             .count();
+        for (virtual_register, physical) in wide_incoming {
+            let mut copy = PInstr::new(Instruction::Or { a: virtual_register, s: physical, b: physical });
+            copy.flags.entry_copy = true;
+            self.emit(copy);
+        }
         for (id, virtual_register, physical) in incoming {
             let ty = function.variables[id].ty;
             if is_float(ty) {
@@ -554,6 +578,9 @@ impl Lowerer<'_, '_> {
     /// frame and the others are register variables, like declared locals
     /// (callee-saved, r31 down). Temporaries are colored around them.
     fn lower_unoptimized(&mut self, calls: bool) -> Compilation<()> {
+        if self.function.variables.iter().any(|variable| is_wide(variable.ty)) || is_wide(self.function.return_type) {
+            return Err(unsupported("-O0 wide values"));
+        }
         let function = self.function;
         // (Early -O0 frames are not modeled; frameless leaves are.)
         if self.unit.branch_preserving && (calls || function.variables.iter().any(|variable| variable.frame.is_some())) {
@@ -1182,6 +1209,9 @@ impl Lowerer<'_, '_> {
                 self.jump(next);
                 Ok(())
             }
+            Stmt::Assign { variable, value } if is_wide(self.function.variables[*variable].ty) => {
+                self.assign_wide(*variable, value)
+            }
             Stmt::Assign { variable, value } => self.assign(*variable, value),
             Stmt::Eval(value) => match &value.kind {
                 ExprKind::Call { name, arguments } => self.call(name, arguments, Type::Void, None).map(|_| ()),
@@ -1189,6 +1219,7 @@ impl Lowerer<'_, '_> {
                 ExprKind::Int(_) | ExprKind::Var(_) => Ok(()),
                 _ => Err(unsupported("expression statement")),
             },
+            Stmt::Store { place, ty, value } if is_wide(*ty) => self.store_wide(place, value),
             Stmt::Store { place, ty, value } => self.store(place, *ty, value),
             // `if (c) break;` / `if (c) continue;`: one branch on `c`.
             Stmt::If { condition, then_body, else_body }
@@ -1255,6 +1286,9 @@ impl Lowerer<'_, '_> {
 
     fn return_value(&mut self, value: &Expr) -> Compilation<()> {
         let return_type = self.function.return_type;
+        if is_wide(return_type) {
+            return self.return_wide(value);
+        }
         // A truth value returned narrow is still masked to the type.
         let truth = matches!(&value.kind, ExprKind::Binary(op, ..) if op.is_comparison())
             || matches!(&value.kind, ExprKind::Unary(UnaryOp::LogicalNot, _));
@@ -1581,8 +1615,26 @@ impl Lowerer<'_, '_> {
 
     /// Evaluate a word-sized integer/pointer expression into a register.
     fn expression(&mut self, expression: &Expr) -> Compilation<(u32, Type)> {
-        let target = self.target.take();
         let ty = expression.ty;
+        if is_wide(ty) {
+            self.target = None;
+            return Err(unsupported("a wide value in a word context"));
+        }
+        if let ExprKind::Convert(operand) = &expression.kind {
+            if is_wide(operand.ty) {
+                self.target = None;
+                if is_float(ty) {
+                    return Err(unsupported("a wide value converted to floating point"));
+                }
+                let (_, low) = self.wide(operand)?;
+                // (Narrower, the low word converts like a word.)
+                if is_narrow(ty) {
+                    return self.convert_value(low, Type::UnsignedInt, false, ty, None);
+                }
+                return Ok((low, ty));
+            }
+        }
+        let target = self.target.take();
         match &expression.kind {
             ExprKind::Float(value) => self.float_constant(*value, ty, target),
             ExprKind::StringAddress(index) => {
@@ -4084,6 +4136,8 @@ impl Lowerer<'_, '_> {
             .map(|argument| !toggle("MWCC_PCODE_ARGUMENTS_IN_ORDER") && format!("{:?}", argument.kind).contains("Call {"))
             .collect();
         let mut values = vec![None; arguments.len()];
+        // (A wide argument's register pair.)
+        let mut wide_values: Vec<Option<(u32, u32)>> = vec![None; arguments.len()];
         // -O0 evaluates an argument without calls straight into its
         // register (in order, after those that call).
         let mut registers = Vec::with_capacity(arguments.len());
@@ -4092,6 +4146,11 @@ impl Lowerer<'_, '_> {
             if is_float(argument.ty) {
                 registers.push(float);
                 float += 1;
+            } else if is_wide(argument.ty) {
+                // (An odd-aligned pair.)
+                general += 1 - general % 2;
+                registers.push(general);
+                general += 2;
             } else {
                 registers.push(general);
                 general += 1;
@@ -4110,6 +4169,10 @@ impl Lowerer<'_, '_> {
                     && !pass
                     && !is_float(argument.ty)
                     && !toggle("MWCC_PCODE_O0_ARGUMENT_TEMPORARIES");
+                if is_wide(argument.ty) {
+                    wide_values[index] = Some(self.wide(argument)?);
+                    continue;
+                }
                 // A constant argument is loaded straight into its register.
                 values[index] = match argument.as_int() {
                     Some(_) if !self.unoptimized => None,
@@ -4128,6 +4191,17 @@ impl Lowerer<'_, '_> {
         let mut argument_registers = Vec::new();
         let (mut general, mut float) = (FIRST_GENERAL_ARGUMENT, 1);
         for (index, value) in values.into_iter().enumerate() {
+            if let Some((high, low)) = wide_values[index] {
+                general += 1 - general % 2;
+                for (register, value) in [(general, high), (general + 1, low)] {
+                    if value != register {
+                        self.emit_plain(Instruction::Or { a: register, s: value, b: value });
+                    }
+                    argument_registers.push(Register::general(register));
+                }
+                general += 2;
+                continue;
+            }
             if is_float(arguments[index].ty) {
                 let value = value.expect("floating arguments are evaluated");
                 if value != float {

@@ -15,7 +15,7 @@ use std::collections::HashMap;
 
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_iro::{
-    element_size, is_float, is_general_word, is_narrow, is_unsigned, is_value_type, pointee_type, pointer_to, promote,
+    element_size, is_float, is_general_word, is_narrow, is_unsigned, is_value_type, is_wide, pointee_type, pointer_to, promote,
     BinaryOp, Expr, ExprKind,
     Function, Idiom, IntrinsicOp, Place, Stmt, Type, UnaryOp, Unit, VarId, Variable, VariableKind,
 };
@@ -82,12 +82,12 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
     if function.asm_body.is_some() || !function.inline_asm_blocks.is_empty() {
         return Err(unsupported("inline assembly"));
     }
-    if function.return_type != Type::Void && !is_value_type(function.return_type) {
+    if function.return_type != Type::Void && !is_value_type(function.return_type) && !is_wide(function.return_type) {
         return Err(unsupported(format!("return type {:?}", function.return_type)));
     }
     let mut variables = Vec::new();
     for parameter in &function.parameters {
-        if !is_value_type(parameter.parameter_type) {
+        if !is_value_type(parameter.parameter_type) && !is_wide(parameter.parameter_type) {
             return Err(unsupported(format!("parameter type {:?}", parameter.parameter_type)));
         }
         variables.push(Variable {
@@ -147,7 +147,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         // Arrays, structs and scalars whose address is taken live in the frame.
         let element = match local.declared_type {
             Type::Struct { size, align } => Some((size, u32::from(align).max(1))),
-            ty if is_value_type(ty) => Some((mwcc_iro::width(ty), mwcc_iro::width(ty))),
+            ty if is_value_type(ty) || is_wide(ty) => Some((mwcc_iro::width(ty), mwcc_iro::width(ty))),
             _ => None,
         };
         let frame = match (local.array_length, element) {
@@ -1175,7 +1175,12 @@ impl Builder<'_, '_> {
                     arithmetic_type(left.ty, right.ty)
                 };
                 // The integer promotions are explicit conversions.
-                Expr::binary(op, promoted(left), promoted(right), ty)
+                let right = if op == BinaryOp::Subtract && self.unit.zero_wide_subtrahends {
+                    wide_subtrahend(promoted(right), ty)
+                } else {
+                    promoted(right)
+                };
+                Expr::binary(op, promoted(left), right, ty)
             }
             Expression::Unary { operator, operand } => {
                 let operand = promoted(self.expression(operand)?);
@@ -1257,13 +1262,13 @@ impl Builder<'_, '_> {
                     ty,
                 }
             }
-            Expression::Cast { target_type, operand } if is_value_type(*target_type) => {
+            Expression::Cast { target_type, operand } if is_value_type(*target_type) || is_wide(*target_type) => {
                 let operand = self.expression(operand)?;
                 Expr { kind: ExprKind::Convert(Box::new(operand)), ty: *target_type }
             }
             Expression::Member { base, offset, member_type, index_stride } => {
                 let base = self.member_base(base, *index_stride)?;
-                if !is_value_type(*member_type) {
+                if !is_value_type(*member_type) && !is_wide(*member_type) {
                     return Err(unsupported(format!("load of {member_type:?}")));
                 }
                 let (base, index, offset, ty) = displaced(base, *offset as i32, *member_type);
@@ -1731,7 +1736,7 @@ impl Builder<'_, '_> {
         {
             {
                 let ty = self.unit.call_return_types.get(name).copied().unwrap_or(Type::Int);
-                if !is_value_type(ty) && !(discarded && ty == Type::Void) {
+                if !is_value_type(ty) && !is_wide(ty) && !(discarded && ty == Type::Void) {
                     return Err(unsupported("non-integer call result"));
                 }
                 if (self.unit.is_intrinsic)(name, arguments.len()) {
@@ -1811,17 +1816,25 @@ impl Builder<'_, '_> {
                         } else if is_float(parameter) || is_float(argument.ty) {
                             let value = std::mem::replace(argument, Expr::int(0));
                             *argument = converted(value, parameter);
+                        } else if is_wide(parameter) || is_wide(argument.ty) {
+                            // (To or from `long long`: converted.)
+                            let value = std::mem::replace(argument, Expr::int(0));
+                            *argument = converted(promoted(value), parameter);
                         } else if !is_narrow(parameter) {
                             let value = std::mem::replace(argument, Expr::int(0));
                             *argument = promoted(value);
                         }
                     }
                 }
-                if arguments.iter().any(|argument| !is_value_type(argument.ty)) {
+                if arguments.iter().any(|argument| !is_value_type(argument.ty) && !is_wide(argument.ty)) {
                     return Err(unsupported("argument type"));
                 }
                 let floats = arguments.iter().filter(|argument| is_float(argument.ty)).count();
-                if floats > ARGUMENT_REGISTERS || arguments.len() - floats > ARGUMENT_REGISTERS {
+                // (A wide argument takes an odd-aligned register pair.)
+                let generals = arguments.iter().filter(|argument| !is_float(argument.ty)).fold(0usize, |used, argument| {
+                    if is_wide(argument.ty) { used + used % 2 + 2 } else { used + 1 }
+                });
+                if floats > ARGUMENT_REGISTERS || generals > ARGUMENT_REGISTERS {
                     return Err(unsupported("stack-passed arguments"));
                 }
                 Ok(Expr { kind: ExprKind::Call { name: name.to_owned(), arguments }, ty })
@@ -1845,8 +1858,36 @@ fn scale(index: Expr, size: u32) -> Expr {
 }
 
 /// The usual arithmetic conversion of two integer operands.
+/// MWCC subtracts a signed word converted to (signed) `long long` with a
+/// zero high word: the conversion zero-extends there.
+fn wide_subtrahend(right: Expr, ty: Type) -> Expr {
+    // (Only a signed difference: an unsigned one sign-extends the word.)
+    if ty != Type::LongLong || std::env::var_os("MWCC_IRO_WIDE_SUBTRAHEND_EXTENDED").is_some() {
+        return right;
+    }
+    let word = match &right.kind {
+        ExprKind::Convert(word) if right.ty == Type::LongLong && !is_wide(word.ty) => (**word).clone(),
+        _ if !is_wide(right.ty) => right.clone(),
+        _ => return right,
+    };
+    if is_unsigned(promote(word.ty)) || is_float(word.ty) || word.as_int().is_some() {
+        return right;
+    }
+    let word = promoted(word);
+    let unsigned = Expr { kind: ExprKind::Convert(Box::new(word)), ty: Type::UnsignedInt };
+    Expr { kind: ExprKind::Convert(Box::new(unsigned)), ty }
+}
+
 fn arithmetic_type(left: Type, right: Type) -> Type {
     let (left, right) = (promote(left), promote(right));
+    // (`long long` wins; unsigned when either is unsigned `long long`.)
+    if is_wide(left) || is_wide(right) {
+        return if left == Type::UnsignedLongLong || right == Type::UnsignedLongLong {
+            Type::UnsignedLongLong
+        } else {
+            Type::LongLong
+        };
+    }
     if matches!(left, Type::Pointer(_) | Type::StructPointer { .. }) {
         return left;
     }
@@ -1921,7 +1962,7 @@ fn literal_value(value: &Expression, ty: Type) -> Option<Expr> {
         Type::Double => Some(Expr { kind: ExprKind::Float(number(value)?), ty }),
         Type::Float => Some(Expr { kind: ExprKind::Float(f64::from(number(value)? as f32)), ty }),
         ty if is_narrow(ty) => Some(Expr::int(integer(value)?)),
-        ty if is_value_type(ty) && !is_float(ty) => Some(Expr::typed_int(integer(value)?, ty)),
+        ty if (is_value_type(ty) || is_wide(ty)) && !is_float(ty) => Some(Expr::typed_int(integer(value)?, ty)),
         _ => None,
     }
 }

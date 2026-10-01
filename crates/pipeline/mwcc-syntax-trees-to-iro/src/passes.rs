@@ -1235,6 +1235,10 @@ fn reassociate_sum(expression: &mut Expr) {
 /// `-a - b` = `-(a + b)`.
 fn negation(expression: &Expr) -> Option<Expr> {
     let ExprKind::Binary(op, left, right) = &expression.kind else { return None };
+    // (Not for `long long`: a negated word widens after negating.)
+    if mwcc_iro::is_wide(expression.ty) {
+        return None;
+    }
     let negated = |e: &Expr| match &e.kind {
         ExprKind::Unary(UnaryOp::Negate, operand) => Some((**operand).clone()),
         _ => None,
