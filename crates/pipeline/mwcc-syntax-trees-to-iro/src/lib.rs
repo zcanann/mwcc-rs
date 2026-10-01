@@ -1224,11 +1224,15 @@ impl Builder<'_, '_> {
                 None => Expr { kind: ExprKind::Int(0), ty: Type::Void },
             });
         }
+        let body_was_empty = inlined.body.is_empty() && !std::env::var_os("MWCC_IRO_INLINE_VALUE_TEMPORARY").is_some();
         self.pending.extend(inlined.body);
+        let inlined = mwcc_iro::Function { body: Vec::new(), ..inlined };
         let Some(value) = value else {
             return Ok(Expr { kind: ExprKind::Int(0), ty: Type::Void });
         };
-        if direct_return {
+        // (Optimized, an expansion that is only its value is that value.)
+        let only_value = !self.unit.unoptimized && inlined.body.is_empty() && body_was_empty;
+        if direct_return || only_value {
             // (Still converted to the callee's return type.)
             return Ok(converted(value, callee.return_type));
         }
