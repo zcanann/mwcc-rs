@@ -67,7 +67,8 @@ pub fn finish(
     dump(&pcode, "AFTER INSTRUCTION SCHEDULING");
     let colors = coloring::color(&mut pcode, options.delete_dead)?;
     dump(&pcode, "AFTER REGISTER COLORING");
-    if !options.unoptimized {
+    // (GC/3.x folds at -O0 too.)
+    if !options.unoptimized || options.fold_absolute_into_own_base {
         fold_absolute_displacements(&mut pcode, options.fold_absolute_into_own_base);
     }
     // Saved FPRs: the contiguous range from f31 down to the lowest used.
@@ -249,7 +250,7 @@ pub fn finish(
         pcode.blocks[exit].instructions.extend(epilogue);
         framed_blocks[0] = true;
         framed_blocks[exit] = true;
-    } else if !pcode.ends_in_tail_call {
+    } else {
         pcode.blocks[exit]
             .instructions
             .push(PInstr::new(Instruction::BranchToLinkRegister));
@@ -270,22 +271,37 @@ pub fn finish(
             }
         }
     }
-    // GC/3.x restores saved GPRs before the LR reload, in order, when body
-    // code (not a call or branch) leads into the epilogue.
-    if epilogue_length > 0 && !float_frame.generals.is_empty() && !helper && options.link_reload_after_float_restores {
+    // GC/3.x restores saved GPRs in order before `mtlr`, and before the LR
+    // reload too when body code (not a call or branch) leads into the
+    // epilogue.
+    if epilogue_length > 0
+        && !float_frame.generals.is_empty()
+        && !helper
+        && options.schedule
+        && options.link_reload_after_float_restores
+    {
         let instructions = &mut pcode.blocks.last_mut().expect("exit block").instructions;
         let start = instructions.len() - epilogue_length;
         let led = start > 0 && {
             let previous = &instructions[start - 1].instruction;
             !previous.is_call() && !matches!(previous, Instruction::Branch { .. } | Instruction::BranchConditionalForward { .. })
         };
-        if led {
-            for instruction in instructions[start..].iter_mut() {
-                match instruction.instruction {
-                    Instruction::LoadWord { d: 0, a: 1, .. } => instruction.flags.serialize = true,
-                    Instruction::LoadWord { a: 1, .. } => instruction.flags.in_order = true,
-                    _ => {}
-                }
+        // (Otherwise the LR reload leads them.)
+        if !led {
+            if let Some(reload) = instructions[start..]
+                .iter()
+                .position(|i| matches!(i.instruction, Instruction::LoadWord { d: 0, a: 1, .. }))
+            {
+                let reload = instructions.remove(start + reload);
+                instructions.insert(start, reload);
+            }
+        }
+        for instruction in instructions[start..].iter_mut() {
+            match instruction.instruction {
+                Instruction::LoadWord { d: 0, a: 1, .. } if led => instruction.flags.serialize = true,
+                Instruction::LoadWord { a: 1, .. } => instruction.flags.in_order = true,
+                Instruction::MoveToLinkRegister { .. } => instruction.flags.in_order = true,
+                _ => {}
             }
         }
     }

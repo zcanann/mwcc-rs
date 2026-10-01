@@ -603,7 +603,8 @@ pub struct Behavior {
     /// level so loop lowering can reproduce size-sensitive unrolling.
     pub optimization_goal: OptimizationGoal,
     /// The fewest saved GPRs saved and restored through the
-    /// `_savegpr_N`/`_restgpr_N` helpers (five with `,p`, else three).
+    /// `_savegpr_N`/`_restgpr_N` helpers (five with `,p` or on GC/3.x
+    /// outside `,s`, else three).
     pub general_save_helper_minimum: usize,
     /// Whether string literals use a packed per-function `@stringBaseN`.
     pub string_literals_packed: bool,
@@ -1097,7 +1098,15 @@ impl Behavior {
             dynamic_local_alignment: config.build.version >= (2, 4, 2),
             whole_file_optimization: config.flags.whole_file_optimization_enabled(),
             optimization_goal: config.flags.optimization_goal,
-            general_save_helper_minimum: if config.flags.explicit_speed_goal { 5 } else { 3 },
+            // (GC/3.x and Wii take five unless optimizing for size.)
+            general_save_helper_minimum: if config.flags.explicit_speed_goal
+                || ((config.build.label.starts_with("GC/3.") || config.build.label.starts_with("Wii/"))
+                    && config.flags.optimization_goal != crate::OptimizationGoal::Size)
+            {
+                5
+            } else {
+                3
+            },
             string_literals_packed: config.flags.string_literals_packed,
             forwarded_trace_string_style: config
                 .build

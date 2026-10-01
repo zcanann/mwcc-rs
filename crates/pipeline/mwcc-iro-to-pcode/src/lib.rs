@@ -80,6 +80,7 @@ pub fn lower(
         loops: Vec::new(),
         known_constant: None,
         tail_calls,
+        all_tail_calls: false,
         common: HashMap::new(),
         contract,
         float_constants: HashMap::new(),
@@ -162,6 +163,8 @@ struct Lowerer<'a, 'u> {
     known_constant: Option<(VarId, i64)>,
     /// A body that is one terminal call becomes a sibling branch.
     tail_calls: bool,
+    /// Every call is in tail position (GC/3.x): each becomes a branch.
+    all_tail_calls: bool,
     /// Values of simple operations computed in this block (IRO common
     /// subexpressions): key -> (register, type, variables read).
     common: HashMap<String, (u32, Type, Vec<VarId>)>,
@@ -649,11 +652,19 @@ impl Lowerer<'_, '_> {
             [Stmt::SetReturn(call)] if call.ty == function.return_type => call,
             _ => return Ok(false),
         };
-        let ExprKind::Call { name, arguments } = &call.kind else { return Ok(false) };
+        let ExprKind::Call { arguments, .. } = &call.kind else { return Ok(false) };
         // (An argument that calls needs a frame: no sibling call.)
         if arguments.iter().any(|argument| format!("{:?}", argument.kind).contains("Call {")) {
             return Ok(false);
         }
+        self.tail_call(call)?;
+        self.resolve_branches()?;
+        Ok(true)
+    }
+
+    /// `b callee` after marshaling the arguments of a call in tail position.
+    fn tail_call(&mut self, call: &Expr) -> Compilation<()> {
+        let ExprKind::Call { name, arguments } = &call.kind else { return Err(unsupported("tail call")) };
         let mut values = Vec::new();
         for argument in arguments {
             values.push(self.expression(argument)?.0);
@@ -676,10 +687,8 @@ impl Lowerer<'_, '_> {
         });
         branch.implicit_uses = (0..arguments.len()).map(|i| Register::general(FIRST_GENERAL_ARGUMENT + i as u32)).collect();
         self.emit(branch);
-        self.pcode.ends_in_tail_call = true;
         self.start_block(false);
-        self.resolve_branches()?;
-        Ok(true)
+        Ok(())
     }
 
     fn body_and_exit(&mut self) -> Compilation<()> {
@@ -910,6 +919,11 @@ impl Lowerer<'_, '_> {
         if self.tail_calls && !self.unoptimized && self.sibling_call()? {
             return Ok(());
         }
+        self.all_tail_calls = self.tail_calls
+            && !self.unoptimized
+            && makes_calls(&function.body)
+            && !format!("{:?}", function.body).contains("LocalAddress")
+            && only_tail_calls(&function.body, true, function.return_type);
         self.exit_label = self.new_label();
         for statement in &function.body {
             self.statement(statement)?;
@@ -945,6 +959,11 @@ impl Lowerer<'_, '_> {
             }
         }
         match statement {
+            Stmt::Eval(call) | Stmt::SetReturn(call) | Stmt::Return(Some(call))
+                if self.all_tail_calls && matches!(call.kind, ExprKind::Call { .. }) =>
+            {
+                self.tail_call(call)
+            }
             Stmt::If { condition, then_body, else_body } if condition.as_int().is_some() && !self.unoptimized => {
                 // IRO evaluates a constant condition: only one arm remains.
                 let arm = if condition.as_int() != Some(0) { then_body } else { else_body };
@@ -4041,6 +4060,40 @@ fn wide_constant(expression: &Expr) -> Option<(i16, i16)> {
 }
 
 /// Whether the body calls anything.
+/// Whether every call in `body` is a tail call: a call statement that ends
+/// the function (`f(); return;`, `return f(x);`) with call-free arguments,
+/// and no call anywhere else.
+fn only_tail_calls(body: &[Stmt], at_end: bool, return_type: Type) -> bool {
+    let terminal_call = |call: &Expr| match &call.kind {
+        ExprKind::Call { arguments, .. } => {
+            !arguments.iter().any(|argument| contains_call(argument) || is_float(argument.ty))
+                && !is_float(call.ty)
+                && !is_narrow(return_type)
+        }
+        _ => false,
+    };
+    body.iter().enumerate().all(|(index, statement)| {
+        let ends = index + 1 == body.len() && at_end || matches!(body.get(index + 1), Some(Stmt::Return(None)));
+        match statement {
+            Stmt::Eval(call) if matches!(call.kind, ExprKind::Call { .. }) => {
+                ends && return_type == Type::Void && terminal_call(call)
+            }
+            Stmt::SetReturn(call) if matches!(call.kind, ExprKind::Call { .. }) => {
+                ends && call.ty == return_type && terminal_call(call)
+            }
+            Stmt::Return(Some(call)) if matches!(call.kind, ExprKind::Call { .. }) => {
+                call.ty == return_type && terminal_call(call)
+            }
+            Stmt::If { condition, then_body, else_body } => {
+                !contains_call(condition)
+                    && only_tail_calls(then_body, ends, return_type)
+                    && only_tail_calls(else_body, ends, return_type)
+            }
+            other => !makes_calls(std::slice::from_ref(other)),
+        }
+    })
+}
+
 fn makes_calls(body: &[Stmt]) -> bool {
     fn expression(e: &Expr) -> bool {
         match &e.kind {

@@ -256,8 +256,6 @@ pub struct PCodeFunction {
     pub exit_uses: Vec<u32>,
     /// FPRs live everywhere (`-O0` floating register variables).
     pub exit_float_uses: Vec<u32>,
-    /// The body ends in a sibling branch (`b callee`): no return of its own.
-    pub ends_in_tail_call: bool,
     /// Pooled constants (bits, byte width) referenced as
     /// `RelocationTarget::Constant(index)`.
     pub pool: Vec<(u64, u8)>,
@@ -284,7 +282,6 @@ impl PCodeFunction {
             strings: Vec::new(),
             exit_uses: Vec::new(),
             exit_float_uses: Vec::new(),
-            ends_in_tail_call: false,
             pool: Vec::new(),
             rodata_images: Vec::new(),
             returns,
