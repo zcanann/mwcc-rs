@@ -2978,6 +2978,21 @@ impl Lowerer<'_, '_> {
             self.emit_plain(extension(stored, extended, source));
             return Ok(extended);
         }
+        // -O0: a raw narrow variable stored as another narrow type is read
+        // extended (as itself when narrower, else as the stored type).
+        if self.unoptimized
+            && is_narrow(stored)
+            && is_narrow(ty)
+            && ty != stored
+            && matches!(value.kind, ExprKind::Var(_))
+            && self.is_raw(value)
+            && !toggle("MWCC_PCODE_O0_NO_RAW_STORE_EXTEND")
+        {
+            let as_type = if mwcc_iro::width(ty) < mwcc_iro::width(stored) { ty } else { stored };
+            let extended = self.temporary();
+            self.emit_plain(extension(as_type, extended, source));
+            return Ok(extended);
+        }
         Ok(source)
     }
 
