@@ -3379,13 +3379,23 @@ impl Lowerer<'_, '_> {
         } else {
             (None, arguments)
         };
-        let mut values = Vec::new();
-        for argument in arguments {
-            // A constant argument is loaded straight into its register.
-            values.push(match argument.as_int() {
-                Some(_) if !self.unoptimized => None,
-                _ => Some(self.expression(argument)?.0),
-            });
+        // Arguments that call are evaluated first, then the others in order.
+        let calls: Vec<bool> = arguments
+            .iter()
+            .map(|argument| !toggle("MWCC_PCODE_ARGUMENTS_IN_ORDER") && format!("{:?}", argument.kind).contains("Call {"))
+            .collect();
+        let mut values = vec![None; arguments.len()];
+        for pass in [true, false] {
+            for (index, argument) in arguments.iter().enumerate() {
+                if calls[index] != pass {
+                    continue;
+                }
+                // A constant argument is loaded straight into its register.
+                values[index] = match argument.as_int() {
+                    Some(_) if !self.unoptimized => None,
+                    _ => Some(self.expression(argument)?.0),
+                };
+            }
         }
         let mut argument_registers = Vec::new();
         let (mut general, mut float) = (FIRST_GENERAL_ARGUMENT, 1);
