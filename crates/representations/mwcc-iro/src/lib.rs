@@ -561,8 +561,7 @@ impl Function {
                         out.push_str(&format!("{pad}loop ({}) {condition}\n", if *test_first { "while" } else { "do" }));
                         statements(out, body, depth + 1);
                         if !effects.is_empty() {
-                            out.push_str(&format!("{pad}before each test
-"));
+                            out.push_str(&format!("{pad}before each test\n"));
                             statements(out, effects, depth + 1);
                         }
                         if !step.is_empty() {
