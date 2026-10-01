@@ -172,7 +172,7 @@ fn replace_fields(body: Vec<Stmt>, id: VarId, map: &HashMap<i32, VarId>, keep: b
 
 /// Run every pass in order. Branch-preserving builds (GC/1.0-1.2.5n) form
 /// no sign-mask idioms and keep two-way assignments as branches.
-pub fn run(function: &mut Function, branch_preserving: bool) {
+pub fn run(function: &mut Function, branch_preserving: bool, reassociates_sums: bool) {
     let enabled = |name: &str| std::env::var_os(format!("MWCC_IRO_NO_{name}")).is_none();
     if enabled("UNROLL") && !branch_preserving {
         unroll(&mut function.body);
@@ -191,6 +191,13 @@ pub fn run(function: &mut Function, branch_preserving: bool) {
     }
     if enabled("ALGEBRA") {
         for_each_expression(&mut function.body, &mut |expression| algebra(expression));
+    }
+    if enabled("REASSOCIATE") && reassociates_sums {
+        fn all(expression: &mut Expr) {
+            children(expression, &mut |child| all(child));
+            reassociate_sum(expression);
+        }
+        for_each_expression(&mut function.body, &mut |expression| all(expression));
     }
     if enabled("DISPLACEMENTS") {
         displacements(&mut function.body);
@@ -1136,6 +1143,7 @@ pub fn algebra(expression: &mut Expr) {
             std::mem::swap(left, right);
         }
     }
+
     // An unsigned word above zero is a nonzero one (`u > 0` = `u != 0`).
     if let ExprKind::Binary(op, left, right) = &mut expression.kind {
         let (relation, value) = match (left.as_int(), right.as_int()) {
@@ -1166,6 +1174,40 @@ pub fn algebra(expression: &mut Expr) {
             let value = value.as_ref().clone();
             *expression = if value.ty == ty { value } else { Expr { kind: ExprKind::Convert(Box::new(value)), ty } };
         }
+    }
+}
+
+/// MWCC's reassociation of integer sums: a variable added to a sum goes
+/// after it (`a + (b + c)` = `(b + c) + a`); `(x + k) + y` = `(x + y) + k`;
+/// `(x + y) + z` = `x + (y + z)` when `x` is a variable, else `y + (x + z)`
+/// when `y` is one.
+fn reassociate_sum(expression: &mut Expr) {
+    let word = |ty: Type| matches!(ty, Type::Int | Type::UnsignedInt);
+    if !word(expression.ty) {
+        return;
+    }
+    let ty = expression.ty;
+    let ExprKind::Binary(BinaryOp::Add, left, right) = &mut expression.kind else { return };
+    let sum = |e: &Expr| matches!(e.kind, ExprKind::Binary(BinaryOp::Add, ..)) && word(e.ty);
+    if left.as_var().is_some() && sum(right) {
+        std::mem::swap(left, right);
+    }
+    let (left, right) = (left.as_ref().clone(), right.as_ref().clone());
+    let ExprKind::Binary(BinaryOp::Add, x, y) = &left.kind else { return };
+    if !word(left.ty) {
+        return;
+    }
+    let (x, y) = (x.as_ref().clone(), y.as_ref().clone());
+    if y.as_int().is_some() {
+        if right.as_int().is_none() {
+            *expression = Expr::binary(BinaryOp::Add, Expr::binary(BinaryOp::Add, x, right, ty), y, ty);
+        }
+        return;
+    }
+    if x.as_var().is_some() {
+        *expression = Expr::binary(BinaryOp::Add, x, Expr::binary(BinaryOp::Add, y, right, ty), ty);
+    } else if y.as_var().is_some() {
+        *expression = Expr::binary(BinaryOp::Add, y, Expr::binary(BinaryOp::Add, x, right, ty), ty);
     }
 }
 
