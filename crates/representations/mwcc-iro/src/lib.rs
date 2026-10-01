@@ -481,6 +481,7 @@ pub fn pointee_type(pointee: Pointee) -> Option<Type> {
         // and indexing through it are refused (unsized element).
         Pointee::Pointer => Type::StructPointer { element_size: 0 },
         Pointee::WordPointer => Type::Pointer(Pointee::Int),
+        Pointee::StructPointer(element_size) => Type::StructPointer { element_size },
         Pointee::Float => Type::Float,
         Pointee::Double => Type::Double,
         _ => return None,
@@ -494,7 +495,7 @@ pub fn element_size(ty: Type) -> Option<u32> {
         Type::Pointer(pointee) => Some(match pointee {
             Pointee::Char | Pointee::UnsignedChar => 1,
             Pointee::Short | Pointee::UnsignedShort => 2,
-            Pointee::Int | Pointee::UnsignedInt | Pointee::Float | Pointee::Pointer | Pointee::WordPointer => 4,
+            Pointee::Int | Pointee::UnsignedInt | Pointee::Float | Pointee::Pointer | Pointee::WordPointer | Pointee::StructPointer(_) => 4,
             Pointee::Double | Pointee::LongLong | Pointee::UnsignedLongLong => 8,
         }),
         Type::StructPointer { element_size } => Some(element_size),
@@ -513,7 +514,8 @@ pub fn pointer_to(ty: Type) -> Option<Type> {
         Type::UnsignedShort => Type::Pointer(Pointee::UnsignedShort),
         Type::Float => Type::Pointer(Pointee::Float),
         Type::Double => Type::Pointer(Pointee::Double),
-        Type::Pointer(_) | Type::StructPointer { .. } => Type::Pointer(Pointee::Pointer),
+        Type::StructPointer { element_size } => Type::Pointer(Pointee::StructPointer(element_size)),
+        Type::Pointer(_) => Type::Pointer(Pointee::Pointer),
         Type::Struct { size, .. } => Type::StructPointer { element_size: size },
         _ => return None,
     })

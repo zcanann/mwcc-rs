@@ -154,7 +154,7 @@ impl Parser {
         if *self.peek() == Token::Star {
             self.advance();
             self.last_cxx_pointer_depth = 2;
-            Type::Pointer(Pointee::Pointer)
+            Type::Pointer(Pointee::StructPointer(element_size))
         } else {
             Type::StructPointer { element_size }
         }

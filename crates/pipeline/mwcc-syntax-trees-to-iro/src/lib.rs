@@ -239,6 +239,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         post: Vec::new(),
         strings: Vec::new(),
         guarded: 0,
+        argument_guards: 0,
         temporaries: Vec::new(),
         direct_return: false,
     };
@@ -462,6 +463,10 @@ struct Builder<'a, 'u> {
     /// Inside a conditionally or repeatedly evaluated operand, where an
     /// assignment cannot be hoisted.
     guarded: usize,
+    /// How many of those guards are call arguments (evaluated once, in an
+    /// unspecified order): a register variable's post-step still applies
+    /// after the statement there.
+    argument_guards: usize,
     /// Registers holding assigned values, numbered after `variables`.
     temporaries: Vec<Variable>,
     /// String literals by bytes, in first-use order.
@@ -794,6 +799,14 @@ impl Builder<'_, '_> {
         self.guarded += 1;
         let result = self.expression(expression);
         self.guarded -= 1;
+        result
+    }
+
+    /// A call argument: guarded, but evaluated exactly once.
+    fn argument_expression(&mut self, expression: &Expression) -> Compilation<Expr> {
+        self.argument_guards += 1;
+        let result = self.guarded_expression(expression);
+        self.argument_guards -= 1;
         result
     }
 
@@ -1393,8 +1406,12 @@ impl Builder<'_, '_> {
             // `x++` as a value: the old value; the step follows the statement.
             // `(*p)++` / `s->n++` as a value: the old value is loaded into a
             // temporary and `old + 1` stored back before the statement.
+            // (A variable in the frame steps like memory.)
             Expression::PostStep { target, operator, pointer_link: None }
-                if pure_lvalue(target) && !matches!(target.as_ref(), Expression::Variable(_)) =>
+                if pure_lvalue(target)
+                    && (!matches!(target.as_ref(), Expression::Variable(_))
+                        || matches!(target.as_ref(), Expression::Variable(name)
+                            if self.names.get(name).is_some_and(|&id| self.variables[id].frame.is_some()))) =>
             {
                 if self.guarded > 0 || std::env::var_os("MWCC_IRO_NO_MEMORY_POST_VALUE").is_some() {
                     return Err(unsupported("expression PostStep"));
@@ -1418,7 +1435,7 @@ impl Builder<'_, '_> {
                 if matches!(target.as_ref(), Expression::Variable(name)
                     if self.names.get(name).is_some_and(|&id| self.variables[id].frame.is_none())) =>
             {
-                if self.guarded > 0 || std::env::var_os("MWCC_IRO_NO_POST_VALUE").is_some() {
+                if self.guarded > self.argument_guards || std::env::var_os("MWCC_IRO_NO_POST_VALUE").is_some() {
                     return Err(unsupported("expression PostStep"));
                 }
                 let Expression::Variable(name) = target.as_ref() else { unreachable!() };
@@ -1555,7 +1572,7 @@ impl Builder<'_, '_> {
         }
         let mut values = vec![target];
         for argument in arguments {
-            let value = promoted(self.guarded_expression(argument)?);
+            let value = promoted(self.argument_expression(argument)?);
             if is_float(value.ty) || !is_value_type(value.ty) {
                 return Err(unsupported("indirect call argument of this type"));
             }
@@ -1838,7 +1855,7 @@ impl Builder<'_, '_> {
                     values.push(if expanded && others_simple && self.guarded == 0 {
                         self.expression(argument)?
                     } else {
-                        self.guarded_expression(argument)?
+                        self.argument_expression(argument)?
                     });
                 }
                 let mut arguments = values;

@@ -7137,7 +7137,7 @@ fn encode_pointee(pointee: Pointee) -> Compilation<&'static str> {
         Pointee::Double => Ok("d"),
         Pointee::LongLong => Ok("x"),
         Pointee::UnsignedLongLong => Ok("Ux"),
-        Pointee::Pointer | Pointee::WordPointer => Err(Diagnostic::error(
+        Pointee::Pointer | Pointee::WordPointer | Pointee::StructPointer(_) => Err(Diagnostic::error(
             "a pointer-to-pointer C++ member parameter needs exact pointee mangling (roadmap)",
         )),
     }

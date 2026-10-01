@@ -122,7 +122,7 @@ fn recognize<'a>(
         global.name == destination_name
             && global.is_extern
             && global.array_length.is_none()
-            && global.declared_type == Type::Pointer(mwcc_syntax_trees::Pointee::Pointer)
+            && matches!(global.declared_type, Type::Pointer(mwcc_syntax_trees::Pointee::Pointer | mwcc_syntax_trees::Pointee::StructPointer(_)))
     })?;
 
     Some(Plan {

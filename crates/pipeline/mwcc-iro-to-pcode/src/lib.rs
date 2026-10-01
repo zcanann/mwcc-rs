@@ -1565,6 +1565,8 @@ impl Lowerer<'_, '_> {
         } else {
             (op, left, right)
         };
+        // (An operand that calls is evaluated first: the right one when both do.)
+        let early = self.call_operand_first(right)?;
         let (a, left_type) = self.expression(left)?;
         let non_negative = right.as_int().map_or(is_unsigned_narrow(unpromoted(right).ty), |value| value >= 0);
         let unsigned = is_unsigned(promote(left_type))
@@ -1572,7 +1574,7 @@ impl Lowerer<'_, '_> {
             || is_unsigned_narrow(unpromoted(left).ty) && non_negative;
         // A compare of a just-computed value with 0 is its record form.
         let equality = matches!(op, BinaryOp::Equal | BinaryOp::NotEqual);
-        if right.as_int() == Some(0) && (!unsigned || equality) && self.record_form(a) {
+        if right.as_int() == Some(0) && (!unsigned || equality) && early.is_none() && self.record_form(a) {
             return Ok(comparison(op));
         }
         // GC/3.x compares a word with zero for equality signed.
@@ -1585,7 +1587,10 @@ impl Lowerer<'_, '_> {
                 self.emit_plain(Instruction::CompareLogicalWordImmediate { a, immediate: value as u16 });
             }
             _ => {
-                let (b, _) = self.expression(right)?;
+                let b = match early {
+                    Some(b) => b,
+                    None => self.expression(right)?.0,
+                };
                 self.emit_plain(if unsigned {
                     Instruction::CompareLogicalWord { a, b }
                 } else {
@@ -1594,6 +1599,16 @@ impl Lowerer<'_, '_> {
             }
         }
         Ok(comparison(op))
+    }
+
+    /// A comparison's right operand evaluated ahead of the left when it
+    /// calls (MWCC evaluates the operand with a call first, the right one
+    /// when both do).
+    fn call_operand_first(&mut self, right: &Expr) -> Compilation<Option<u32>> {
+        if !contains_call(right) || toggle("MWCC_PCODE_COMPARE_IN_ORDER") {
+            return Ok(None);
+        }
+        Ok(Some(self.expression(right)?.0))
     }
 
     /// Turn the current block's last instruction into its record form when it
@@ -2715,6 +2730,7 @@ impl Lowerer<'_, '_> {
             (op, left, right)
         };
         let constant = right.as_int();
+        let early = if self.unit.branch_preserving { None } else { self.call_operand_first(right)? };
         let (p, left_type) = self.expression(left)?;
         let unsigned = is_unsigned(promote(left_type)) || is_unsigned(promote(right.ty));
         let small = |value: i64| i16::try_from(value).is_ok() && i16::try_from(-value).is_ok();
@@ -2783,7 +2799,10 @@ impl Lowerer<'_, '_> {
             (_, Some(0), true) => return Err(unsupported("unsigned comparison with zero")),
             _ => {}
         }
-        let (q, _) = self.expression(right)?;
+        let q = match early {
+            Some(q) => q,
+            None => self.expression(right)?.0,
+        };
         match (op, unsigned) {
             (Equal, _) => {
                 let d = self.temporary();
@@ -4222,6 +4241,13 @@ impl Lowerer<'_, '_> {
                             self.emit_plain(Instruction::Or { a: registers[index], s: value, b: value });
                         }
                         Some(registers[index])
+                    }
+                    // (A signed byte extends in place, in its own register.)
+                    _ if matches!(&argument.kind, ExprKind::Convert(operand) if operand.ty == Type::Char)
+                        && !toggle("MWCC_PCODE_NO_ARGUMENT_INPLACE_EXTSB") =>
+                    {
+                        let own = self.temporary();
+                        Some(self.expression_with_target(argument, Some(own))?.0)
                     }
                     _ => Some(self.expression(argument)?.0),
                 };

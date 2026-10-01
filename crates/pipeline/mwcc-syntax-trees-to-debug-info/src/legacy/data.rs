@@ -1319,13 +1319,13 @@ fn pointer_member_type_attribute(
                 .transpose()?
                 .unwrap_or(FundamentalType::SignedInteger),
         ),
-        (Pointee::Pointer, Some(source)) => {
+        (Pointee::Pointer | Pointee::StructPointer(_), Some(source)) => {
             (&[1, 1], source_fundamental_type(source)?)
         }
         // The scalar type behind an unqualified `T **` was not retained. DWARF
         // has a fundamental pointer code, so one pointer modifier over that
         // identity preserves the known indirection without inventing `T`.
-        (Pointee::Pointer, None) => (&[1], FundamentalType::Pointer),
+        (Pointee::Pointer | Pointee::StructPointer(_), None) => (&[1], FundamentalType::Pointer),
         (pointee, source) => (
             &[1],
             match source {

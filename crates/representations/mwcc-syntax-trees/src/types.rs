@@ -25,6 +25,9 @@ pub enum Pointee {
     /// `short **`), float (`float **`) and struct (`S **`) cases still defer,
     /// where a uniform word load would miscompile the final `lbz`/`lfs`.
     WordPointer,
+    /// A pointer-to-struct-pointer (`S **`): its element is a struct
+    /// pointer whose struct is this many bytes (0 when opaque).
+    StructPointer(u32),
     /// `long long*` — a register-pair element (va_arg expansions).
     LongLong,
     /// `unsigned long long*` — same pair representation.
@@ -50,6 +53,7 @@ impl Pointee {
             // pointers: word-sized, integer-classed (loads lwz, stores stw).
             // `WordPointer` additionally means the SECOND deref is a word too.
             Pointee::Pointer | Pointee::WordPointer => Type::Pointer(Pointee::UnsignedInt),
+            Pointee::StructPointer(element_size) => Type::StructPointer { element_size },
             Pointee::LongLong => Type::LongLong,
             Pointee::UnsignedLongLong => Type::UnsignedLongLong,
         }
