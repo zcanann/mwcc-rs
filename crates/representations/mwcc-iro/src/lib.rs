@@ -34,6 +34,9 @@ pub struct GlobalInfo {
     /// An array declared at a fixed address (`u32 __AIRegs[8] : 0xCC006C00;`):
     /// its name is that constant address.
     pub fixed_address: Option<i64>,
+    /// A `static const` scalar's value (its bits): the unit emits no object,
+    /// so every read is the constant.
+    pub folded: Option<i64>,
 }
 
 /// The callee name of an indirect call: the target address is the call's

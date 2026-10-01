@@ -85,6 +85,14 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
                     anchor: (defined.contains(global.name.as_str()) && !small_data && !global.is_const)
                         .then(|| if initialized(global.data_bytes.as_deref(), global.initializer.as_deref(), !global.data_relocations.is_empty() || global.address_initializer.is_some()) { "...data.0" } else { "...bss.0" }),
                     fixed_address: None,
+                    // (The driver drops a `static const` scalar's object.)
+                    folded: (global.is_static
+                        && global.is_const
+                        && !global.is_volatile
+                        && global.array_length.is_none()
+                        && global.address_initializer.is_none()
+                        && global.data_bytes.is_none())
+                    .then(|| global.initializer.as_ref().and_then(|values| values.first().copied()).unwrap_or(0)),
                 },
             )
         })
@@ -138,6 +146,7 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
                 is_const: local.is_const && !local.is_volatile,
                 anchor: None,
                 fixed_address: None,
+                    folded: None,
             },
         );
     }
@@ -151,6 +160,7 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
             is_const: false,
             anchor: None,
             fixed_address: Some(address),
+            folded: None,
         });
     }
     // A function named as a value is its (absolute) address.
@@ -167,6 +177,7 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
                     is_const: false,
                     anchor: None,
                     fixed_address: None,
+                    folded: None,
                 },
             );
         }

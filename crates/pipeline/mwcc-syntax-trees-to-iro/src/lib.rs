@@ -145,8 +145,29 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
             initialized: local.initializer.is_some(),
         });
     }
+    // A parameter whose address is taken lives in a frame slot (below the
+    // locals' slots) that the incoming register is stored to on entry; the
+    // register itself becomes a hidden parameter.
+    let mut parameter_homes: Vec<(VarId, VarId)> = Vec::new();
     if function.parameters.iter().any(|parameter| taken.contains(&parameter.name)) {
-        return Err(unsupported("address of a parameter"));
+        if unit.unoptimized || unit.early_frame {
+            return Err(unsupported("address of a parameter"));
+        }
+        for (index, parameter) in function.parameters.iter().enumerate().rev() {
+            if !taken.contains(&parameter.name) {
+                continue;
+            }
+            let width = mwcc_iro::width(parameter.parameter_type);
+            variables[index].name = format!("{}$in", parameter.name);
+            parameter_homes.push((index, variables.len()));
+            variables.push(Variable {
+                name: parameter.name.clone(),
+                ty: parameter.parameter_type,
+                kind: VariableKind::Local,
+                frame: Some((width, width)),
+                initialized: false,
+            });
+        }
     }
     let arrays = function
         .locals
@@ -179,6 +200,14 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         direct_return: false,
     };
     let mut body = Vec::new();
+    for &(incoming, home) in parameter_homes.iter().rev() {
+        let ty = builder.variables[home].ty;
+        body.push(Stmt::Store {
+            place: Place::Memory { base: Box::new(builder.local_address(home)), index: None, offset: 0 },
+            ty,
+            value: Expr { kind: ExprKind::Var(incoming), ty },
+        });
+    }
     let mut images: Vec<Vec<u8>> = Vec::new();
     for local in &function.locals {
         if let (Some(bytes), Some((size, align))) = (&local.data_bytes, builder.names.get(&local.name).and_then(|&id| builder.variables[id].frame)) {
@@ -896,6 +925,16 @@ impl Builder<'_, '_> {
                 let Some(global) = self.unit.globals.get(name) else {
                     return Err(unsupported(format!("unknown variable '{name}'")));
                 };
+                // A folded `static const` scalar is its value.
+                if let Some(bits) = global.folded {
+                    return Ok(match global.ty {
+                        Type::Double => Expr { kind: ExprKind::Float(f64::from_bits(bits as u64)), ty: Type::Double },
+                        Type::Float => Expr { kind: ExprKind::Float(f64::from(f32::from_bits(bits as u32))), ty: Type::Float },
+                        ty if is_narrow(ty) => Expr::int(bits),
+                        ty if is_value_type(ty) => Expr::typed_int(bits, ty),
+                        _ => return Err(unsupported("a folded constant of this type")),
+                    });
+                }
                 // A fixed-address array is its constant address.
                 if let Some(address) = global.fixed_address {
                     let ty = pointer_to(global.ty).ok_or_else(|| unsupported("fixed-address array of this element type"))?;
@@ -1167,6 +1206,10 @@ impl Builder<'_, '_> {
                     return Err(unsupported(format!("unknown variable '{name}'")));
                 };
                 let ty = pointer_to(global.ty).ok_or_else(|| unsupported("address of this global type"))?;
+                // (A folded `static const` has no object to address.)
+                if global.folded.is_some() {
+                    return Err(unsupported("address of a folded static constant"));
+                }
                 if let Some(address) = global.fixed_address {
                     return Ok(Expr { kind: ExprKind::Int(address), ty });
                 }
