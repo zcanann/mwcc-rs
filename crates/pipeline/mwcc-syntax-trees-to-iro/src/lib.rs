@@ -1056,6 +1056,12 @@ impl Builder<'_, '_> {
     fn aggregate_address(&mut self, base: &Expression) -> Compilation<Expr> {
         match base {
             Expression::AddressOf { operand } => self.address_of(operand),
+            // An element of an embedded array of structs (`s.homes[i].m`).
+            Expression::Index { base: array, .. }
+                if matches!(array.as_ref(), Expression::Member { member_type: Type::Struct { .. }, .. }) =>
+            {
+                self.address_of(base)
+            }
             // An indexed struct element (`p[i].m`): the element's address;
             // an indexed pointer (`p[i]->m`) is loaded.
             Expression::Index { base: array, index } => {
