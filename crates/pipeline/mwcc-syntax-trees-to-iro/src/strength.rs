@@ -107,6 +107,11 @@ fn uses(body: &[Stmt], variable: VarId) -> usize {
                     + uses(step, variable)
                     + uses(effects, variable)
             }
+            Stmt::Counted { count, guard, body } => {
+                expression(count, variable)
+                    + guard.as_ref().map_or(0, |guard| expression(guard, variable))
+                    + uses(body, variable)
+            }
             Stmt::Switch { value, arms, .. } => expression(value, variable) + arms.iter().map(|arm| uses(arm, variable)).sum::<usize>(),
             Stmt::Break | Stmt::Continue | Stmt::Goto(_) | Stmt::Label(_) => 0,
         })
@@ -122,7 +127,7 @@ fn statements(body: &mut Vec<Stmt>, function: &mut Function, fold_start: bool) {
                 statements(then_body, function, fold_start);
                 statements(else_body, function, fold_start);
             }
-            Stmt::Loop { body: inner, .. } => statements(inner, function, fold_start),
+            Stmt::Loop { body: inner, .. } | Stmt::Counted { body: inner, .. } => statements(inner, function, fold_start),
             Stmt::Switch { arms, .. } => arms.iter_mut().for_each(|arm| statements(arm, function, fold_start)),
             _ => {}
         }
@@ -132,15 +137,29 @@ fn statements(body: &mut Vec<Stmt>, function: &mut Function, fold_start: bool) {
         };
         // Constants the loop stores are set before it (loop code motion,
         // which runs before strength reduction).
-        let hoisted = match &mut body[index] {
-            Stmt::Loop { body: inner, .. } if std::env::var_os("MWCC_IRO_NO_HOIST_CONSTANTS").is_none() => {
+        let mut hoisted = match &mut body[index] {
+            Stmt::Loop { body: inner, .. } | Stmt::Counted { body: inner, .. }
+                if std::env::var_os("MWCC_IRO_NO_HOIST_CONSTANTS").is_none() =>
+            {
                 hoist_stored_constants(inner, function)
             }
             _ => Vec::new(),
         };
+        // (A count register loop's count is set before them.)
+        if let Stmt::Counted { count, .. } = &mut body[index] {
+            if !hoisted.is_empty() && count.as_int().is_some() {
+                let ty = count.ty;
+                let variable = function.add_temporary(ty);
+                hoisted.insert(0, Stmt::Assign { variable, value: count.clone() });
+                *count = Expr { kind: ExprKind::Var(variable), ty };
+            }
+        }
         let (inits, folded) = match &mut body[index] {
             Stmt::Loop { condition, body: inner, step, effects, .. } => {
                 reduce_loop(condition.as_mut(), inner, step, effects, initial, fold_start, function)
+            }
+            Stmt::Counted { guard, body: inner, .. } => {
+                reduce_loop(guard.as_mut(), inner, &mut Vec::new(), &mut [], initial, fold_start, function)
             }
             _ => (Vec::new(), false),
         };
@@ -293,6 +312,7 @@ fn count_assignments(body: &[Stmt], variable: VarId) -> usize {
             Stmt::Loop { body, step, effects, .. } => {
                 count_assignments(body, variable) + count_assignments(step, variable) + count_assignments(effects, variable)
             }
+            Stmt::Counted { body, .. } => count_assignments(body, variable),
             Stmt::Switch { arms, .. } => arms.iter().map(|arm| count_assignments(arm, variable)).sum(),
             _ => 0,
         })
@@ -312,6 +332,7 @@ fn collect_assigned(body: &[Stmt], out: &mut Vec<VarId>) {
                 collect_assigned(step, out);
                 collect_assigned(effects, out);
             }
+            Stmt::Counted { body, .. } => collect_assigned(body, out),
             Stmt::Switch { arms, .. } => arms.iter().for_each(|arm| collect_assigned(arm, out)),
             _ => {}
         }
@@ -401,6 +422,12 @@ fn rewrite_statements(body: &mut [Stmt], induction: VarId, assigned: &[VarId], c
                 rewrite_statements(body, induction, assigned, cursors, function);
                 rewrite_statements(step, induction, assigned, cursors, function);
                 rewrite_statements(effects, induction, assigned, cursors, function);
+            }
+            Stmt::Counted { guard, body, .. } => {
+                if let Some(guard) = guard {
+                    rewrite(guard, induction, assigned, cursors, function);
+                }
+                rewrite_statements(body, induction, assigned, cursors, function);
             }
             Stmt::Switch { value, arms, .. } => {
                 rewrite(value, induction, assigned, cursors, function);
@@ -549,6 +576,11 @@ fn based(body: &[Stmt], variable: VarId) -> bool {
                 || based(step, variable)
                 || based(effects, variable)
         }
+        Stmt::Counted { count, guard, body } => {
+            expression(count, variable)
+                || guard.as_ref().is_some_and(|guard| expression(guard, variable))
+                || based(body, variable)
+        }
         Stmt::Switch { value, arms, .. } => expression(value, variable) || arms.iter().any(|arm| based(arm, variable)),
         Stmt::Break | Stmt::Continue | Stmt::Goto(_) | Stmt::Label(_) => false,
     })
@@ -563,11 +595,18 @@ fn hoist_stored_constants(body: &mut [Stmt], function: &mut Function) -> Vec<Stm
                 Stmt::Store { value, .. } => {
                     if let Some(constant) = value.as_int() {
                         if !mwcc_iro::is_float(value.ty) {
-                            let ty = value.ty;
+                            // (A narrow constant in its promoted form.)
+                            let ty = mwcc_iro::promote(value.ty);
+                            let constant = if mwcc_iro::is_unsigned_narrow(value.ty) {
+                                constant & ((1i64 << mwcc_iro::width(value.ty)) - 1)
+                            } else {
+                                constant
+                            };
                             let variable = match hoisted.iter().find(|(k, t, _)| *k == constant && *t == ty) {
                                 Some(&(_, _, variable)) => variable,
                                 None => {
                                     let variable = function.add_temporary(ty);
+                                    function.variables[variable].name = format!("@hoist{variable}");
                                     hoisted.push((constant, ty, variable));
                                     variable
                                 }
@@ -585,6 +624,7 @@ fn hoist_stored_constants(body: &mut [Stmt], function: &mut Function) -> Vec<Stm
                     visit(step, function, hoisted);
                     visit(effects, function, hoisted);
                 }
+                Stmt::Counted { body, .. } => visit(body, function, hoisted),
                 Stmt::Switch { arms, .. } => arms.iter_mut().for_each(|arm| visit(arm, function, hoisted)),
                 _ => {}
             }
@@ -596,4 +636,52 @@ fn hoist_stored_constants(body: &mut [Stmt], function: &mut Function) -> Vec<Stm
         .into_iter()
         .map(|(constant, ty, variable)| Stmt::Assign { variable, value: Expr { kind: ExprKind::Int(constant), ty } })
         .collect()
+}
+
+/// Induction variables read only by their own updates go (after strength
+/// reduction moved their other reads to cursors).
+pub fn remove_dead_inductions(function: &mut Function) {
+    fn self_updates(body: &[Stmt], variable: VarId) -> usize {
+        body.iter()
+            .map(|statement| match statement {
+                Stmt::Assign { variable: assigned, value } if *assigned == variable => usize::from(value.mentions(variable)),
+                Stmt::If { then_body, else_body, .. } => self_updates(then_body, variable) + self_updates(else_body, variable),
+                Stmt::Loop { body, step, effects, .. } => {
+                    self_updates(body, variable) + self_updates(step, variable) + self_updates(effects, variable)
+                }
+                Stmt::Counted { body, .. } => self_updates(body, variable),
+                Stmt::Switch { arms, .. } => arms.iter().map(|arm| self_updates(arm, variable)).sum(),
+                _ => 0,
+            })
+            .sum()
+    }
+    fn remove(body: &mut Vec<Stmt>, variable: VarId) {
+        body.retain(|statement| !matches!(statement, Stmt::Assign { variable: assigned, value } if *assigned == variable && !format!("{value:?}").contains("Call {")));
+        for statement in body.iter_mut() {
+            match statement {
+                Stmt::If { then_body, else_body, .. } => {
+                    remove(then_body, variable);
+                    remove(else_body, variable);
+                }
+                Stmt::Loop { body, step, effects, .. } => {
+                    remove(body, variable);
+                    remove(step, variable);
+                    remove(effects, variable);
+                }
+                Stmt::Counted { body, .. } => remove(body, variable),
+                Stmt::Switch { arms, .. } => arms.iter_mut().for_each(|arm| remove(arm, variable)),
+                _ => {}
+            }
+        }
+    }
+    for variable in 0..function.variables.len() {
+        let local = &function.variables[variable];
+        if local.kind == VariableKind::Parameter || local.frame.is_some() || local.volatile {
+            continue;
+        }
+        let updates = self_updates(&function.body, variable);
+        if updates > 0 && uses(&function.body, variable) == updates {
+            remove(&mut function.body, variable);
+        }
+    }
 }

@@ -757,6 +757,13 @@ pub fn for_each_expression(body: &mut [Stmt], rewrite: &mut dyn FnMut(&mut Expr)
                 for_each_expression(step, rewrite);
                 for_each_expression(effects, rewrite);
             }
+            Stmt::Counted { count, guard, body } => {
+                rewrite(count);
+                if let Some(guard) = guard {
+                    rewrite(guard);
+                }
+                for_each_expression(body, rewrite);
+            }
             Stmt::Switch { value, arms, .. } => {
                 rewrite(value);
                 for arm in arms {
@@ -838,6 +845,7 @@ pub fn map_variables(body: &mut [Stmt], map: &dyn Fn(VarId) -> VarId) {
                     assigned(step, map);
                     assigned(effects, map);
                 }
+                Stmt::Counted { body, .. } => assigned(body, map),
                 Stmt::Switch { arms, .. } => arms.iter_mut().for_each(|arm| assigned(arm, map)),
                 _ => {}
             }

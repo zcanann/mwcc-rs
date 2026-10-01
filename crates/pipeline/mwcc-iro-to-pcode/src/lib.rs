@@ -513,6 +513,15 @@ impl Lowerer<'_, '_> {
                     self.registers[id] = Some(self.fresh(function.variables[id].ty));
                 }
             }
+            // (Then the constants loops hoist.)
+            for id in function.parameter_count..function.variables.len() {
+                if function.variables[id].name.starts_with("@hoist")
+                    && self.registers[id].is_none()
+                    && !toggle("MWCC_PCODE_LAZY_HOISTS")
+                {
+                    self.registers[id] = Some(self.fresh(function.variables[id].ty));
+                }
+            }
         }
         if function.return_type != Type::Void && returns_through_variable {
             self.return_register = Some(self.fresh(function.return_type));
@@ -1129,6 +1138,28 @@ impl Lowerer<'_, '_> {
                     Some(condition) => self.branch_on(condition, true, top)?,
                     None => self.jump(top),
                 }
+                self.place_label(exit);
+                Ok(())
+            }
+            Stmt::Counted { count, guard, body } => {
+                // `mtctr count` (and the guard), the body, `bdnz`.
+                let top = self.new_join_label();
+                let exit = self.new_label();
+                let (counter, _) = self.expression(count)?;
+                // (A loop's `mtctr` keeps its place, last before the loop.)
+                let mut mtctr = PInstr::new(Instruction::MoveToCountRegister { s: counter });
+                mtctr.flags.serialize = true;
+                self.emit(mtctr);
+                if let Some(guard) = guard {
+                    self.branch_on(guard, false, exit)?;
+                }
+                self.place_label(top);
+                self.loops.push((exit, top));
+                for statement in body {
+                    self.statement(statement)?;
+                }
+                self.loops.pop();
+                self.branch(Instruction::BranchConditionalForward { options: 16, condition_bit: 0, target: 0 }, top);
                 self.place_label(exit);
                 Ok(())
             }
@@ -4263,6 +4294,7 @@ fn holds_label(body: &[Stmt]) -> bool {
         Stmt::Label(_) => true,
         Stmt::If { then_body, else_body, .. } => holds_label(then_body) || holds_label(else_body),
         Stmt::Loop { body, step, effects, .. } => holds_label(body) || holds_label(step) || holds_label(effects),
+        Stmt::Counted { body, .. } => holds_label(body),
         Stmt::Switch { arms, .. } => arms.iter().any(|arm| holds_label(arm)),
         _ => false,
     })
@@ -4275,6 +4307,7 @@ fn assignments(body: &[Stmt], variable: VarId) -> usize {
             Stmt::Assign { variable: assigned, .. } => usize::from(*assigned == variable),
             Stmt::If { then_body, else_body, .. } => assignments(then_body, variable) + assignments(else_body, variable),
             Stmt::Loop { body, step, effects, .. } => assignments(body, variable) + assignments(step, variable) + assignments(effects, variable),
+            Stmt::Counted { body, .. } => assignments(body, variable),
             Stmt::Switch { arms, .. } => arms.iter().map(|arm| assignments(arm, variable)).sum(),
             _ => 0,
         })
@@ -4286,6 +4319,7 @@ fn assigns(body: &[Stmt], variable: VarId) -> bool {
         Stmt::Assign { variable: assigned, .. } => *assigned == variable,
         Stmt::If { then_body, else_body, .. } => assigns(then_body, variable) || assigns(else_body, variable),
         Stmt::Loop { body, step, effects, .. } => assigns(body, variable) || assigns(step, variable) || assigns(effects, variable),
+        Stmt::Counted { body, .. } => assigns(body, variable),
         Stmt::Switch { arms, .. } => arms.iter().any(|arm| assigns(arm, variable)),
         _ => false,
     })
@@ -4494,6 +4528,7 @@ fn makes_calls(body: &[Stmt]) -> bool {
         Stmt::Loop { condition, body, step, effects, .. } => {
             condition.as_ref().is_some_and(expression) || makes_calls(body) || makes_calls(step) || makes_calls(effects)
         }
+        Stmt::Counted { count, guard, body } => expression(count) || guard.as_ref().is_some_and(expression) || makes_calls(body),
         Stmt::Switch { value, arms, .. } => expression(value) || arms.iter().any(|arm| makes_calls(arm)),
         Stmt::Break | Stmt::Continue | Stmt::Goto(_) | Stmt::Label(_) => false,
     })
@@ -4564,6 +4599,11 @@ fn references_weighted(body: &[Stmt], variable: VarId, base: usize) -> usize {
                 condition.as_ref().map_or(0, |c| expression(c, variable))
                     + references_weighted(body, variable, base)
                     + references_weighted(step, variable, base) + references_weighted(effects, variable, base)
+            }
+            Stmt::Counted { count, guard, body } => {
+                expression(count, variable)
+                    + guard.as_ref().map_or(0, |g| expression(g, variable))
+                    + references_weighted(body, variable, base)
             }
             Stmt::Switch { value, arms, .. } => {
                 expression(value, variable) + arms.iter().map(|arm| references_weighted(arm, variable, base)).sum::<usize>()

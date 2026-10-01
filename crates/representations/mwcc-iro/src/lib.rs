@@ -204,6 +204,9 @@ pub enum Stmt {
     /// A loop: `condition` tested before each iteration (`test_first`) or
     /// after it; `step` runs after the body (and on `continue`).
     Loop { test_first: bool, condition: Option<Expr>, body: Vec<Stmt>, step: Vec<Stmt>, effects: Vec<Stmt> },
+    /// A loop run `count` times by the count register (`mtctr`, `bdnz`),
+    /// skipped when `guard` is false. `count` is positive when it runs.
+    Counted { count: Expr, guard: Option<Expr>, body: Vec<Stmt> },
     /// A multi-way branch on an integer: each case value selects an arm;
     /// arms are laid out in order and fall through into the next; `default`
     /// is the arm taken by other values (none: leave the switch). `break`
@@ -588,6 +591,12 @@ impl Function {
                             out.push_str(&format!("{pad}step\n"));
                             statements(out, step, depth + 1);
                         }
+                    }
+                    Stmt::Counted { count, guard, body } => {
+                        let guard = guard.as_ref().map_or(String::new(), |g| format!(" if {g}"));
+                        out.push_str(&format!("{pad}counted {count} times{guard}
+"));
+                        statements(out, body, depth + 1);
                     }
                     Stmt::Switch { value, cases, arms, default } => {
                         out.push_str(&format!("{pad}switch {value}\n"));
