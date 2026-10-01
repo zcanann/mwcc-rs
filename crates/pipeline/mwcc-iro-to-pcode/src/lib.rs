@@ -1653,6 +1653,37 @@ impl Lowerer<'_, '_> {
 
     /// Evaluate a word-sized integer/pointer expression into a register.
     fn expression(&mut self, expression: &Expr) -> Compilation<(u32, Type)> {
+        let ExprKind::Load { base, .. } = &expression.kind else { return self.expression_body(expression) };
+        if !self.const_pointee(base) {
+            return self.expression_body(expression);
+        }
+        let (block, start) = (self.current_block(), self.pcode.blocks[self.current_block()].instructions.len());
+        let (result, ty) = self.expression_body(expression)?;
+        // A load through a `const T *` is ordered against no store.
+        if self.current_block() == block {
+            let instructions = &mut self.pcode.blocks[block].instructions[start..];
+            if let Some(load) = instructions.iter_mut().rev().find(|instruction| {
+                load_destination(&instruction.instruction) == Some(result)
+            }) {
+                load.flags.read_only = true;
+            }
+        }
+        Ok((result, ty))
+    }
+
+    /// Whether an address is based on a `const T *` variable.
+    fn const_pointee(&self, base: &Expr) -> bool {
+        if toggle("MWCC_PCODE_CONST_LOADS_ORDERED") {
+            return false;
+        }
+        match &base.kind {
+            ExprKind::Var(id) => self.unit.const_pointers.contains(&self.function.variables[*id].name),
+            ExprKind::Binary(BinaryOp::Add | BinaryOp::Subtract, left, _) => self.const_pointee(left),
+            _ => false,
+        }
+    }
+
+    fn expression_body(&mut self, expression: &Expr) -> Compilation<(u32, Type)> {
         let ty = expression.ty;
         if is_wide(ty) {
             self.target = None;
@@ -5182,5 +5213,25 @@ impl SwitchTree<'_> {
         let changes = self.thresholds(i64::MIN, i64::MAX).len() as i64;
         let span = last.1 - first.0 + 1;
         changes >= 8 && span <= 4 * changes - 6
+    }
+}
+
+/// The register an integer or floating load defines.
+fn load_destination(instruction: &Instruction) -> Option<u32> {
+    use Instruction::*;
+    match *instruction {
+        LoadWord { d, .. }
+        | LoadWordIndexed { d, .. }
+        | LoadHalfwordAlgebraic { d, .. }
+        | LoadHalfwordAlgebraicIndexed { d, .. }
+        | LoadHalfwordZero { d, .. }
+        | LoadHalfwordZeroIndexed { d, .. }
+        | LoadByteZero { d, .. }
+        | LoadByteZeroIndexed { d, .. }
+        | LoadFloatSingle { d, .. }
+        | LoadFloatSingleIndexed { d, .. }
+        | LoadFloatDouble { d, .. }
+        | LoadFloatDoubleIndexed { d, .. } => Some(d),
+        _ => None,
     }
 }

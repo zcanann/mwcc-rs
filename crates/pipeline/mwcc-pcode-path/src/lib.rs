@@ -67,6 +67,7 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         ));
     }
     let no_inline_bodies = HashMap::new();
+    let no_const_pointers = std::collections::HashSet::new();
     // Objects this unit defines (a tentative or initialized definition).
     let defined: std::collections::HashSet<&str> = request
         .globals
@@ -240,6 +241,12 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
             || request.config.build.label.starts_with("Wii/"),
         signed_promoted_truth: request.config.build.label.starts_with("GC/3.") || request.config.build.label.starts_with("Wii/"),
         nonvolatile_pointers: request.nonvolatile_pointers,
+        // (GC/1.x orders them like any load.)
+        const_pointers: if request.config.build.label.starts_with("GC/1.") {
+            &no_const_pointers
+        } else {
+            request.const_pointers
+        },
         keeps_struct_stores: request.config.build.label.starts_with("GC/3.") || request.config.build.label.starts_with("Wii/"),
         const_globals_across_calls: request.config.build.label.starts_with("GC/3.")
             || request.config.build.label.starts_with("Wii/"),

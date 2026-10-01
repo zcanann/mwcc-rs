@@ -1089,6 +1089,8 @@ fn compile(
             mwcc_syntax_trees_to_machine_code::SourceFunctionFacts {
                 is_cxx,
                 nonvolatile_pointer_bindings: &unit.function_nonvolatile_pointer_bindings,
+                parameter_pointee_const: &unit.function_parameter_pointee_const,
+                local_pointee_const: &unit.function_local_pointee_const,
                 parameter_fundamentals: &unit.function_parameter_fundamentals,
                 local_fundamentals: &unit.function_local_fundamentals,
                 variable_function_types: &unit.function_variable_function_types,

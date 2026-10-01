@@ -68,6 +68,9 @@ pub struct SourceFunctionFacts<'a> {
     /// Source language, independent of C++ name mangling or extern-C linkage.
     pub is_cxx: bool,
     pub nonvolatile_pointer_bindings: &'a HashSet<(String, String)>,
+    /// Pointer parameters and locals declared `const T *`.
+    pub parameter_pointee_const: &'a HashSet<(String, String)>,
+    pub local_pointee_const: &'a HashSet<(String, String)>,
     pub parameter_fundamentals:
         &'a HashMap<(String, String), mwcc_syntax_trees::SourceFundamentalType>,
     pub local_fundamentals:
@@ -268,6 +271,13 @@ fn lower_function_body(
         nonvolatile_pointers: &source_facts
             .nonvolatile_pointer_bindings
             .iter()
+            .filter(|(owner, _)| owner == &function.name)
+            .map(|(_, name)| name.clone())
+            .collect(),
+        const_pointers: &source_facts
+            .parameter_pointee_const
+            .iter()
+            .chain(source_facts.local_pointee_const.iter())
             .filter(|(owner, _)| owner == &function.name)
             .map(|(_, name)| name.clone())
             .collect(),
