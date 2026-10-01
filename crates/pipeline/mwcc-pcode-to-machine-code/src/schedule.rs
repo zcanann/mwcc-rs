@@ -315,7 +315,7 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
         }
         for key in &defs {
             for &later in later_uses.get(key).into_iter().flatten() {
-                // (`mtlr` reads a loaded value a cycle late; heights
+                // (`mtlr` reads a loaded value two cycles late; heights
                 // keep the load's latency.)
                 if mtlr_delay()
                     && matches!(instructions[later].instruction, Instruction::MoveToLinkRegister { .. })
@@ -487,7 +487,7 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
                 // earliest, except through a zero-latency edge (see
                 // `same_cycle_release`).
                 let earliest = if same_cycle_release(&instructions[to]) { latency } else { latency.max(1) };
-                let earliest = earliest + u8::from(delayed.contains(&(index, to)));
+                let earliest = earliest + if delayed.contains(&(index, to)) { mtlr_extra() } else { 0 };
                 ready_at[to] = ready_at[to].max(cycle + i64::from(earliest));
             }
             if node.serialize {
@@ -510,6 +510,11 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
     for index in order {
         instructions.push(slots[index].take().expect("each index issues once"));
     }
+}
+
+fn mtlr_extra() -> u8 {
+    static EXTRA: std::sync::OnceLock<u8> = std::sync::OnceLock::new();
+    *EXTRA.get_or_init(|| std::env::var("MWCC_SCHED_MTLR_EXTRA").ok().and_then(|v| v.parse().ok()).unwrap_or(2))
 }
 
 fn mtlr_delay() -> bool {

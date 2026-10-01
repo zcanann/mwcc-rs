@@ -130,18 +130,32 @@ fn statements(body: &mut Vec<Stmt>, function: &mut Function, fold_start: bool) {
             Some(Stmt::Assign { variable, value }) => value.as_int().map(|value| (*variable, value)),
             _ => None,
         };
+        // Constants the loop stores are set before it (loop code motion,
+        // which runs before strength reduction).
+        let hoisted = match &mut body[index] {
+            Stmt::Loop { body: inner, .. } if std::env::var_os("MWCC_IRO_NO_HOIST_CONSTANTS").is_none() => {
+                hoist_stored_constants(inner, function)
+            }
+            _ => Vec::new(),
+        };
         let (inits, folded) = match &mut body[index] {
             Stmt::Loop { condition, body: inner, step, effects, .. } => {
                 reduce_loop(condition.as_mut(), inner, step, effects, initial, fold_start, function)
             }
             _ => (Vec::new(), false),
         };
-        let count = inits.len();
+        let count = inits.len() + hoisted.len();
         // (Before the induction variable's own initialization when they
-        // do not read it.)
+        // do not read it; hoisted constants before that.)
+        let before_start = if initial.is_some() { index - 1 } else { index };
         let at = if folded { index - 1 } else { index };
         for (offset, init) in inits.into_iter().enumerate() {
             body.insert(at + offset, init);
+        }
+        // (After the cursors when those precede the start.)
+        let before_start = if folded { at + count - hoisted.len() } else { before_start };
+        for (offset, constant) in hoisted.into_iter().enumerate() {
+            body.insert(before_start + offset, constant);
         }
         index += count + 1;
     }
@@ -158,7 +172,7 @@ struct Cursor {
 
 fn reduce_loop(
     _condition: Option<&mut Expr>,
-    body: &mut [Stmt],
+    body: &mut Vec<Stmt>,
     step: &mut Vec<Stmt>,
     effects: &mut [Stmt],
     initial: Option<(VarId, i64)>,
@@ -167,25 +181,32 @@ fn reduce_loop(
 ) -> (Vec<Stmt>, bool) {
     let mut inits = Vec::new();
     let mut folded = true;
-    // Induction variables: `v = v + c` in the step, assigned nowhere else.
-    let inductions: Vec<(usize, VarId, i64)> = step
+    // Induction variables: `v = v + c` in the step (or the body's top
+    // level), assigned nowhere else.
+    let update = |statement: &Stmt| match statement {
+        Stmt::Assign { variable, value } => match &value.kind {
+            ExprKind::Binary(BinaryOp::Add, left, right) if left.as_var() == Some(*variable) => {
+                right.as_int().map(|increment| (*variable, increment))
+            }
+            _ => None,
+        },
+        _ => None,
+    };
+    let in_body = std::env::var_os("MWCC_IRO_NO_BODY_INDUCTIONS").is_none();
+    let inductions: Vec<(bool, usize, VarId, i64)> = step
         .iter()
         .enumerate()
-        .filter_map(|(position, statement)| match statement {
-            Stmt::Assign { variable, value } => match &value.kind {
-                ExprKind::Binary(BinaryOp::Add, left, right)
-                    if left.as_var() == Some(*variable) && right.as_int().is_some() =>
-                {
-                    Some((position, *variable, right.as_int().expect("checked")))
-                }
-                _ => None,
-            },
-            _ => None,
-        })
+        .filter_map(|(position, statement)| update(statement).map(|(v, c)| (true, position, v, c)))
+        .chain(
+            body.iter()
+                .enumerate()
+                .filter(|_| in_body)
+                .filter_map(|(position, statement)| update(statement).map(|(v, c)| (false, position, v, c))),
+        )
         .collect();
     // Each cursor advances just before its induction variable.
-    let mut shift = 0;
-    for (position, induction, increment) in inductions {
+    let (mut step_shift, mut body_shift) = (0, 0);
+    for (in_step, position, induction, increment) in inductions {
         let variable = &function.variables[induction];
         if variable.frame.is_some() || variable.volatile || !mwcc_iro::is_general_word(variable.ty) {
             continue;
@@ -209,7 +230,7 @@ fn reduce_loop(
             let ty = cursor.base.ty;
             // (GC/1.0-1.2.5n fold it only while the loop still reads the
             // induction variable's value.)
-            let fold = fold_start || uses(body, induction) > 0;
+            let fold = fold_start || uses(body, induction) > usize::from(!in_step);
             let start = match initial {
                 Some((variable, value)) if variable == induction && fold => {
                     let offset = value * cursor.stride;
@@ -241,8 +262,14 @@ fn reduce_loop(
                 Expr::int(increment * cursor.stride),
                 ty,
             );
-            step.insert(position + shift, Stmt::Assign { variable: cursor.variable, value: advance });
-            shift += 1;
+            let advance = Stmt::Assign { variable: cursor.variable, value: advance };
+            if in_step {
+                step.insert(position + step_shift, advance);
+                step_shift += 1;
+            } else {
+                body.insert(position + body_shift, advance);
+                body_shift += 1;
+            }
         }
     }
     let folded = folded && !inits.is_empty();
@@ -514,4 +541,48 @@ fn based(body: &[Stmt], variable: VarId) -> bool {
         Stmt::Switch { value, arms, .. } => expression(value, variable) || arms.iter().any(|arm| based(arm, variable)),
         Stmt::Break | Stmt::Continue | Stmt::Goto(_) | Stmt::Label(_) => false,
     })
+}
+
+/// Integer constants stored inside a loop: each becomes a variable set
+/// before the loop.
+fn hoist_stored_constants(body: &mut [Stmt], function: &mut Function) -> Vec<Stmt> {
+    fn visit(body: &mut [Stmt], function: &mut Function, hoisted: &mut Vec<(i64, Type, VarId)>) {
+        for statement in body {
+            match statement {
+                Stmt::Store { value, .. } => {
+                    if let Some(constant) = value.as_int() {
+                        if !mwcc_iro::is_float(value.ty) {
+                            let ty = value.ty;
+                            let variable = match hoisted.iter().find(|(k, t, _)| *k == constant && *t == ty) {
+                                Some(&(_, _, variable)) => variable,
+                                None => {
+                                    let variable = function.add_temporary(ty);
+                                    hoisted.push((constant, ty, variable));
+                                    variable
+                                }
+                            };
+                            *value = Expr { kind: ExprKind::Var(variable), ty };
+                        }
+                    }
+                }
+                Stmt::If { then_body, else_body, .. } => {
+                    visit(then_body, function, hoisted);
+                    visit(else_body, function, hoisted);
+                }
+                Stmt::Loop { body, step, effects, .. } => {
+                    visit(body, function, hoisted);
+                    visit(step, function, hoisted);
+                    visit(effects, function, hoisted);
+                }
+                Stmt::Switch { arms, .. } => arms.iter_mut().for_each(|arm| visit(arm, function, hoisted)),
+                _ => {}
+            }
+        }
+    }
+    let mut hoisted = Vec::new();
+    visit(body, function, &mut hoisted);
+    hoisted
+        .into_iter()
+        .map(|(constant, ty, variable)| Stmt::Assign { variable, value: Expr { kind: ExprKind::Int(constant), ty } })
+        .collect()
 }
