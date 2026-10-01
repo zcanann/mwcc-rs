@@ -63,6 +63,33 @@ fn unrolled(before: &Stmt, statement: &Stmt, live_after: &dyn Fn(VarId) -> bool)
         _ => return None,
     };
     let ExprKind::Binary(op, left, right) = &condition.kind else { return None };
+    // (Without unrolling, a loop up to an invariant variable counts in CTR
+    // too: `mtctr n - i0`, skipped unless `n > i0`.)
+    if let (Some(tested), Some(bound), 1, BinaryOp::Less, false) =
+        (left.as_var(), right.as_var(), direction, op, UNROLLING.with(|flag| flag.get()))
+    {
+        let plain = |statement: &Stmt| {
+            !format!("{statement:?}").contains("Call {")
+                && match statement {
+                    Stmt::Assign { variable: assigned, .. } => *assigned != variable && *assigned != bound,
+                    Stmt::Store { .. } => true,
+                    _ => false,
+                }
+        };
+        if tested != variable || body.is_empty() || !body.iter().all(plain) {
+            return None;
+        }
+        let ty = right.ty;
+        let count = if start == 0 {
+            (**right).clone()
+        } else {
+            Expr::binary(BinaryOp::Subtract, (**right).clone(), Expr::int(start), ty)
+        };
+        let guard = Expr { kind: ExprKind::Binary(BinaryOp::Greater, right.clone(), Box::new(Expr::int(start))), ty: condition.ty };
+        let mut counted = body.clone();
+        counted.push(step[0].clone());
+        return Some(vec![Stmt::Counted { count, guard: Some(guard), body: counted }]);
+    }
     let (Some(tested), Some(end)) = (left.as_var(), right.as_int()) else { return None };
     if tested != variable {
         return None;
