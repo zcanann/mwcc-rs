@@ -629,6 +629,10 @@ impl Lowerer<'_, '_> {
             _ => return Ok(false),
         };
         let ExprKind::Call { name, arguments } = &call.kind else { return Ok(false) };
+        // (An argument that calls needs a frame: no sibling call.)
+        if arguments.iter().any(|argument| format!("{:?}", argument.kind).contains("Call {")) {
+            return Ok(false);
+        }
         let mut values = Vec::new();
         for argument in arguments {
             values.push(self.expression(argument)?.0);
@@ -2562,6 +2566,14 @@ impl Lowerer<'_, '_> {
                 self.emit_plain(Instruction::RotateAndMask { a: d, s: a, shift: 0, begin, end });
                 return Ok((d, ty));
             }
+            // A mask with one contiguous hole wraps around: `rlwinm d,a,0,mb,me`
+            // with mb > me.
+            (BinaryOp::BitAnd, _) if wrapped_mask_bounds(right).is_some() && !toggle("MWCC_PCODE_NO_WRAPPED_MASKS") => {
+                let (begin, end) = wrapped_mask_bounds(right).expect("checked");
+                let d = self.result(target);
+                self.emit_plain(Instruction::RotateAndMask { a: d, s: a, shift: 0, begin, end });
+                return Ok((d, ty));
+            }
             (BinaryOp::ShiftLeft, Some(shift)) if (0..32).contains(&shift) => {
                 let d = self.result(target);
                 self.emit_plain(Instruction::ShiftLeftImmediate { a: d, s: a, shift: shift as u8 });
@@ -3567,6 +3579,18 @@ fn unsigned_immediate(expression: &Expr) -> Option<(u16, bool)> {
 }
 
 /// A contiguous mask `x & k` as `rlwinm` bounds (MB..ME, bit 0 = MSB).
+/// `(mb, me)` with mb > me for a mask whose clear bits are one contiguous
+/// run strictly inside the word.
+fn wrapped_mask_bounds(expression: &Expr) -> Option<(u8, u8)> {
+    let value = expression.as_int()?;
+    let mask = u32::try_from(value).ok().or_else(|| i32::try_from(value).ok().map(|v| v as u32))?;
+    if mask & 1 == 0 || mask & 0x8000_0000 == 0 {
+        return None;
+    }
+    let (hole_begin, hole_end) = mask_bounds(&Expr::int(i64::from(!mask)))?;
+    Some((hole_end + 1, hole_begin - 1))
+}
+
 fn mask_bounds(expression: &Expr) -> Option<(u8, u8)> {
     let value = expression.as_int()?;
     let mask = u32::try_from(value).ok().or_else(|| i32::try_from(value).ok().map(|v| v as u32))?;
