@@ -169,6 +169,10 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
             request.inline_bodies
         },
         unoptimized,
+        shift_add_multiply: request.config.build.label.starts_with("GC/3.")
+            || request.config.build.label.starts_with("Wii/"),
+        equality_subtracts_constant: request.config.build.label.starts_with("GC/3.")
+            || request.config.build.label.starts_with("Wii/"),
         // (GC/3.x divides by multiplication at every level.)
         magic_division: behavior.optimization == mwcc_versions::Optimization::O4
             || request.config.build.label.starts_with("GC/3.")

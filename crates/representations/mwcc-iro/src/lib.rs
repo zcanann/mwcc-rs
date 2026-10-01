@@ -63,6 +63,12 @@ pub struct Unit<'a> {
     /// Division by a constant multiplies by its magic number (-O4); below,
     /// it divides (`li; divw`).
     pub magic_division: bool,
+    /// GC/3.x multiplies by `2^n + 1`, `2^n - 1` and `1 - 2^n` (n >= 2) with
+    /// a shift and an add or subtract.
+    pub shift_add_multiply: bool,
+    /// GC/3.x computes `x == K`'s difference as `x - K` (`addi`), earlier
+    /// builds as `K - x` (`subfic`).
+    pub equality_subtracts_constant: bool,
     /// GC/3.x and Wii test a promoted unsigned narrow value signed (`cmpwi`)
     /// unless it needed extending; earlier builds test it logically.
     pub signed_promoted_truth: bool,

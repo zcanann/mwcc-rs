@@ -2449,7 +2449,11 @@ impl Lowerer<'_, '_> {
             }
             (Equal, Some(value), _) if small(value) => {
                 let d = self.temporary();
-                self.emit_plain(Instruction::SubtractFromImmediate { d, a: p, immediate: value as i16 });
+                if self.unit.equality_subtracts_constant {
+                    self.emit_based(Instruction::AddImmediate { d, a: p, immediate: -value as i16 }, p);
+                } else {
+                    self.emit_plain(Instruction::SubtractFromImmediate { d, a: p, immediate: value as i16 });
+                }
                 let n = self.temporary();
                 self.emit_plain(Instruction::CountLeadingZeros { a: n, s: d });
                 return self.shift_out(n, 5, target);
@@ -2502,7 +2506,11 @@ impl Lowerer<'_, '_> {
         match (op, unsigned) {
             (Equal, _) => {
                 let d = self.temporary();
-                self.emit_plain(Instruction::SubtractFrom { d, a: p, b: q });
+                if constant.is_some() && self.unit.equality_subtracts_constant {
+                    self.emit_plain(Instruction::SubtractFrom { d, a: q, b: p });
+                } else {
+                    self.emit_plain(Instruction::SubtractFrom { d, a: p, b: q });
+                }
                 let n = self.temporary();
                 self.emit_plain(Instruction::CountLeadingZeros { a: n, s: d });
                 self.shift_out(n, 5, target)
@@ -2792,6 +2800,30 @@ impl Lowerer<'_, '_> {
             && !toggle("MWCC_PCODE_CALL_OPERAND_IN_ORDER");
         let early = if index_first || calls_first { Some(self.expression(right)?.0) } else { None };
         let (a, _) = self.expression(left)?;
+        // GC/3.x: `x * (2^n ± 1)` = `(x << n) ± x`; `x * (1 - 2^n)` = `x - (x << n)`.
+        let shift_add = (op == BinaryOp::Multiply && self.unit.shift_add_multiply)
+            .then(|| right.as_int())
+            .flatten()
+            .and_then(|value| {
+                (2..31).find_map(|n: u32| {
+                    let power = 1i64 << n;
+                    [(power + 1, 0u8), (power - 1, 1), (1 - power, 2)]
+                        .into_iter()
+                        .find(|&(k, _)| i64::from(value as i32) == k)
+                        .map(|(_, form)| (n as u8, form))
+                })
+            });
+        if let Some((shift, form)) = shift_add {
+            let shifted = self.temporary();
+            self.emit_plain(Instruction::ShiftLeftImmediate { a: shifted, s: a, shift });
+            let d = self.result(target);
+            self.emit_plain(match form {
+                0 => Instruction::Add { d, a: shifted, b: a },
+                1 => Instruction::SubtractFrom { d, a, b: shifted },
+                _ => Instruction::SubtractFrom { d, a: shifted, b: a },
+            });
+            return Ok((d, ty));
+        }
         match (op, immediate) {
             // `x * -2^k` is a shift and a negation (`neg` alone for -1).
             (BinaryOp::Multiply, Some(value)) if value < 0 && value != i16::MIN && (-value as u16).is_power_of_two() => {
