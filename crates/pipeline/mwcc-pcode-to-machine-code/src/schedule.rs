@@ -296,6 +296,7 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
     let mut later_all: Vec<usize> = Vec::new();
     let mut later_in_order: Option<usize> = None;
     let mut edges: Vec<(usize, usize, u8)> = Vec::new();
+    let mut delayed: Vec<(usize, usize)> = Vec::new();
 
     for index in (0..count).rev() {
         let instruction = &instructions[index];
@@ -314,6 +315,14 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
         }
         for key in &defs {
             for &later in later_uses.get(key).into_iter().flatten() {
+                // (`mtlr` reads a loaded value a cycle late; heights
+                // keep the load's latency.)
+                if mtlr_delay()
+                    && matches!(instructions[later].instruction, Instruction::MoveToLinkRegister { .. })
+                    && matches!(memory_of(instruction), Memory::Load(_))
+                {
+                    delayed.push((index, later));
+                }
                 edges.push((index, later, latency));
             }
             for &later in later_defs.get(key).into_iter().flatten() {
@@ -478,6 +487,7 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
                 // earliest, except through a zero-latency edge (see
                 // `same_cycle_release`).
                 let earliest = if same_cycle_release(&instructions[to]) { latency } else { latency.max(1) };
+                let earliest = earliest + u8::from(delayed.contains(&(index, to)));
                 ready_at[to] = ready_at[to].max(cycle + i64::from(earliest));
             }
             if node.serialize {
@@ -500,6 +510,11 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
     for index in order {
         instructions.push(slots[index].take().expect("each index issues once"));
     }
+}
+
+fn mtlr_delay() -> bool {
+    static DELAY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *DELAY.get_or_init(|| std::env::var_os("MWCC_SCHED_NO_MTLR_DELAY").is_none())
 }
 
 /// `MWCC_SCHED_TRACE`: print each pick with the ready candidates

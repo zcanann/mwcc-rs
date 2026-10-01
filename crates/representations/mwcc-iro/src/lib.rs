@@ -90,6 +90,8 @@ pub struct Unit<'a> {
     pub branch_preserving: bool,
     /// GC/1.x-2.x reassociate integer sums (`a + b + c` = `a + (b + c)`).
     pub reassociates_sums: bool,
+    /// Loop strength reduction (`-O3`/`-O4`).
+    pub strength_reduction: bool,
     /// GC/3.x and Wii test a promoted unsigned narrow value signed (`cmpwi`)
     /// unless it needed extending; earlier builds test it logically.
     pub signed_promoted_truth: bool,
