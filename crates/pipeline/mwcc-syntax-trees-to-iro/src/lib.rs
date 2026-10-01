@@ -257,11 +257,15 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         body.extend(builder.statement(statement)?);
     }
     for guard in &function.guards {
-        let condition = promoted(builder.expression(&guard.condition)?);
-        if !builder.post.is_empty() {
-            return Err(unsupported("post-increment in a control condition"));
-        }
+        let mut condition = promoted(builder.expression(&guard.condition)?);
         body.append(&mut builder.pending);
+        // (Steps in the condition run before the branch; the tested value is
+        // copied first when they change it.)
+        if !builder.post.is_empty() {
+            let after = std::mem::take(&mut builder.post);
+            condition = builder.frozen(condition, &after, &mut body);
+            body.extend(after);
+        }
         let value = builder.returned(&guard.value)?;
         let then_body: Vec<Stmt> = builder.pending.drain(..).chain([Stmt::Return(Some(value))]).collect();
         body.push(Stmt::If { condition, then_body, else_body: Vec::new() });
@@ -443,6 +447,41 @@ impl Builder<'_, '_> {
         Ok(out)
     }
 
+    /// A tested value read before `after` (post-steps) runs: the operands
+    /// they change are copied first into `before`, a narrow one kept raw
+    /// (extended at the test).
+    fn frozen(&mut self, value: Expr, after: &[Stmt], before: &mut Vec<Stmt>) -> Expr {
+        let changed = (0..self.variables.len() + self.temporaries.len())
+            .any(|id| body_assigns(after, id) && value.mentions(id));
+        if !changed {
+            return value;
+        }
+        match value.kind {
+            ExprKind::Binary(op, left, right) if op.is_comparison() => {
+                let left = self.frozen(*left, after, before);
+                let right = self.frozen(*right, after, before);
+                Expr::binary(op, left, right, value.ty)
+            }
+            ExprKind::Unary(UnaryOp::LogicalNot, operand) => {
+                let operand = self.frozen(*operand, after, before);
+                Expr::unary(UnaryOp::LogicalNot, operand, value.ty)
+            }
+            kind => {
+                let value = Expr { kind, ty: value.ty };
+                let (inner, ty) = match &value.kind {
+                    ExprKind::Convert(inner) if is_narrow(inner.ty) => ((**inner).clone(), value.ty),
+                    _ => (value.clone(), value.ty),
+                };
+                let id = self.temporary(inner.ty);
+                let local = id - self.variables.len();
+                self.temporaries[local].raw = is_narrow(inner.ty);
+                let copy = Expr { kind: ExprKind::Var(id), ty: inner.ty };
+                before.push(Stmt::Assign { variable: id, value: inner.clone() });
+                if inner.ty == ty { copy } else { Expr { kind: ExprKind::Convert(Box::new(copy)), ty } }
+            }
+        }
+    }
+
     /// A discarded operand's effects; one without effects (a value) is none.
     fn effects_or_nothing(&mut self, expression: &Expression) -> Compilation<Vec<Stmt>> {
         match expression {
@@ -571,6 +610,19 @@ impl Builder<'_, '_> {
                 Statement::Assign { .. } | Statement::Store { .. } | Statement::Expression(_) => out.extend(after),
                 // A register variable's step after `return` is dead.
                 Statement::Return(_) => {}
+                // `if (*p++)`: the steps run before the branch, the tested
+                // value copied first when they change it.
+                Statement::If { .. } if matches!(out.last(), Some(Stmt::If { .. })) => {
+                    let Some(Stmt::If { condition, .. }) = out.last_mut() else { unreachable!() };
+                    let value = std::mem::replace(condition, Expr::int(0));
+                    let mut before = Vec::new();
+                    let value = self.frozen(value, &after, &mut before);
+                    let Some(Stmt::If { condition, .. }) = out.last_mut() else { unreachable!() };
+                    *condition = value;
+                    before.extend(after);
+                    let at = out.len() - 1;
+                    out.splice(at..at, before);
+                }
                 _ => return Err(unsupported("post-increment in a control condition")),
             }
         }
@@ -788,24 +840,7 @@ impl Builder<'_, '_> {
                         let value = promoted(self.expression(condition)?);
                         let mut effects = std::mem::replace(&mut self.pending, pending);
                         let after = std::mem::replace(&mut self.post, post);
-                        // (A value the post-steps change is tested from a copy,
-                        // a narrow one kept raw and extended at the test.)
-                        let changed = (0..self.variables.len() + self.temporaries.len())
-                            .any(|id| body_assigns(&after, id) && value.mentions(id));
-                        let value = if !changed {
-                            value
-                        } else {
-                            let (inner, ty) = match &value.kind {
-                                ExprKind::Convert(inner) if is_narrow(inner.ty) => ((**inner).clone(), value.ty),
-                                _ => (value.clone(), value.ty),
-                            };
-                            let id = self.temporary(inner.ty);
-                            let local = id - self.variables.len();
-                            self.temporaries[local].raw = is_narrow(inner.ty);
-                            let copy = Expr { kind: ExprKind::Var(id), ty: inner.ty };
-                            effects.push(Stmt::Assign { variable: id, value: inner.clone() });
-                            if inner.ty == ty { copy } else { Expr { kind: ExprKind::Convert(Box::new(copy)), ty } }
-                        };
+                        let value = self.frozen(value, &after, &mut effects);
                         effects.extend(after);
                         (Some(value), effects)
                     }
@@ -1609,12 +1644,12 @@ impl Builder<'_, '_> {
                     }
                 }
                 if !prototyped {
-                    // Default argument promotions; floating arguments of an
-                    // unprototyped call also set CR1 (not modeled).
-                    if arguments.iter().any(|argument| is_float(argument.ty)) {
-                        return Err(unsupported("floating argument to a call without a prototype"));
-                    }
-                    let arguments = arguments.into_iter().map(promoted).collect();
+                    // Default argument promotions (a floating one widens to
+                    // double; MWCC sets no CR bit for these calls).
+                    let arguments = arguments
+                        .into_iter()
+                        .map(|argument| if is_float(argument.ty) { converted(argument, Type::Double) } else { promoted(argument) })
+                        .collect();
                     return Ok(Expr { kind: ExprKind::Call { name: name.to_owned(), arguments }, ty });
                 }
                 // The caller converts an argument to a narrow parameter's type.
