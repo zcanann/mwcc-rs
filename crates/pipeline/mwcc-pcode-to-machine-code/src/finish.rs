@@ -99,7 +99,11 @@ pub fn finish(
                     | Instruction::FloatNegativeMultiplyAddSingle { .. }
                     | Instruction::FloatNegativeMultiplySubtractSingle { .. }
                     | Instruction::RoundToSingle { .. }
-            )
+            ) || (!toggle("MWCC_PCODE_PAIRED_ARITHMETIC_ONLY")
+                && matches!(
+                    instruction.instruction,
+                    Instruction::LoadFloatSingle { .. } | Instruction::LoadFloatSingleIndexed { .. }
+                ))
         });
     // Callee-saved registers the code writes: claimed by coloring, or
     // assigned directly (`-O0` register variables).
