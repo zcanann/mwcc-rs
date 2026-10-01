@@ -1179,6 +1179,8 @@ impl Lowerer<'_, '_> {
             && self.raw_narrow[variable]
             && (match &value.kind {
                 ExprKind::Var(_) | ExprKind::Load { .. } | ExprKind::Global(_) => value.ty == variable_type,
+                // (A floating value converted to the variable's type.)
+                ExprKind::Convert(inner) if is_float(inner.ty) => value.ty == variable_type,
                 ExprKind::Binary(_, left, right) => {
                     matches!(unpromoted(left).kind, ExprKind::Var(id) if id == variable) && right.as_int().is_some()
                 }
@@ -1189,7 +1191,7 @@ impl Lowerer<'_, '_> {
         // optimized; -O0 extends at each read instead.)
         let narrow = is_narrow(variable_type)
             && (!mwcc_syntax_trees_to_iro_fits(value, variable_type)
-                || (raw && !self.unoptimized && matches!(value.kind, ExprKind::Load { .. } | ExprKind::Global(_))))
+                || (raw && !self.unoptimized && matches!(value.kind, ExprKind::Load { .. } | ExprKind::Global(_) | ExprKind::Convert(_))))
             && !kept_raw;
         // (A narrow value of the variable's own type needs no conversion.)
         let converts = narrow && (value.ty != variable_type || raw || toggle("MWCC_PCODE_NO_NARROW_ASSIGN_TARGET"));
@@ -1208,7 +1210,7 @@ impl Lowerer<'_, '_> {
         let (source, source_type) =
             self.expression_with_target(value, if converts { None } else { Some(destination) })?;
         if narrow && (source_type != variable_type || raw) {
-            let raw_load = raw && !self.unoptimized && matches!(value.kind, ExprKind::Load { .. } | ExprKind::Global(_));
+            let raw_load = raw && !self.unoptimized && matches!(value.kind, ExprKind::Load { .. } | ExprKind::Global(_) | ExprKind::Convert(_));
             let (converted, _) = if raw_load && source_type == variable_type && !toggle("MWCC_PCODE_RAW_ASSIGN_UNEXTENDED") {
                 // A raw value of the variable's own type is extended as it.
                 self.emit_plain(extension(variable_type, destination, source));
@@ -1774,6 +1776,8 @@ impl Lowerer<'_, '_> {
             ExprKind::Var(id) => self.raw_narrow[*id] || self.homes[*id].is_some() && expression.ty == Type::Char,
             // A same-type conversion is a no-op: still raw.
             ExprKind::Convert(operand) if operand.ty == expression.ty => self.is_raw(operand),
+            // A floating value converted to a narrow type is its raw word.
+            ExprKind::Convert(operand) => is_float(operand.ty) && is_narrow(expression.ty),
             _ => false,
         }
     }
@@ -2135,6 +2139,24 @@ impl Lowerer<'_, '_> {
                 } else {
                     Instruction::FloatSubtractDouble { d, a: loaded, b: bias }
                 });
+                Ok((d, to))
+            }
+            // To unsigned: MWCC's runtime helper.
+            (from, Type::UnsignedInt) if is_float(from) && !toggle("MWCC_PCODE_NO_FP2UNSIGNED") => {
+                let argument = Expr { kind: ExprKind::Convert(Box::new(operand.clone())), ty: Type::Double };
+                let argument = if from == Type::Double { operand.clone() } else { argument };
+                let d = self.call("__cvt_fp2unsigned", &[argument], Type::UnsignedInt, target)?;
+                Ok((d, Type::UnsignedInt))
+            }
+            // To a narrow type: as to int; the word is the raw narrow value.
+            (from, to) if is_float(from) && is_narrow(to) && !toggle("MWCC_PCODE_NO_FLOAT_TO_NARROW") => {
+                let (source, _) = self.expression(operand)?;
+                let slot = self.conversion_slot();
+                let rounded = self.fresh(Type::Double);
+                self.emit_plain(Instruction::ConvertToIntegerWordZero { d: rounded, b: source });
+                self.emit_plain(Instruction::StoreFloatDouble { s: rounded, a: 1, offset: slot });
+                let d = self.result(target);
+                self.emit_plain(Instruction::LoadWord { d, a: 1, offset: slot + 4 });
                 Ok((d, to))
             }
             (from, to) if is_float(from) && matches!(to, Type::Int) => {
@@ -3576,7 +3598,9 @@ impl Lowerer<'_, '_> {
         for (index, value) in values.into_iter().enumerate() {
             if is_float(arguments[index].ty) {
                 let value = value.expect("floating arguments are evaluated");
-                self.emit_plain(Instruction::FloatMove { d: float, b: value });
+                if value != float {
+                    self.emit_plain(Instruction::FloatMove { d: float, b: value });
+                }
                 argument_registers.push(Register::float(float));
                 float += 1;
                 continue;

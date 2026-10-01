@@ -206,6 +206,11 @@ pub fn narrowing(function: &mut Function) {
 
 fn narrowing_in(body: &mut [Stmt], return_type: Type, variables: &[Type]) {
     fn strip(expression: &mut Expr, bytes: u32) {
+        // (Only integer low-bit arithmetic: a floating operation needs its
+        // converted operands.)
+        if mwcc_iro::is_float(expression.ty) {
+            return;
+        }
         match &mut expression.kind {
             ExprKind::Convert(operand)
                 if !is_narrow(expression.ty) && is_narrow(operand.ty) && width(operand.ty) >= bytes =>

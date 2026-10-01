@@ -133,6 +133,16 @@ fn color_class(
     if count <= FIRST_VIRTUAL as usize {
         return Ok(Vec::new());
     }
+    // A register beyond the class's count is an internal error (an operand
+    // of the other register class): refuse rather than panic.
+    for instruction in operand_registers(function) {
+        if instruction.uses(class).iter().chain(instruction.defs(class).iter()).any(|&register| register as usize >= count) {
+            return Err(mwcc_core::Diagnostic::error(format!(
+                "PCode coloring: a register outside its class in {:?} (internal error)",
+                instruction.instruction
+            )));
+        }
+    }
 
     let live_out = solve_liveness(function, class, count);
     if delete_dead {
