@@ -56,6 +56,9 @@ pub fn build_unoptimized_compile(function: &ast::Function, unit: &Unit<'_>) -> C
 
 /// Build the IR without running the IRO passes.
 pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
+    if std::env::var("MWCC_SYNTAX_DUMP").is_ok_and(|name| name == function.name) {
+        eprintln!("{:#?}", function.statements);
+    }
     if function.asm_body.is_some() || !function.inline_asm_blocks.is_empty() {
         return Err(unsupported("inline assembly"));
     }
@@ -711,6 +714,16 @@ impl Builder<'_, '_> {
                 let base = self.member_base(base, *index_stride)?;
                 let (base, index, offset, ty) = displaced(base, *offset as i32, *member_type);
                 Ok((Place::Memory { base, index, offset }, ty))
+            }
+            // An element of an embedded array of structs (`s->w[i]`): the
+            // object itself.
+            Expression::Index { base: array, .. }
+                if matches!(array.as_ref(), Expression::Member { member_type: Type::Struct { .. }, .. }) =>
+            {
+                let Expression::Member { member_type: Type::Struct { size, align }, .. } = array.as_ref() else { unreachable!() };
+                let (size, align) = (*size, *align);
+                let address = self.address_of(target)?;
+                Ok((Place::Memory { base: Box::new(address), index: None, offset: 0 }, Type::Struct { size, align }))
             }
             Expression::Index { base, index } => {
                 let pointer = self.pointer_sum(base, index)?;
