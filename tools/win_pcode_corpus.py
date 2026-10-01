@@ -103,10 +103,10 @@ def evaluate(tu: dict, mwcc: Path, root: Path, timeout: int) -> dict:
             return result
         flags = access + flags
         reference = parity.elf_functions(ref_o.read_bytes())
-        legacy, legacy_skipped, legacy_failure = compile_ours(
-            mwcc, tu, flags, project, scratch / "legacy.o", timeout, pcode=False)
+        # (PCode is the only code generator: one compile serves both.)
         pcode, pcode_skipped, pcode_failure = compile_ours(
             mwcc, tu, flags, project, scratch / "pcode.o", timeout, pcode=True)
+        legacy, legacy_skipped, legacy_failure = pcode, pcode_skipped, pcode_failure
         result["status"] = "OK" if not (legacy_failure or pcode_failure) else "PARTIAL"
         result["legacy_failure"] = legacy_failure
         result["pcode_failure"] = pcode_failure

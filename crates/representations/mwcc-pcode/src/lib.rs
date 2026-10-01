@@ -86,6 +86,9 @@ pub struct PInstr {
     pub flags: InstructionFlags,
     /// Source line of the statement this instruction was generated for.
     pub source_line: Option<u32>,
+    /// A displacement the object writer completes with this data symbol's
+    /// section offset (an access through a section anchor).
+    pub displacement_symbol: Option<String>,
 }
 
 impl PInstr {
@@ -98,6 +101,7 @@ impl PInstr {
             not_r0: Vec::new(),
             flags: InstructionFlags::default(),
             source_line: None,
+            displacement_symbol: None,
         }
     }
 

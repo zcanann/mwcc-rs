@@ -84,6 +84,8 @@ pub fn lower(
         contract,
         float_constants: HashMap::new(),
         frame_offsets: vec![None; function.variables.len()],
+        anchored: anchored_objects(function, unit),
+        store_displacement: None,
         frame_cursor: 8,
         escaped_frame_objects: Vec::new(),
     };
@@ -165,6 +167,10 @@ struct Lowerer<'a, 'u> {
     float_constants: HashMap<(u64, u8), u32>,
     /// r1 offset of each frame variable.
     frame_offsets: Vec<Option<i16>>,
+    /// Objects addressed through their section anchor in this function.
+    anchored: HashMap<String, &'static str>,
+    /// The anchored object a store's displacement completes with.
+    store_displacement: Option<String>,
     /// Next free byte of the local area (r1-relative).
     frame_cursor: u32,
     /// Frame objects whose address the code computes.
@@ -1146,8 +1152,10 @@ impl Lowerer<'_, '_> {
             });
         let narrow = is_narrow(variable_type) && !mwcc_syntax_trees_to_iro_fits(value, variable_type) && !kept_raw;
         let raw = self.is_raw(value);
+        // (A narrow value of the variable's own type needs no conversion.)
+        let converts = narrow && (value.ty != variable_type || raw || toggle("MWCC_PCODE_NO_NARROW_ASSIGN_TARGET"));
         let (source, source_type) =
-            self.expression_with_target(value, if narrow { None } else { Some(destination) })?;
+            self.expression_with_target(value, if converts { None } else { Some(destination) })?;
         if narrow && (source_type != variable_type || raw) {
             let (converted, _) = self.convert(source, source_type, variable_type, Some(destination))?;
             if converted != destination {
@@ -1439,7 +1447,16 @@ impl Lowerer<'_, '_> {
                 }
                 let global = self.unit.globals[name];
                 let external = || RelocationTarget::External(name.clone());
-                let d = if global.small_data {
+                let d = if let Some(anchor) = self.anchored.get(name).copied() {
+                    // `addi d,anchor,<offset of the object>`
+                    let base = self.anchor_register(anchor);
+                    let d = self.result(target);
+                    let mut addi = PInstr::new(Instruction::AddImmediate { d, a: base, immediate: 0 });
+                    addi.not_r0.push(base);
+                    addi.displacement_symbol = Some(name.clone());
+                    self.emit(addi);
+                    d
+                } else if global.small_data {
                     let d = self.result(target);
                     let mut li = PInstr::new(Instruction::AddImmediate { d, a: 0, immediate: 0 });
                     li.relocation = Some(AttachedRelocation { kind: RelocationKind::EmbSda21, target: external() });
@@ -1522,6 +1539,10 @@ impl Lowerer<'_, '_> {
                 }
             }
             // A small-data object's first member loads through `@sda21`.
+            ExprKind::Load { base, index: None, offset: 0 } if self.anchored_object(base).is_some() => {
+                let (name, anchor) = self.anchored_object(base).expect("checked");
+                self.anchored_load(ty, anchor, &name, target)
+            }
             ExprKind::Load { base, index: None, offset: 0 } if self.small_data_object(base).is_some() => {
                 let name = self.small_data_object(base).expect("checked").to_owned();
                 let relocation = AttachedRelocation { kind: RelocationKind::EmbSda21, target: RelocationTarget::External(name) };
@@ -1759,6 +1780,9 @@ impl Lowerer<'_, '_> {
         if global.small_data {
             let relocation = AttachedRelocation { kind: RelocationKind::EmbSda21, target: external() };
             return self.load(global.ty, 0, 0, Some(relocation), target);
+        }
+        if let Some(anchor) = self.anchored.get(name).copied() {
+            return self.anchored_load(global.ty, anchor, name, target);
         }
         let address = self.absolute_address(name);
         self.load(global.ty, address, 0, None, target)
@@ -2829,6 +2853,41 @@ impl Lowerer<'_, '_> {
     }
 
     /// The small-data object a base addresses (`&g`).
+    /// An object addressed through its section anchor: (name, anchor).
+    fn anchored_object(&self, base: &Expr) -> Option<(String, &'static str)> {
+        match &base.kind {
+            ExprKind::GlobalAddress(name) => self.anchored.get(name).map(|&anchor| (name.clone(), anchor)),
+            _ => None,
+        }
+    }
+
+    /// The section anchor's address (`lis; addi`), shared like a global's.
+    fn anchor_register(&mut self, anchor: &'static str) -> u32 {
+        let key = format!("&@{anchor}");
+        let shared = !self.unoptimized;
+        if shared {
+            if let Some(&(register, _, _)) = self.common.get(&key) {
+                return register;
+            }
+        }
+        let d = self.absolute_address(anchor);
+        if shared {
+            self.common.insert(key, (d, Type::Pointer(mwcc_iro::Pointee::Int), Vec::new()));
+        }
+        d
+    }
+
+    /// A load of an anchored object: `op d,<offset>(anchor)`.
+    fn anchored_load(&mut self, ty: Type, anchor: &'static str, name: &str, target: Option<u32>) -> Compilation<(u32, Type)> {
+        let base = self.anchor_register(anchor);
+        let loaded = self.load(ty, base, 0, None, target)?;
+        let block = self.current_block();
+        if let Some(last) = self.pcode.blocks[block].instructions.last_mut() {
+            last.displacement_symbol = Some(name.to_owned());
+        }
+        Ok(loaded)
+    }
+
     fn small_data_object<'e>(&self, base: &'e Expr) -> Option<&'e str> {
         match &base.kind {
             ExprKind::GlobalAddress(name)
@@ -2917,6 +2976,16 @@ impl Lowerer<'_, '_> {
                 let (high, low) = split_address(base.as_int().expect("checked") + i64::from(*offset))?;
                 let (a, _) = self.expression(&Expr::int(i64::from(high) << 16))?;
                 (a, low, None, None)
+            }
+            Place::Memory { base, index: None, offset: 0 } if self.anchored_object(base).is_some() => {
+                let (name, anchor) = self.anchored_object(base).expect("checked");
+                self.store_displacement = Some(name);
+                (self.anchor_register(anchor), 0, None, None)
+            }
+            Place::Global(name) if self.anchored.contains_key(name) => {
+                let anchor = self.anchored[name];
+                self.store_displacement = Some(name.clone());
+                (self.anchor_register(anchor), 0, None, None)
             }
             Place::Memory { base, index: None, offset: 0 } if self.small_data_object(base).is_some() => {
                 let name = self.small_data_object(base).expect("checked").to_owned();
@@ -3262,6 +3331,7 @@ impl Lowerer<'_, '_> {
             instruction.not_r0.push(base);
         }
         instruction.relocation = relocation;
+        instruction.displacement_symbol = self.store_displacement.take();
         self.emit(instruction);
         self.forget_loaded_globals(false);
         self.common.retain(|key, _| !key.starts_with('*'));
@@ -3750,6 +3820,41 @@ fn variable_rotate<'e>(shifted_left: &'e Expr, shifted_right: &'e Expr) -> Optio
         return None;
     }
     (complement(b, a) || complement(a, b)).then_some((x.as_ref(), a.as_ref()))
+}
+
+/// Objects a function addresses through their section anchor: those of a
+/// section from which it refers to three or more distinct objects.
+fn anchored_objects(function: &Function, unit: &Unit<'_>) -> HashMap<String, &'static str> {
+    let mut anchored = HashMap::new();
+    if unit.unoptimized {
+        return anchored;
+    }
+    let listing = format!("{:?}", function.body);
+    let mut names: Vec<&str> = Vec::new();
+    for marker in ["Global(\"", "GlobalAddress(\""] {
+        let mut rest = listing.as_str();
+        while let Some(at) = rest.find(marker) {
+            rest = &rest[at + marker.len()..];
+            let Some(end) = rest.find('"') else { break };
+            let name = &rest[..end];
+            if !names.contains(&name) {
+                names.push(name);
+            }
+        }
+    }
+    for section in ["...bss.0", "...data.0"] {
+        let members: Vec<&str> = names
+            .iter()
+            .copied()
+            .filter(|name| unit.globals.get(*name).is_some_and(|global| global.anchor == Some(section)))
+            .collect();
+        if members.len() >= 3 {
+            for name in members {
+                anchored.insert(name.to_owned(), section);
+            }
+        }
+    }
+    anchored
 }
 
 /// A narrow variable's promotion: the variable.

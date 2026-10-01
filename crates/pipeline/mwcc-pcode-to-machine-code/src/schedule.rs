@@ -175,6 +175,11 @@ fn memory_of(instruction: &PInstr) -> Memory {
     if is_load && instruction.flags.read_only {
         return Memory::None;
     }
+    // An access through a section anchor touches its named object.
+    if let Some(symbol) = &instruction.displacement_symbol {
+        let object = (std::env::var_os("MWCC_SCHED_ANCHOR_WILDCARD").is_none()).then(|| ObjectKey::Symbol(symbol.clone()));
+        return if is_load { Memory::Load(object) } else { Memory::Store(object) };
+    }
     let object = match (&instruction.relocation, &instruction.instruction) {
         // Nothing stores to the constant pool: its loads are unordered.
         (Some(relocation), _)

@@ -272,8 +272,15 @@ pub fn finish(
 
     let mut instructions: Vec<Instruction> = Vec::new();
     let mut relocations: Vec<Relocation> = Vec::new();
+    let mut deferred_displacements = Vec::new();
     for block in &pcode.blocks {
         for instruction in &block.instructions {
+            if let Some(symbol) = &instruction.displacement_symbol {
+                deferred_displacements.push(mwcc_machine_code::DeferredDisplacement {
+                    instruction_index: instructions.len(),
+                    target: mwcc_machine_code::DeferredDisplacementTarget::Symbol(symbol.clone()),
+                });
+            }
             if let Some(relocation) = &instruction.relocation {
                 relocations.push(Relocation {
                     instruction_index: instructions.len(),
@@ -312,6 +319,7 @@ pub fn finish(
     }
     output.instructions = instructions;
     output.relocations = relocations;
+    output.deferred_displacements = deferred_displacements;
     output.string_literals = pcode.strings.clone();
     for (bytes, alignment) in &pcode.rodata_images {
         output.anonymous_rodata.push(mwcc_machine_code::AnonymousRodata {
@@ -807,6 +815,11 @@ fn fold_absolute_displacements(pcode: &mut PCodeFunction, into_own_base: bool) {
                 }
             };
             let access = &block.instructions[index + 1];
+            // (A section-anchor access keeps its own displacement.)
+            if access.displacement_symbol.is_some() {
+                index += 1;
+                continue;
+            }
             let later_use = block.instructions[index + 2..].iter().any(|i| i.uses(Class::General).contains(&address))
                 || live_out[number] & (1 << address) != 0;
             let folded = match access.instruction.clone() {

@@ -24,6 +24,11 @@ pub fn install() {
     mwcc_syntax_trees_to_machine_code::install_pcode_lowering(lower);
 }
 
+/// Whether a definition has nonzero contents (`.data`; zero is `.bss`).
+fn initialized(bytes: Option<&[u8]>, values: Option<&[i64]>, relocated: bool) -> bool {
+    relocated || bytes.is_some_and(|bytes| bytes.iter().any(|&byte| byte != 0)) || values.is_some_and(|values| values.iter().any(|&value| value != 0))
+}
+
 /// Lower `request.function`, or explain what is not modeled yet.
 pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
     let behavior = Behavior::resolve(request.config);
@@ -40,6 +45,13 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         ));
     }
     let no_inline_bodies = HashMap::new();
+    // Objects this unit defines (a tentative or initialized definition).
+    let defined: std::collections::HashSet<&str> = request
+        .globals
+        .iter()
+        .filter(|global| !global.is_extern && std::env::var_os("MWCC_PCODE_NO_SECTION_ANCHORS").is_none())
+        .map(|global| global.name.as_str())
+        .collect();
     let mut globals: HashMap<String, GlobalInfo> = request
         .globals
         .iter()
@@ -66,10 +78,42 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
                     is_volatile: global.is_volatile,
                     is_function: false,
                     is_const: global.is_const && !global.is_volatile,
+                    anchor: (defined.contains(global.name.as_str()) && !small_data && !global.is_const)
+                        .then(|| if initialized(global.data_bytes.as_deref(), global.initializer.as_deref(), !global.data_relocations.is_empty() || global.address_initializer.is_some()) { "...data.0" } else { "...bss.0" }),
                 },
             )
         })
         .collect();
+    // A section is anchored only while every object of it sits within a
+    // signed 16-bit displacement of its start.
+    for section in ["...bss.0", "...data.0"] {
+        let total: u32 = request
+            .globals
+            .iter()
+            .filter(|global| globals.get(&global.name).is_some_and(|info| info.anchor == Some(section)))
+            .map(|global| {
+                let element = match global.declared_type {
+                    mwcc_syntax_trees::Type::Struct { size, .. } => size,
+                    other => u32::from(other.width()) / 8,
+                };
+                // (An unknown size counts as out of range.)
+                match (global.array_length, global.array_length_inferred) {
+                    (_, true) => 0x8000,
+                    (Some(length), false) => element * u32::from(length),
+                    (None, false) => element.max(1),
+                }
+                .div_ceil(8)
+                    * 8
+            })
+            .sum();
+        if total > 0x7fff {
+            for info in globals.values_mut() {
+                if info.anchor == Some(section) {
+                    info.anchor = None;
+                }
+            }
+        }
+    }
     // Function statics address like globals of their size.
     for local in request.static_locals {
         let addressing = if local.is_const { behavior.read_only_global_addressing } else { behavior.global_addressing };
@@ -87,6 +131,7 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
                 is_volatile: local.is_volatile,
                 is_function: false,
                 is_const: local.is_const && !local.is_volatile,
+                anchor: None,
             },
         );
     }
@@ -102,6 +147,7 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
                     is_volatile: false,
                     is_function: true,
                     is_const: false,
+                    anchor: None,
                 },
             );
         }

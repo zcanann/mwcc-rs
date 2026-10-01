@@ -27,6 +27,10 @@ pub struct GlobalInfo {
     pub is_function: bool,
     /// `const`: a loaded value stays valid across stores.
     pub is_const: bool,
+    /// An object this unit defines outside small data: its section anchor
+    /// (`...bss.0` / `...data.0`), through which a function referring to
+    /// three or more such objects of one section addresses them.
+    pub anchor: Option<&'static str>,
 }
 
 /// The callee name of an indirect call: the target address is the call's

@@ -85,20 +85,35 @@ pub fn bss_object_order(
             place(index);
         }
     }
-    if !small_data || format.local_data_symbols_in_declaration_order {
+    if !small_data {
+        // `-sdata 0`: explicitly zero-initialized objects at their
+        // declaration, then first references, then the unreferenced in
+        // reverse declaration order.
+        let mut names = HashMap::new();
+        for index in &bss {
+            names.entry(objects[*index].name).or_insert(*index);
+            if objects[*index].is_explicit_zero {
+                place(*index);
+            }
+        }
+        for name in references.iter().flatten() {
+            if let Some(index) = names.get(name.as_str()) {
+                place(*index);
+            }
+        }
+        for index in bss.iter().rev() {
+            place(*index);
+        }
+        return order;
+    }
+    if format.local_data_symbols_in_declaration_order {
         for index in &bss {
             if objects[*index].is_static {
                 place(*index);
             }
         }
     }
-    if !small_data {
-        for index in bss.iter().rev() {
-            if !objects[*index].is_static {
-                place(*index);
-            }
-        }
-    } else {
+    {
         let mut names = HashMap::new();
         for index in &bss {
             names.entry(objects[*index].name).or_insert(*index);
