@@ -2589,9 +2589,32 @@ fn increment_assignment(target: Expression, operator: BinaryOperator) -> Express
             value: Box::new(value),
         }
     };
-    Expression::Assign {
+    let cast = target_type_of(&value).cloned();
+    let assignment = Expression::Assign {
         target: Box::new(assignment_target),
         value: Box::new(value),
+    };
+    // A step of a cast lvalue (`--((u8*)p)`, an MWCC extension) has the
+    // cast's type: dereferencing it accesses that type.
+    match cast {
+        Some(target_type) => Expression::Cast { target_type, operand: Box::new(assignment) },
+        None => assignment,
+    }
+}
+
+/// The cast type of a step's left operand when the stepped lvalue is a cast
+/// (`(T)x ± 1`).
+fn target_type_of(value: &Expression) -> Option<&Type> {
+    let value = match value {
+        Expression::IndexedUpdateValue { value } => value.as_ref(),
+        other => other,
+    };
+    match value {
+        Expression::Binary { left, .. } => match left.as_ref() {
+            Expression::Cast { target_type, .. } => Some(target_type),
+            _ => None,
+        },
+        _ => None,
     }
 }
 

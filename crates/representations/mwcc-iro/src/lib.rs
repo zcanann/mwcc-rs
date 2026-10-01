@@ -136,6 +136,8 @@ pub struct Variable {
     pub frame: Option<(u32, u32)>,
     /// A local declared with an initializer.
     pub initialized: bool,
+    /// A narrow copy held as loaded (unextended); each read extends it.
+    pub raw: bool,
 }
 
 /// A function at the IRO level.
@@ -157,7 +159,7 @@ pub struct Function {
 impl Function {
     pub fn add_temporary(&mut self, ty: Type) -> VarId {
         let id = self.variables.len();
-        self.variables.push(Variable { name: format!("@t{id}"), ty, kind: VariableKind::Temporary, frame: None, initialized: false });
+        self.variables.push(Variable { name: format!("@t{id}"), ty, kind: VariableKind::Temporary, frame: None, initialized: false, raw: false });
         id
     }
 }
@@ -185,7 +187,7 @@ pub enum Stmt {
     Return(Option<Expr>),
     /// A loop: `condition` tested before each iteration (`test_first`) or
     /// after it; `step` runs after the body (and on `continue`).
-    Loop { test_first: bool, condition: Option<Expr>, body: Vec<Stmt>, step: Vec<Stmt> },
+    Loop { test_first: bool, condition: Option<Expr>, body: Vec<Stmt>, step: Vec<Stmt>, effects: Vec<Stmt> },
     /// A multi-way branch on an integer: each case value selects an arm;
     /// arms are laid out in order and fall through into the next; `default`
     /// is the arm taken by other values (none: leave the switch). `break`
@@ -554,10 +556,15 @@ impl Function {
                     Stmt::SetReturn(value) => out.push_str(&format!("{pad}result = {value}\n")),
                     Stmt::Return(Some(value)) => out.push_str(&format!("{pad}return {value}\n")),
                     Stmt::Return(None) => out.push_str(&format!("{pad}return\n")),
-                    Stmt::Loop { test_first, condition, body, step } => {
+                    Stmt::Loop { test_first, condition, body, step, effects } => {
                         let condition = condition.as_ref().map_or("forever".to_owned(), |c| c.to_string());
                         out.push_str(&format!("{pad}loop ({}) {condition}\n", if *test_first { "while" } else { "do" }));
                         statements(out, body, depth + 1);
+                        if !effects.is_empty() {
+                            out.push_str(&format!("{pad}before each test
+"));
+                            statements(out, effects, depth + 1);
+                        }
                         if !step.is_empty() {
                             out.push_str(&format!("{pad}step\n"));
                             statements(out, step, depth + 1);

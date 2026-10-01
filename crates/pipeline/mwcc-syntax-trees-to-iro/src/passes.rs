@@ -50,6 +50,7 @@ pub fn scalarize(function: &mut Function, keeps_struct_stores: bool) {
                 kind: VariableKind::Local,
                 frame: None,
                 initialized: false,
+            raw: false,
             });
         }
         let keep = keeps_struct_stores && matches!(function.variables[id].ty, Type::Struct { .. });
@@ -87,12 +88,13 @@ fn scan_fields(body: &mut [Stmt], id: VarId, fields: &mut Vec<(i32, Type)>, esca
                 scan_fields(then_body, id, fields, escapes);
                 scan_fields(else_body, id, fields, escapes);
             }
-            Stmt::Loop { condition, body, step, .. } => {
+            Stmt::Loop { condition, body, step, effects, .. } => {
                 if let Some(condition) = condition {
                     expression(condition, id, fields, escapes);
                 }
                 scan_fields(body, id, fields, escapes);
                 scan_fields(step, id, fields, escapes);
+                scan_fields(effects, id, fields, escapes);
             }
             Stmt::Switch { value, arms, .. } => {
                 expression(value, id, fields, escapes);
@@ -138,7 +140,7 @@ fn replace_fields(body: Vec<Stmt>, id: VarId, map: &HashMap<i32, VarId>, keep: b
                     else_body: replace_fields(else_body, id, map, keep),
                 });
             }
-            Stmt::Loop { test_first, mut condition, body, step } => {
+            Stmt::Loop { test_first, mut condition, body, step, effects } => {
                 if let Some(condition) = &mut condition {
                     expression(condition, id, map);
                 }
@@ -147,6 +149,7 @@ fn replace_fields(body: Vec<Stmt>, id: VarId, map: &HashMap<i32, VarId>, keep: b
                     condition,
                     body: replace_fields(body, id, map, keep),
                     step: replace_fields(step, id, map, keep),
+                    effects: replace_fields(effects, id, map, keep),
                 });
             }
             Stmt::Switch { mut value, cases, arms, default } => {
@@ -263,9 +266,10 @@ fn narrowing_in(body: &mut [Stmt], return_type: Type, variables: &[Type]) {
                 narrowing_in(else_body, return_type, variables);
                 None
             }
-            Stmt::Loop { body, step, .. } => {
+            Stmt::Loop { body, step, effects, .. } => {
                 narrowing_in(body, return_type, variables);
                 narrowing_in(step, return_type, variables);
+                narrowing_in(effects, return_type, variables);
                 None
             }
             Stmt::Switch { arms, .. } => {
@@ -390,9 +394,10 @@ pub fn constant_branches(body: &mut Vec<Stmt>) {
                 constant_branches(then_body);
                 constant_branches(else_body);
             }
-            Stmt::Loop { body, step, .. } => {
+            Stmt::Loop { body, step, effects, .. } => {
                 constant_branches(body);
                 constant_branches(step);
+                constant_branches(effects);
             }
             Stmt::Switch { arms, .. } => arms.iter_mut().for_each(constant_branches),
             _ => {}
@@ -401,12 +406,16 @@ pub fn constant_branches(body: &mut Vec<Stmt>) {
             Stmt::If { condition, then_body, else_body } if condition.as_int().is_some() => {
                 out.extend(if condition.as_int() != Some(0) { then_body } else { else_body });
             }
-            Stmt::Loop { test_first: true, condition: Some(condition), .. } if condition.as_int() == Some(0) => {}
-            Stmt::Loop { test_first: false, condition: Some(condition), body, step }
+            // (A false first test still runs the effects before it.)
+            Stmt::Loop { test_first: true, condition: Some(condition), effects, .. } if condition.as_int() == Some(0) => {
+                out.extend(effects);
+            }
+            Stmt::Loop { test_first: false, condition: Some(condition), body, step, effects }
                 if condition.as_int() == Some(0) && !loop_control(&body) =>
             {
                 out.extend(body);
                 out.extend(step);
+                out.extend(effects);
             }
             // A switch on a constant runs the selected arm (falling through
             // to the next) up to its `break`.
@@ -512,9 +521,10 @@ pub fn displacements_with(body: &mut [Stmt], distribute: bool) {
                 displacements_with(then_body, distribute);
                 displacements_with(else_body, distribute);
             }
-            Stmt::Loop { body, step, .. } => {
+            Stmt::Loop { body, step, effects, .. } => {
                 displacements_with(body, distribute);
                 displacements_with(step, distribute);
+                displacements_with(effects, distribute);
             }
             Stmt::Switch { arms, .. } => {
                 for arm in arms {
@@ -551,12 +561,13 @@ pub fn for_each_expression(body: &mut [Stmt], rewrite: &mut dyn FnMut(&mut Expr)
                 for_each_expression(then_body, rewrite);
                 for_each_expression(else_body, rewrite);
             }
-            Stmt::Loop { condition, body, step, .. } => {
+            Stmt::Loop { condition, body, step, effects, .. } => {
                 if let Some(condition) = condition {
                     rewrite(condition);
                 }
                 for_each_expression(body, rewrite);
                 for_each_expression(step, rewrite);
+                for_each_expression(effects, rewrite);
             }
             Stmt::Switch { value, arms, .. } => {
                 rewrite(value);
@@ -593,9 +604,10 @@ pub fn unindexed_absolute(body: &mut [Stmt], absolute: &dyn Fn(&str) -> bool) {
                 unindexed_absolute(then_body, absolute);
                 unindexed_absolute(else_body, absolute);
             }
-            Stmt::Loop { body, step, .. } => {
+            Stmt::Loop { body, step, effects, .. } => {
                 unindexed_absolute(body, absolute);
                 unindexed_absolute(step, absolute);
+                unindexed_absolute(effects, absolute);
             }
             Stmt::Switch { arms, .. } => arms.iter_mut().for_each(|arm| unindexed_absolute(arm, absolute)),
             _ => {}
@@ -633,9 +645,10 @@ pub fn map_variables(body: &mut [Stmt], map: &dyn Fn(VarId) -> VarId) {
                     assigned(then_body, map);
                     assigned(else_body, map);
                 }
-                Stmt::Loop { body, step, .. } => {
+                Stmt::Loop { body, step, effects, .. } => {
                     assigned(body, map);
                     assigned(step, map);
+                    assigned(effects, map);
                 }
                 Stmt::Switch { arms, .. } => arms.iter_mut().for_each(|arm| assigned(arm, map)),
                 _ => {}
@@ -1128,9 +1141,10 @@ fn rewrite_selects(function: &mut Function, body: &mut Vec<Stmt>, top_level: boo
                 rewrite_selects(function, then_body, false);
                 rewrite_selects(function, else_body, false);
             }
-            Stmt::Loop { body, step, .. } => {
+            Stmt::Loop { body, step, effects, .. } => {
                 rewrite_selects(function, body, false);
                 rewrite_selects(function, step, false);
+                rewrite_selects(function, effects, false);
             }
             Stmt::Switch { arms, .. } => {
                 for arm in arms {
@@ -1322,9 +1336,10 @@ pub fn stores(body: &mut [Stmt]) {
                 stores(then_body);
                 stores(else_body);
             }
-            Stmt::Loop { body, step, .. } => {
+            Stmt::Loop { body, step, effects, .. } => {
                 stores(body);
                 stores(step);
+                stores(effects);
             }
             Stmt::Switch { arms, .. } => {
                 for arm in arms {
@@ -1494,11 +1509,12 @@ pub fn forward_offsets(function: &mut Function) {
                     count_assignments(then_body, counts);
                     count_assignments(else_body, counts);
                 }
-                Stmt::Loop { body, step, .. } => {
+                Stmt::Loop { body, step, effects, .. } => {
                     // A definition inside a loop runs repeatedly.
                     let mut inner = vec![0; counts.len()];
                     count_assignments(body, &mut inner);
                     count_assignments(step, &mut inner);
+                    count_assignments(effects, &mut inner);
                     for (count, extra) in counts.iter_mut().zip(inner) {
                         *count += extra * 2;
                     }
@@ -1542,9 +1558,10 @@ pub fn forward_offsets(function: &mut Function) {
                         remove_definitions(arm, forwarded);
                     }
                 }
-                Stmt::Loop { body, step, .. } => {
+                Stmt::Loop { body, step, effects, .. } => {
                     remove_definitions(body, forwarded);
                     remove_definitions(step, forwarded);
+                    remove_definitions(effects, forwarded);
                 }
                 _ => {}
             }
@@ -1617,12 +1634,13 @@ pub fn forward_offsets(function: &mut Function) {
                     statement_value_uses(then_body, out);
                     statement_value_uses(else_body, out);
                 }
-                Stmt::Loop { condition, body, step, .. } => {
+                Stmt::Loop { condition, body, step, effects, .. } => {
                     if let Some(condition) = condition {
                         value_uses(condition, false, out);
                     }
                     statement_value_uses(body, out);
                     statement_value_uses(step, out);
+                    statement_value_uses(effects, out);
                 }
                 Stmt::Switch { value, arms, .. } => {
                     value_uses(value, false, out);
@@ -1662,12 +1680,13 @@ pub fn forward_offsets(function: &mut Function) {
                         rebase(then_body, rebased);
                         rebase(else_body, rebased);
                     }
-                    Stmt::Loop { condition, body, step, .. } => {
+                    Stmt::Loop { condition, body, step, effects, .. } => {
                         if let Some(condition) = condition {
                             rebase_uses(condition, rebased);
                         }
                         rebase(body, rebased);
                         rebase(step, rebased);
+                        rebase(effects, rebased);
                     }
                     Stmt::Switch { value, arms, .. } => {
                         rebase_uses(value, rebased);

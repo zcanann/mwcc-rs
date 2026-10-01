@@ -1055,7 +1055,10 @@ mod tests {
         assert!(matches!(
             target,
             Expression::Dereference { pointer }
-                if matches!(pointer.as_ref(), Expression::Assign { target, value }
+                if matches!(pointer.as_ref(), Expression::Cast {
+                    target_type: mwcc_syntax_trees::Type::Pointer(mwcc_syntax_trees::Pointee::UnsignedChar),
+                    operand,
+                } if matches!(operand.as_ref(), Expression::Assign { target, value }
                     if matches!(target.as_ref(), Expression::Variable(variable) if variable == "p")
                         && matches!(value.as_ref(), Expression::Binary { left, .. }
                             if matches!(left.as_ref(), Expression::Cast {
@@ -1063,7 +1066,7 @@ mod tests {
                                     mwcc_syntax_trees::Pointee::UnsignedChar
                                 ),
                                 ..
-                            })))
+                            }))))
         ));
     }
 

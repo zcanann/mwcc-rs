@@ -55,7 +55,7 @@ pub fn lower(
         function,
         pcode: PCodeFunction { strings: function.strings.clone(), ..PCodeFunction::new(function.name.clone(), returns) },
         registers: vec![None; function.variables.len()],
-        raw_narrow: vec![false; function.variables.len()],
+        raw_narrow: function.variables.iter().map(|variable| variable.raw && is_narrow(variable.ty)).collect(),
         makes_calls: false,
         target: None,
         loaded_globals: HashMap::new(),
@@ -1017,8 +1017,8 @@ impl Lowerer<'_, '_> {
                 }
                 Ok(())
             }
-            Stmt::Loop { test_first, condition: Some(condition), body, step }
-                if condition.as_int() == Some(0) && !self.unoptimized =>
+            Stmt::Loop { test_first, condition: Some(condition), body, step, effects }
+                if condition.as_int() == Some(0) && !self.unoptimized && effects.is_empty() =>
             {
                 // A loop whose test is false: a do-while body runs once.
                 if !*test_first {
@@ -1032,9 +1032,12 @@ impl Lowerer<'_, '_> {
                 }
                 Ok(())
             }
-            Stmt::Loop { condition, body, step, .. }
+            Stmt::Loop { condition, body, step, effects, .. }
                 if condition.as_ref().is_none_or(|c| c.as_int().is_some_and(|k| k != 0)) =>
             {
+                if !effects.is_empty() {
+                    return Err(unsupported("a constant loop test with effects"));
+                }
                 // No test: the body repeats until a break.
                 let top = self.new_join_label();
                 let next = self.new_label();
@@ -1053,8 +1056,8 @@ impl Lowerer<'_, '_> {
                 self.place_if_targeted(exit);
                 Ok(())
             }
-            Stmt::Loop { test_first, condition, body, step } => {
-                if !self.unoptimized && counted(condition.as_ref(), body, step) && !makes_calls(body) {
+            Stmt::Loop { test_first, condition, body, step, effects } => {
+                if !self.unoptimized && effects.is_empty() && counted(condition.as_ref(), body, step) && !makes_calls(body) {
                     return Err(unsupported("counted loop (unrolling not modeled)"));
                 }
                 let top = self.new_join_label();
@@ -1063,6 +1066,7 @@ impl Lowerer<'_, '_> {
                 let exit = self.new_label();
                 // IRO drops the entry jump when the first test is known true.
                 let first_test_true = !self.unoptimized
+                    && effects.is_empty()
                     && condition.as_ref().is_some_and(|condition| initially_true(condition, known));
                 if *test_first && condition.is_some() && !first_test_true {
                     self.jump(test);
@@ -1078,6 +1082,10 @@ impl Lowerer<'_, '_> {
                 }
                 self.loops.pop();
                 self.place_if_targeted(test);
+                // The condition's effects run before each test.
+                for statement in effects {
+                    self.statement(statement)?;
+                }
                 match condition {
                     // A loop never repeated (`do ... while (0)`) has no test.
                     Some(condition) if condition.as_int() == Some(0) => {}
@@ -1265,7 +1273,7 @@ impl Lowerer<'_, '_> {
         let variable_type = self.function.variables[variable].ty;
         // -O0 raw variables take narrow values as they are, and updates of
         // themselves (`i++`, `i += n`) unextended.
-        let kept_raw = self.unoptimized
+        let kept_raw = (self.unoptimized || self.function.variables[variable].raw)
             && self.raw_narrow[variable]
             && (match &value.kind {
                 ExprKind::Var(_) | ExprKind::Load { .. } | ExprKind::Global(_) => value.ty == variable_type,
@@ -4128,7 +4136,7 @@ fn assignments(body: &[Stmt], variable: VarId) -> usize {
         .map(|statement| match statement {
             Stmt::Assign { variable: assigned, .. } => usize::from(*assigned == variable),
             Stmt::If { then_body, else_body, .. } => assignments(then_body, variable) + assignments(else_body, variable),
-            Stmt::Loop { body, step, .. } => assignments(body, variable) + assignments(step, variable),
+            Stmt::Loop { body, step, effects, .. } => assignments(body, variable) + assignments(step, variable) + assignments(effects, variable),
             Stmt::Switch { arms, .. } => arms.iter().map(|arm| assignments(arm, variable)).sum(),
             _ => 0,
         })
@@ -4139,7 +4147,7 @@ fn assigns(body: &[Stmt], variable: VarId) -> bool {
     body.iter().any(|statement| match statement {
         Stmt::Assign { variable: assigned, .. } => *assigned == variable,
         Stmt::If { then_body, else_body, .. } => assigns(then_body, variable) || assigns(else_body, variable),
-        Stmt::Loop { body, step, .. } => assigns(body, variable) || assigns(step, variable),
+        Stmt::Loop { body, step, effects, .. } => assigns(body, variable) || assigns(step, variable) || assigns(effects, variable),
         Stmt::Switch { arms, .. } => arms.iter().any(|arm| assigns(arm, variable)),
         _ => false,
     })
@@ -4345,8 +4353,8 @@ fn makes_calls(body: &[Stmt]) -> bool {
         Stmt::If { condition, then_body, else_body } => {
             expression(condition) || makes_calls(then_body) || makes_calls(else_body)
         }
-        Stmt::Loop { condition, body, step, .. } => {
-            condition.as_ref().is_some_and(expression) || makes_calls(body) || makes_calls(step)
+        Stmt::Loop { condition, body, step, effects, .. } => {
+            condition.as_ref().is_some_and(expression) || makes_calls(body) || makes_calls(step) || makes_calls(effects)
         }
         Stmt::Switch { value, arms, .. } => expression(value) || arms.iter().any(|arm| makes_calls(arm)),
         Stmt::Break | Stmt::Continue => false,
@@ -4414,10 +4422,10 @@ fn references_weighted(body: &[Stmt], variable: VarId, base: usize) -> usize {
             Stmt::If { condition, then_body, else_body } => {
                 expression(condition, variable) + references_weighted(then_body, variable, base) + references_weighted(else_body, variable, base)
             }
-            Stmt::Loop { condition, body, step, .. } => {
+            Stmt::Loop { condition, body, step, effects, .. } => {
                 condition.as_ref().map_or(0, |c| expression(c, variable))
                     + references_weighted(body, variable, base)
-                    + references_weighted(step, variable, base)
+                    + references_weighted(step, variable, base) + references_weighted(effects, variable, base)
             }
             Stmt::Switch { value, arms, .. } => {
                 expression(value, variable) + arms.iter().map(|arm| references_weighted(arm, variable, base)).sum::<usize>()

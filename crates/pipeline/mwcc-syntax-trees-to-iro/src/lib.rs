@@ -80,6 +80,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
             kind: VariableKind::Parameter,
             frame: None,
             initialized: false,
+            raw: false,
         });
     }
     let floats = function.parameters.iter().filter(|p| is_float(p.parameter_type)).count();
@@ -143,6 +144,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
             kind: VariableKind::Local,
             frame,
             initialized: local.initializer.is_some(),
+            raw: false,
         });
     }
     // A parameter whose address is taken lives in a frame slot (below the
@@ -166,6 +168,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
                 kind: VariableKind::Local,
                 frame: Some((width, width)),
                 initialized: false,
+            raw: false,
             });
         }
     }
@@ -321,7 +324,7 @@ fn body_assigns(body: &[Stmt], variable: VarId) -> bool {
     body.iter().any(|statement| match statement {
         Stmt::Assign { variable: assigned, .. } => *assigned == variable,
         Stmt::If { then_body, else_body, .. } => body_assigns(then_body, variable) || body_assigns(else_body, variable),
-        Stmt::Loop { body, step, .. } => body_assigns(body, variable) || body_assigns(step, variable),
+        Stmt::Loop { body, step, effects, .. } => body_assigns(body, variable) || body_assigns(step, variable) || body_assigns(effects, variable),
         Stmt::Switch { arms, .. } => arms.iter().any(|arm| body_assigns(arm, variable)),
         _ => false,
     })
@@ -332,7 +335,7 @@ fn body_assigns(body: &[Stmt], variable: VarId) -> bool {
 fn returns_in_breakable(body: &[Stmt]) -> bool {
     body.iter().any(|statement| match statement {
         Stmt::If { then_body, else_body, .. } => returns_in_breakable(then_body) || returns_in_breakable(else_body),
-        Stmt::Loop { body, step, .. } => returns_anywhere(body) || returns_anywhere(step),
+        Stmt::Loop { body, step, effects, .. } => returns_anywhere(body) || returns_anywhere(step) || returns_anywhere(effects),
         Stmt::Switch { arms, .. } => arms.iter().any(|arm| returns_anywhere(arm)),
         _ => false,
     })
@@ -366,7 +369,7 @@ fn returns_anywhere(body: &[Stmt]) -> bool {
     body.iter().any(|statement| match statement {
         Stmt::Return(_) | Stmt::SetReturn(_) => true,
         Stmt::If { then_body, else_body, .. } => returns_anywhere(then_body) || returns_anywhere(else_body),
-        Stmt::Loop { body, step, .. } => returns_anywhere(body) || returns_anywhere(step),
+        Stmt::Loop { body, step, effects, .. } => returns_anywhere(body) || returns_anywhere(step) || returns_anywhere(effects),
         Stmt::Switch { arms, .. } => arms.iter().any(|arm| returns_anywhere(arm)),
         _ => false,
     })
@@ -547,7 +550,7 @@ impl Builder<'_, '_> {
     /// A register for an intermediate value.
     fn temporary(&mut self, ty: Type) -> VarId {
         let id = self.variables.len() + self.temporaries.len();
-        self.temporaries.push(Variable { name: format!("@a{id}"), ty, kind: VariableKind::Temporary, frame: None, initialized: false });
+        self.temporaries.push(Variable { name: format!("@a{id}"), ty, kind: VariableKind::Temporary, frame: None, initialized: false, raw: false });
         id
     }
 
@@ -569,6 +572,7 @@ impl Builder<'_, '_> {
             kind: VariableKind::Local,
             frame: Some((size, u32::from(align).max(1))),
             initialized: false,
+            raw: false,
         });
         let pointer_type = Type::StructPointer { element_size: size };
         let copy = Expr { kind: ExprKind::LocalAddress(id), ty: pointer_type };
@@ -580,7 +584,7 @@ impl Builder<'_, '_> {
         }
         // -O0: the copy's address is a register variable, taken after it.
         let id = self.variables.len() + self.temporaries.len();
-        self.temporaries.push(Variable { name: format!("@p{id}"), ty: pointer_type, kind: VariableKind::Local, frame: None, initialized: false });
+        self.temporaries.push(Variable { name: format!("@p{id}"), ty: pointer_type, kind: VariableKind::Local, frame: None, initialized: false, raw: false });
         self.pending.push(Stmt::Assign { variable: id, value: copy });
         Ok(Expr { kind: ExprKind::Var(id), ty: pointer_type })
     }
@@ -737,13 +741,52 @@ impl Builder<'_, '_> {
                     Some(initializer) => self.effects(initializer)?,
                     None => Vec::new(),
                 };
-                let condition = condition.as_ref().map(|c| self.guarded_expression(c)).transpose()?.map(promoted);
+                let (pending_mark, post_mark) = (self.pending.len(), self.post.len());
+                let guarded = condition.as_ref().map(|c| self.guarded_expression(c)).transpose();
+                if guarded.is_err() {
+                    // (Undo whatever the failed attempt queued.)
+                    self.pending.truncate(pending_mark);
+                    self.post.truncate(post_mark);
+                }
+                let (condition, effects) = match guarded {
+                    Ok(condition) => (condition.map(promoted), Vec::new()),
+                    // A condition with effects (`while ((c = *p++))`): they run
+                    // before each test (in the loop's test block).
+                    Err(_) if std::env::var_os("MWCC_IRO_NO_EFFECT_CONDITIONS").is_none() => {
+                        let condition = condition.as_ref().expect("a failed condition exists");
+                        let (pending, post) = (std::mem::take(&mut self.pending), std::mem::take(&mut self.post));
+                        let value = promoted(self.expression(condition)?);
+                        let mut effects = std::mem::replace(&mut self.pending, pending);
+                        let after = std::mem::replace(&mut self.post, post);
+                        // (A value the post-steps change is tested from a copy,
+                        // a narrow one kept raw and extended at the test.)
+                        let changed = (0..self.variables.len() + self.temporaries.len())
+                            .any(|id| body_assigns(&after, id) && value.mentions(id));
+                        let value = if !changed {
+                            value
+                        } else {
+                            let (inner, ty) = match &value.kind {
+                                ExprKind::Convert(inner) if is_narrow(inner.ty) => ((**inner).clone(), value.ty),
+                                _ => (value.clone(), value.ty),
+                            };
+                            let id = self.temporary(inner.ty);
+                            let local = id - self.variables.len();
+                            self.temporaries[local].raw = is_narrow(inner.ty);
+                            let copy = Expr { kind: ExprKind::Var(id), ty: inner.ty };
+                            effects.push(Stmt::Assign { variable: id, value: inner.clone() });
+                            if inner.ty == ty { copy } else { Expr { kind: ExprKind::Convert(Box::new(copy)), ty } }
+                        };
+                        effects.extend(after);
+                        (Some(value), effects)
+                    }
+                    Err(error) => return Err(error),
+                };
                 let body = self.statements(body)?;
                 let step = match step {
                     Some(step) => self.effects(step)?,
                     None => Vec::new(),
                 };
-                out.push(Stmt::Loop { test_first: *kind != ast::LoopKind::DoWhile, condition, body, step });
+                out.push(Stmt::Loop { test_first: *kind != ast::LoopKind::DoWhile, condition, body, step, effects });
                 return Ok(out);
             }
             Statement::Break => Stmt::Break,
@@ -1011,7 +1054,7 @@ impl Builder<'_, '_> {
                     arithmetic_type(when_true.ty, when_false.ty)
                 };
                 let id = self.variables.len() + self.temporaries.len();
-                self.temporaries.push(Variable { name: format!("@c{id}"), ty, kind: VariableKind::Local, frame: None, initialized: false });
+                self.temporaries.push(Variable { name: format!("@c{id}"), ty, kind: VariableKind::Local, frame: None, initialized: false, raw: false });
                 then_body.push(Stmt::Assign { variable: id, value: converted(when_true, ty) });
                 else_body.push(Stmt::Assign { variable: id, value: converted(when_false, ty) });
                 self.pending.push(Stmt::If { condition, then_body, else_body });
@@ -1321,6 +1364,7 @@ impl Builder<'_, '_> {
                 kind: if variable.frame.is_some() { VariableKind::Local } else { kind },
                 frame: variable.frame,
                 initialized: false,
+            raw: false,
             });
         }
         // Arguments are evaluated in order into the parameters; a constant
@@ -1381,13 +1425,19 @@ impl Builder<'_, '_> {
         if early {
             let ty = callee.return_type;
             let id = self.variables.len() + self.temporaries.len();
-            self.temporaries.push(Variable { name: format!("{}$result", callee.name), ty, kind, frame: None, initialized: false });
+            self.temporaries.push(Variable { name: format!("{}$result", callee.name), ty, kind, frame: None, initialized: false, raw: false });
             let result = (ty != Type::Void).then_some(id);
             let mut body = early_returns(std::mem::take(&mut inlined.body), result, ty);
             if let (Some(id), Some(value)) = (result, value) {
                 body.push(Stmt::Assign { variable: id, value: assigned(value, ty) });
             }
-            self.pending.push(Stmt::Loop { test_first: false, condition: Some(Expr::int(0)), body, step: Vec::new() });
+            self.pending.push(Stmt::Loop {
+                test_first: false,
+                condition: Some(Expr::int(0)),
+                body,
+                step: Vec::new(),
+                effects: Vec::new(),
+            });
             return Ok(match result {
                 Some(id) => Expr { kind: ExprKind::Var(id), ty },
                 None => Expr { kind: ExprKind::Int(0), ty: Type::Void },
@@ -1413,6 +1463,7 @@ impl Builder<'_, '_> {
             kind,
             frame: None,
             initialized: false,
+            raw: false,
         });
         self.pending.push(Stmt::Assign { variable: id, value: assigned(value, callee.return_type) });
         Ok(Expr { kind: ExprKind::Var(id), ty: callee.return_type })
