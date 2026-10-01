@@ -443,6 +443,17 @@ impl Builder<'_, '_> {
         Ok(out)
     }
 
+    /// A discarded operand's effects; one without effects (a value) is none.
+    fn effects_or_nothing(&mut self, expression: &Expression) -> Compilation<Vec<Stmt>> {
+        match expression {
+            Expression::IntegerLiteral(_) | Expression::Variable(_) => Ok(Vec::new()),
+            Expression::Cast { operand, .. } if matches!(operand.as_ref(), Expression::IntegerLiteral(_) | Expression::Variable(_)) => {
+                Ok(Vec::new())
+            }
+            other => self.effects(other),
+        }
+    }
+
     fn effects_inner(&mut self, expression: &Expression) -> Compilation<Vec<Stmt>> {
         Ok(match expression {
             Expression::Call { name, arguments } => evaluated(self.call(name, arguments, true)?),
@@ -468,9 +479,28 @@ impl Builder<'_, '_> {
                 self.assignment(target, &step)?
             }
             Expression::Comma { left, right } => {
-                let mut out = self.effects(left)?;
-                out.extend(self.effects(right)?);
+                let mut out = self.effects_or_nothing(left)?;
+                out.extend(self.effects_or_nothing(right)?);
                 out
+            }
+            // `c ? a() : b();` and `x && f();` as statements are branches.
+            Expression::Conditional { condition, when_true, when_false, .. } => {
+                let condition = promoted(self.expression(condition)?);
+                vec![Stmt::If {
+                    condition,
+                    then_body: self.effects_or_nothing(when_true)?,
+                    else_body: self.effects_or_nothing(when_false)?,
+                }]
+            }
+            Expression::Binary { operator: operator @ (BinaryOperator::LogicalAnd | BinaryOperator::LogicalOr), left, right } => {
+                let condition = promoted(self.expression(left)?);
+                let effects = self.effects_or_nothing(right)?;
+                let condition = if *operator == BinaryOperator::LogicalAnd {
+                    condition
+                } else {
+                    Expr::unary(UnaryOp::LogicalNot, condition, Type::Int)
+                };
+                vec![Stmt::If { condition, then_body: effects, else_body: Vec::new() }]
             }
             other => return Err(unsupported(format!("statement expression {}", expression_name(other)))),
         })
