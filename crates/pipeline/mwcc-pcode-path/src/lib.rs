@@ -221,7 +221,9 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         early_frame,
         branch_preserving: early_frame,
         // (GC/3.x divides by multiplication at every level.)
+        // (And at any level with an explicit `,p`.)
         magic_division: behavior.optimization == mwcc_versions::Optimization::O4
+            || request.config.flags.explicit_speed_goal
             || request.config.build.label.starts_with("GC/3.")
             || request.config.build.label.starts_with("Wii/"),
         signed_promoted_truth: request.config.build.label.starts_with("GC/3.") || request.config.build.label.starts_with("Wii/"),
