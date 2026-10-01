@@ -59,6 +59,9 @@ pub fn finish(
             schedule::schedule_block(&mut block.instructions, true);
         }
     }
+    if !options.unoptimized && !toggle("MWCC_PCODE_NO_LATE_FORWARD") {
+        forward_physical_reads(&mut pcode);
+    }
     dump(&pcode, "AFTER INSTRUCTION SCHEDULING");
     let colors = coloring::color(&mut pcode, options.delete_dead)?;
     dump(&pcode, "AFTER REGISTER COLORING");
@@ -486,6 +489,62 @@ fn propagate_physical_copies(pcode: &mut PCodeFunction) -> bool {
         }
     }
     changed
+}
+
+/// A copy `mr v,rN` that stayed (v outlives rN): after scheduling, uses of
+/// `v` in its block read rN until either is redefined. (Not a `v` used in
+/// other blocks or across a call.)
+fn forward_physical_reads(pcode: &mut PCodeFunction) {
+    use mwcc_pcode::Class;
+    use mwcc_vreg::RegisterRole;
+    for class in [Class::General, Class::Float] {
+        let mut blocks_using: std::collections::HashMap<u32, std::collections::HashSet<usize>> = Default::default();
+        for (index, block) in pcode.blocks.iter().enumerate() {
+            for instruction in &block.instructions {
+                for used in instruction.uses(class) {
+                    blocks_using.entry(used).or_default().insert(index);
+                }
+            }
+        }
+        for (block_index, block) in pcode.blocks.iter_mut().enumerate() {
+            let local = |v: u32, from: usize, instructions: &[mwcc_pcode::PInstr]| {
+                if blocks_using.get(&v).is_some_and(|blocks| blocks.iter().any(|&b| b != block_index)) {
+                    return false;
+                }
+                let last_use = instructions.iter().rposition(|instruction| instruction.uses(class).contains(&v));
+                last_use.map_or(true, |last| !instructions[from..last].iter().any(|instruction| instruction.instruction.is_call()))
+            };
+            let eligible: Vec<bool> = (0..block.instructions.len())
+                .map(|index| {
+                    block.instructions[index].copy(class).is_some_and(|(v, p)| v >= 32 && p < 32 && p != 0 && local(v, index, &block.instructions))
+                })
+                .collect();
+            let mut active: Vec<(u32, u32)> = Vec::new();
+            for (index, instruction) in block.instructions.iter_mut().enumerate() {
+                if !active.is_empty() && instruction.copy(class).is_none() {
+                    let active = &active;
+                    mwcc_vreg::for_each_register(&mut instruction.instruction, |role, operand_class, field| {
+                        if role == RegisterRole::Use && operand_class == class {
+                            if let Some(&(_, physical)) = active.iter().find(|&&(v, _)| v == *field) {
+                                *field = physical;
+                            }
+                        }
+                    });
+                }
+                for defined in instruction.defs(class) {
+                    active.retain(|&(v, p)| v != defined && p != defined);
+                }
+                if instruction.instruction.is_call() {
+                    active.clear();
+                }
+                if let Some(copy) = instruction.copy(class) {
+                    if eligible[index] {
+                        active.push(copy);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// Whether virtual `v` is live where physical `p` is written (other than by

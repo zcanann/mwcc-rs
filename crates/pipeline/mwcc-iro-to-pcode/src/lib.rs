@@ -74,6 +74,8 @@ pub fn lower(
         unoptimized,
         memory_base: 0,
         addressing: false,
+        returned: 0,
+        returning: false,
         homes: vec![None; function.variables.len()],
         loops: Vec::new(),
         known_constant: None,
@@ -141,6 +143,10 @@ struct Lowerer<'a, 'u> {
     memory_base: usize,
     /// The binary operation being lowered is a memory access base.
     addressing: bool,
+    /// The integer return value being lowered (by address).
+    returned: usize,
+    /// The binary operation being lowered is the return value.
+    returning: bool,
     /// Frame home (`offset(r1)`) of a parameter kept in memory.
     homes: Vec<Option<i16>>,
     /// Enclosing loops' (break, continue) labels.
@@ -1073,7 +1079,10 @@ impl Lowerer<'_, '_> {
         // The final instruction targets r3: the conversion when there is one.
         let converts = !fits && is_narrow(return_type) && value.ty != return_type;
         let raw = self.is_raw(value);
-        let (register, ty) = self.expression_with_target(value, if converts { None } else { direct })?;
+        let outer = std::mem::replace(&mut self.returned, if converts { 0 } else { value as *const Expr as usize });
+        let lowered = self.expression_with_target(value, if converts { None } else { direct });
+        self.returned = outer;
+        let (register, ty) = lowered?;
         // A truth value (`srwi t,s,n`) masked to an unsigned narrow type is
         // one rotate-and-mask.
         // C masks to an unsigned narrow type; in C++ the `bool` truth value
@@ -1456,6 +1465,7 @@ impl Lowerer<'_, '_> {
                     }
                 }
                 self.addressing = std::ptr::eq(expression, self.memory_base as *const Expr);
+                self.returning = std::ptr::eq(expression, self.returned as *const Expr);
                 let result = self.binary(*op, left, right, ty, target)?;
                 if let Some((key, variables)) = key {
                     self.common.insert(key, (result.0, result.1, variables));
@@ -1607,6 +1617,18 @@ impl Lowerer<'_, '_> {
                 {
                     let (source, _) = self.expression_with_target(operand, target)?;
                     self.emit_plain(Instruction::ExtendSignByte { a: source, s: source });
+                    return Ok((source, ty));
+                }
+                // A widening that emits nothing (of a word, or of a narrow
+                // load already extended) computes into the target.
+                if target.is_some() && !self.unoptimized
+                    && is_general_word(ty)
+                    && !is_narrow(ty)
+                    && ((is_general_word(operand.ty) && !is_narrow(operand.ty))
+                        || (is_narrow(operand.ty) && !raw && matches!(operand.kind, ExprKind::Load { .. } | ExprKind::Global(_))))
+                    && !toggle("MWCC_PCODE_NO_CONVERT_TARGET")
+                {
+                    let (source, _) = self.expression_with_target(operand, target)?;
                     return Ok((source, ty));
                 }
                 let (source, source_type) = self.expression(operand)?;
@@ -2259,6 +2281,7 @@ impl Lowerer<'_, '_> {
     // ------------------------------------------------------------ arithmetic
 
     fn binary(&mut self, op: BinaryOp, left: &Expr, right: &Expr, ty: Type, target: Option<u32>) -> Compilation<(u32, Type)> {
+        let returning = std::mem::take(&mut self.returning);
         if matches!(op, BinaryOp::Divide | BinaryOp::Modulo) {
             return self.division(op, left, right, ty, target);
         }
@@ -2295,11 +2318,34 @@ impl Lowerer<'_, '_> {
         if op == BinaryOp::BitOr && !self.unoptimized {
             if let Some((source, shift, begin, end)) = insert_field(left) {
                 if field_bits(begin, end) & !known_zero(right) == 0 {
+                    // A narrow variable inserted within its width, or the
+                    // unsigned narrow base, is used as it is (unextended).
+                    let unextended = !toggle("MWCC_PCODE_NO_UNEXTENDED_INSERT");
+                    let source = match narrow_variable(source) {
+                        Some(inner)
+                            if unextended
+                                && field_bits(begin, end).rotate_right(u32::from(shift)) & !narrow_mask(inner.ty) == 0 =>
+                        {
+                            inner
+                        }
+                        _ => source,
+                    };
+                    let right = match narrow_variable(right) {
+                        Some(inner) if unextended && matches!(inner.ty, Type::UnsignedChar | Type::UnsignedShort) => inner,
+                        _ => right,
+                    };
                     let (x, _) = self.expression(source)?;
-                    let (base, _) = self.expression(right)?;
-                    // rlwimi overwrites its destination before reading the
-                    // source: the destination must not hold the source.
+                    // A returned insert is made in r3.
+                    let target = match target {
+                        None if returning && !toggle("MWCC_PCODE_NO_RETURNED_INSERT") => Some(3),
+                        target => target,
+                    };
                     let target = target.filter(|&d| d != x);
+                    let (base, _) = if toggle("MWCC_PCODE_NO_INSERT_BASE_TARGET") {
+                        self.expression(right)?
+                    } else {
+                        self.expression_with_target(right, target)?
+                    };
                     let d = self.result(target);
                     if base != d {
                         self.emit_plain(Instruction::Or { a: d, s: base, b: base });
@@ -2389,6 +2435,17 @@ impl Lowerer<'_, '_> {
             let shift = shift as u8;
             self.emit_plain(Instruction::RotateAndMask { a: d, s: raw, shift: (32 - shift) % 32, begin: 32 - bits + shift, end: 31 });
             return Ok((d, ty));
+        }
+        // `(x << n) | (x >> (32 - n))` (x unsigned) is `rotlw x, n`; the
+        // mirror rotates left by its computed `32 - n`.
+        if op == BinaryOp::BitOr && !self.unoptimized && !toggle("MWCC_PCODE_NO_VARIABLE_ROTATE") {
+            if let Some((x, amount)) = variable_rotate(left, right).or_else(|| variable_rotate(right, left)) {
+                let (b, _) = self.expression(amount)?;
+                let (s, _) = self.expression(x)?;
+                let d = self.result(target);
+                self.emit_plain(Instruction::RotateAndMaskVariable { a: d, s, b, begin: 0, end: 31 });
+                return Ok((d, ty));
+            }
         }
         // An absolute array's index is computed before its address (at -O4
         // unless the sum is a memory access base).
@@ -3452,6 +3509,13 @@ fn insert_field(expression: &Expr) -> Option<(&Expr, u8, u8, u8)> {
 
 /// Bits of `expression`'s value known to be zero.
 fn known_zero(expression: &Expr) -> u32 {
+    if let ExprKind::Convert(operand) = &expression.kind {
+        return match operand.ty {
+            Type::UnsignedChar if !toggle("MWCC_PCODE_NO_NARROW_KNOWN_ZERO") => 0xffff_ff00,
+            Type::UnsignedShort if !toggle("MWCC_PCODE_NO_NARROW_KNOWN_ZERO") => 0xffff_0000,
+            _ => 0,
+        };
+    }
     let ExprKind::Binary(op, left, right) = &expression.kind else { return 0 };
     match (op, right.as_int()) {
         (BinaryOp::ShiftLeft, Some(n)) if (1..32).contains(&n) => (1u32 << n) - 1,
@@ -3647,6 +3711,49 @@ fn store_instruction(ty: Type, s: u32, a: u32, offset: i16) -> Instruction {
 }
 
 /// The operand of an integer promotion (or the expression itself).
+/// `(x << a, x >> b)` with one amount `32 -` the other, x an unsigned
+/// variable: the rotated value and the left rotation amount `a`.
+fn variable_rotate<'e>(shifted_left: &'e Expr, shifted_right: &'e Expr) -> Option<(&'e Expr, &'e Expr)> {
+    let ExprKind::Binary(BinaryOp::ShiftLeft, x, a) = &shifted_left.kind else { return None };
+    let ExprKind::Binary(BinaryOp::ShiftRight, y, b) = &shifted_right.kind else { return None };
+    let variable = |e: &Expr| match &peel_conversions(e).kind {
+        ExprKind::Var(id) => Some(*id),
+        _ => None,
+    };
+    let complement = |whole: &Expr, part: &Expr| {
+        matches!(&peel_conversions(whole).kind, ExprKind::Binary(BinaryOp::Subtract, k, n)
+            if k.as_int() == Some(32) && variable(n).is_some() && variable(n) == variable(part))
+    };
+    if x.ty != Type::UnsignedInt || y.ty != Type::UnsignedInt || variable(x).is_none() || variable(x) != variable(y) {
+        return None;
+    }
+    (complement(b, a) || complement(a, b)).then_some((x.as_ref(), a.as_ref()))
+}
+
+/// A narrow variable's promotion: the variable.
+fn narrow_variable(expression: &Expr) -> Option<&Expr> {
+    match &expression.kind {
+        ExprKind::Convert(inner) if is_narrow(inner.ty) && matches!(inner.kind, ExprKind::Var(_)) => Some(inner),
+        _ => None,
+    }
+}
+
+/// The value bits of a narrow type.
+fn narrow_mask(ty: Type) -> u32 {
+    match ty {
+        Type::Char | Type::UnsignedChar => 0xff,
+        Type::Short | Type::UnsignedShort => 0xffff,
+        _ => u32::MAX,
+    }
+}
+
+fn peel_conversions(expression: &Expr) -> &Expr {
+    match &expression.kind {
+        ExprKind::Convert(operand) => peel_conversions(operand),
+        _ => expression,
+    }
+}
+
 fn unpromoted(expression: &Expr) -> &Expr {
     match &expression.kind {
         ExprKind::Convert(operand) if is_narrow(operand.ty) && !is_narrow(expression.ty) => operand,
