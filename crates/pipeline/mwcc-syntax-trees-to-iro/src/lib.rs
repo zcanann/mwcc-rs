@@ -1124,7 +1124,9 @@ impl Builder<'_, '_> {
         if !inlined.strings.is_empty() {
             return Err(unsupported("inline expansion with string literals"));
         }
-        if inlined.variables.iter().any(|variable| variable.frame.is_some()) {
+        if inlined.variables.iter().any(|variable| variable.frame.is_some())
+            && (!inlined.images.is_empty() || std::env::var_os("MWCC_IRO_NO_INLINE_FRAME_OBJECTS").is_some())
+        {
             return Err(unsupported("inline expansion with frame objects"));
         }
         // Only a final return value: an early return would need a jump.
@@ -1146,11 +1148,12 @@ impl Builder<'_, '_> {
         let kind = if self.unit.unoptimized { VariableKind::Local } else { VariableKind::Temporary };
         let base = self.variables.len() + self.temporaries.len();
         for variable in &inlined.variables {
+            // (A frame object stays one: a local of the caller's frame.)
             self.temporaries.push(Variable {
                 name: format!("{}${}", callee.name, variable.name),
                 ty: variable.ty,
-                kind,
-                frame: None,
+                kind: if variable.frame.is_some() { VariableKind::Local } else { kind },
+                frame: variable.frame,
             });
         }
         // Arguments are evaluated in order into the parameters; a constant
