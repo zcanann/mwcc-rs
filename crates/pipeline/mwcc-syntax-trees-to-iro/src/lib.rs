@@ -15,7 +15,7 @@ use mwcc_core::{Compilation, Diagnostic};
 use mwcc_iro::{
     element_size, is_float, is_general_word, is_narrow, is_unsigned, is_value_type, pointee_type, pointer_to, promote,
     BinaryOp, Expr, ExprKind,
-    Function, Place, Stmt, Type, UnaryOp, Unit, VarId, Variable, VariableKind,
+    Function, Idiom, IntrinsicOp, Place, Stmt, Type, UnaryOp, Unit, VarId, Variable, VariableKind,
 };
 use mwcc_syntax_trees as ast;
 use mwcc_syntax_trees::{BinaryOperator, Expression, Statement, UnaryOperator};
@@ -1365,6 +1365,43 @@ impl Builder<'_, '_> {
         Ok(Expr { kind: ExprKind::Var(id), ty: callee.return_type })
     }
 
+    /// A compiler intrinsic: `__rlwimi` inserts, `__cntlzw` counts,
+    /// `__fabs` takes the absolute value.
+    fn intrinsic(&mut self, name: &str, arguments: &[Expression]) -> Compilation<Expr> {
+        match (name, arguments) {
+            ("__rlwimi", [base, value, shift, begin, end]) => {
+                let constant = |e: &Expression| match e {
+                    Expression::IntegerLiteral(v) if (0..32).contains(v) => Some(*v as u8),
+                    _ => None,
+                };
+                let (Some(shift), Some(begin), Some(end)) = (constant(shift), constant(begin), constant(end)) else {
+                    return Err(unsupported("intrinsic '__rlwimi' with variable fields"));
+                };
+                let base = self.expression(base)?;
+                let value = self.expression(value)?;
+                Ok(Expr {
+                    kind: ExprKind::Idiom(Idiom::Insert {
+                        base: Box::new(base),
+                        value: Box::new(value),
+                        shift,
+                        begin,
+                        end,
+                    }),
+                    ty: Type::Int,
+                })
+            }
+            ("__cntlzw", [value]) => {
+                let value = self.expression(value)?;
+                Ok(Expr { kind: ExprKind::Idiom(Idiom::Unary(IntrinsicOp::CountLeadingZeros, Box::new(value))), ty: Type::Int })
+            }
+            ("__fabs", [value]) => {
+                let value = converted(self.expression(value)?, Type::Double);
+                Ok(Expr { kind: ExprKind::Idiom(Idiom::Unary(IntrinsicOp::FloatAbsolute, Box::new(value))), ty: Type::Double })
+            }
+            _ => Err(unsupported(format!("intrinsic '{name}'"))),
+        }
+    }
+
     fn call(&mut self, name: &str, arguments: &[Expression], discarded: bool) -> Compilation<Expr> {
         let direct_return = std::mem::take(&mut self.direct_return);
         // A call through a pointer variable (local, parameter or global).
@@ -1380,7 +1417,7 @@ impl Builder<'_, '_> {
                     return Err(unsupported("non-integer call result"));
                 }
                 if (self.unit.is_intrinsic)(name, arguments.len()) {
-                    return Err(unsupported(format!("intrinsic '{name}'")));
+                    return self.intrinsic(name, arguments);
                 }
                 let variadic = self.unit.variadic_callees.contains(name);
                 let prototyped = self.unit.prototyped.contains(name);

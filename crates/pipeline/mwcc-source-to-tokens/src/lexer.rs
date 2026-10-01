@@ -630,7 +630,9 @@ fn integer_token(value: i64, unsigned: bool, long_long: bool) -> Token {
         Token::UnsignedLongLongIntegerLiteral(value)
     } else if long_long {
         Token::LongLongIntegerLiteral(value)
-    } else if unsigned {
+    } else if unsigned || (value > i64::from(i32::MAX) && value <= i64::from(u32::MAX)) {
+        // (An unsuffixed constant too large for `int` is `unsigned int`,
+        // decimal or not, as in C89.)
         Token::UnsignedIntegerLiteral(value)
     } else {
         Token::IntegerLiteral(value)

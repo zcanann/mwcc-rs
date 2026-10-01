@@ -275,6 +275,16 @@ pub enum Idiom {
     /// `rlwimi`: `value` rotated left by `shift` replaces bits `begin..=end`
     /// of `base` (a bit-field store's read-modify-write).
     Insert { base: Box<Expr>, value: Box<Expr>, shift: u8, begin: u8, end: u8 },
+    /// A one-operand compiler intrinsic (`__cntlzw`, `__fabs`).
+    Unary(IntrinsicOp, Box<Expr>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IntrinsicOp {
+    /// `cntlzw`.
+    CountLeadingZeros,
+    /// `fabs`.
+    FloatAbsolute,
 }
 
 #[derive(Debug, Clone)]
@@ -361,7 +371,7 @@ impl Expr {
                 condition.mentions(variable) || when_true.mentions(variable) || when_false.mentions(variable)
             }
             ExprKind::Call { arguments, .. } => arguments.iter().any(|argument| argument.mentions(variable)),
-            ExprKind::Idiom(Idiom::Absolute(value)) => value.mentions(variable),
+            ExprKind::Idiom(Idiom::Absolute(value) | Idiom::Unary(_, value)) => value.mentions(variable),
             ExprKind::Idiom(Idiom::Masked { tested, value, .. }) => {
                 tested.mentions(variable) || value.mentions(variable)
             }

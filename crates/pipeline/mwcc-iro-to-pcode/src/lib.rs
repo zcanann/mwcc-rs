@@ -13,7 +13,7 @@ use std::collections::HashMap;
 use mwcc_core::{Compilation, Diagnostic};
 use mwcc_iro::{
     is_float, is_general_word, is_narrow, is_unsigned, is_unsigned_narrow, promote, width, BinaryOp, Expr, ExprKind,
-    Function, GlobalInfo, Idiom, Place, Stmt, Type, UnaryOp, Unit, VarId, VariableKind,
+    Function, GlobalInfo, Idiom, IntrinsicOp, Place, Stmt, Type, UnaryOp, Unit, VarId, VariableKind,
 };
 use mwcc_machine_code::{Instruction, RelocationKind, RelocationTarget};
 use mwcc_pcode::{AttachedRelocation, Block, Class, PCodeFunction, PInstr, Register, ReturnRegisters};
@@ -2418,6 +2418,18 @@ impl Lowerer<'_, '_> {
                 self.emit_plain(Instruction::RotateAndMaskInsert { a: d, s: x, shift: *shift, begin: *begin, end: *end });
                 Ok((d, Type::Int))
             }
+            Idiom::Unary(IntrinsicOp::CountLeadingZeros, value) => {
+                let (a, _) = self.expression(value)?;
+                let d = self.result(target);
+                self.emit_plain(Instruction::CountLeadingZeros { a: d, s: a });
+                Ok((d, Type::Int))
+            }
+            Idiom::Unary(IntrinsicOp::FloatAbsolute, value) => {
+                let (b, ty) = self.expression(value)?;
+                let d = self.result_for(ty, target);
+                self.emit_plain(Instruction::FloatAbsolute { d, b });
+                Ok((d, ty))
+            }
             Idiom::Absolute(value) => {
                 let (a, _) = self.expression(value)?;
                 let sign = self.temporary();
@@ -4317,7 +4329,7 @@ fn makes_calls(body: &[Stmt]) -> bool {
             ExprKind::Select { condition, when_true, when_false } => {
                 expression(condition) || expression(when_true) || expression(when_false)
             }
-            ExprKind::Idiom(Idiom::Absolute(value)) => expression(value),
+            ExprKind::Idiom(Idiom::Absolute(value) | Idiom::Unary(_, value)) => expression(value),
             ExprKind::Idiom(Idiom::Masked { tested, value, .. }) => expression(tested) || expression(value),
             ExprKind::Idiom(Idiom::Insert { base, value, .. }) => expression(base) || expression(value),
         }
@@ -4369,7 +4381,7 @@ fn references_weighted(body: &[Stmt], variable: VarId, base: usize) -> usize {
                 expression(condition, variable) + expression(when_true, variable) + expression(when_false, variable)
             }
             ExprKind::Call { arguments, .. } => arguments.iter().map(|a| expression(a, variable)).sum(),
-            ExprKind::Idiom(Idiom::Absolute(value)) => expression(value, variable),
+            ExprKind::Idiom(Idiom::Absolute(value) | Idiom::Unary(_, value)) => expression(value, variable),
             ExprKind::Idiom(Idiom::Insert { base, value, .. }) => expression(base, variable) + expression(value, variable),
             ExprKind::Idiom(Idiom::Masked { tested, value, .. }) => {
                 expression(tested, variable) + expression(value, variable)

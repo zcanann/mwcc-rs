@@ -311,7 +311,7 @@ pub fn run_unoptimized(function: &mut Function) {
                 Some(Expr { kind: ExprKind::Float(value), ty: expression.ty })
             }
             ExprKind::Binary(op, left, right) => match (left.as_int(), right.as_int()) {
-                (Some(a), Some(b)) => fold_literals(*op, a, b).map(|value| Expr::typed_int(value, expression.ty)),
+                (Some(_), Some(_)) => fold_typed(*op, left, right).map(|value| Expr::typed_int(value, expression.ty)),
                 _ => None,
             },
             _ => None,
@@ -672,7 +672,7 @@ fn children(expression: &mut Expr, rewrite: &mut dyn FnMut(&mut Expr)) {
             rewrite(when_false);
         }
         ExprKind::Call { arguments, .. } => arguments.iter_mut().for_each(|argument| rewrite(argument)),
-        ExprKind::Idiom(Idiom::Absolute(value)) => rewrite(value),
+        ExprKind::Idiom(Idiom::Absolute(value) | Idiom::Unary(_, value)) => rewrite(value),
         ExprKind::Idiom(Idiom::Insert { base, value, .. }) => {
             rewrite(base);
             rewrite(value);
@@ -727,8 +727,8 @@ fn fold_once(expression: &Expr) -> Option<Expr> {
                     return Some(value);
                 }
             }
-            if let (Some(a), Some(b)) = (left.as_int(), right.as_int()) {
-                return Some(Expr::typed_int(fold_literals(*op, a, b)?, expression.ty));
+            if left.as_int().is_some() && right.as_int().is_some() {
+                return Some(Expr::typed_int(fold_typed(*op, left, right)?, expression.ty));
             }
             // `x << 0`, `x >> 0`, `x + 0`, `x - 0`, `x | 0`, `x ^ 0` are `x`.
             if right.as_int() == Some(0)
@@ -826,6 +826,27 @@ fn fold_float(expression: &Expr) -> Option<Expr> {
 }
 
 /// 32-bit arithmetic on two literals.
+/// Fold two literal operands; a relation between unsigned words compares
+/// unsigned.
+fn fold_typed(op: BinaryOp, left: &Expr, right: &Expr) -> Option<i64> {
+    let (a, b) = (left.as_int()?, right.as_int()?);
+    let unsigned = |ty: Type| mwcc_iro::is_unsigned(ty) && !mwcc_iro::is_narrow(ty);
+    if unsigned(left.ty) || unsigned(right.ty) {
+        let (a, b) = (a as u32, b as u32);
+        let value = match op {
+            BinaryOp::Less => Some(a < b),
+            BinaryOp::Greater => Some(a > b),
+            BinaryOp::LessEqual => Some(a <= b),
+            BinaryOp::GreaterEqual => Some(a >= b),
+            _ => None,
+        };
+        if let Some(value) = value {
+            return Some(i64::from(value));
+        }
+    }
+    fold_literals(op, a, b)
+}
+
 pub fn fold_literals(op: BinaryOp, left: i64, right: i64) -> Option<i64> {
     let (a, b) = (left as i32, right as i32);
     let value = match op {
@@ -994,7 +1015,7 @@ pub fn idioms(expression: &mut Expr, variables: &[Type]) {
     if let ExprKind::Select { condition, when_true, when_false } = &expression.kind {
         if let Some(idiom) = sign_idiom(condition, when_true, when_false, variables) {
             let ty = match &idiom {
-                Idiom::Absolute(_) | Idiom::Insert { .. } => Type::Int,
+                Idiom::Absolute(_) | Idiom::Insert { .. } | Idiom::Unary(..) => Type::Int,
                 Idiom::Masked { value, .. } => mwcc_iro::promote(value.ty),
             };
             *expression = Expr { kind: ExprKind::Idiom(idiom), ty };
@@ -1008,7 +1029,7 @@ pub fn sign_idiom(condition: &Expr, when_true: &Expr, when_false: &Expr, variabl
     let idiom = recognize(condition, when_true, when_false)?;
     let tested = match &idiom {
         Idiom::Absolute(tested) | Idiom::Masked { tested, .. } => tested,
-        Idiom::Insert { .. } => return None,
+        Idiom::Insert { .. } | Idiom::Unary(..) => return None,
     };
     let equality = matches!(idiom, Idiom::Masked { relation: BinaryOp::Equal | BinaryOp::NotEqual, .. });
     let ty = variables[tested.as_var()?];
@@ -1217,7 +1238,7 @@ fn select(
     let variables: Vec<Type> = function.variables.iter().map(|variable| variable.ty).collect();
     if let Some(idiom) = sign_idiom(condition, when_true, when_false, &variables) {
         let ty = match &idiom {
-            Idiom::Absolute(_) | Idiom::Insert { .. } => Type::Int,
+            Idiom::Absolute(_) | Idiom::Insert { .. } | Idiom::Unary(..) => Type::Int,
             Idiom::Masked { value, .. } => mwcc_iro::promote(value.ty),
         };
         return Some(vec![destination.assign(Expr { kind: ExprKind::Idiom(idiom), ty })]);
