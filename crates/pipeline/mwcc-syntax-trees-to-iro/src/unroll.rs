@@ -6,10 +6,16 @@ use mwcc_iro::{BinaryOp, Expr, ExprKind, Function, Stmt, VarId};
 
 use crate::passes::substitute;
 
-pub fn unroll_partially(function: &mut Function) {
+/// `unrolling`: copies per pass (an explicit speed goal); otherwise one.
+pub fn unroll_partially(function: &mut Function, unrolling: bool) {
     let mut body = std::mem::take(&mut function.body);
+    UNROLLING.with(|flag| flag.set(unrolling));
     statements(&mut body);
     function.body = body;
+}
+
+thread_local! {
+    static UNROLLING: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
 fn statements(body: &mut Vec<Stmt>) {
@@ -121,7 +127,9 @@ fn unrolled(before: &Stmt, statement: &Stmt, live_after: &dyn Fn(VarId) -> bool)
         }
         remaining == 1
     };
-    let factor = if direction < 0 {
+    let factor = if !UNROLLING.with(|flag| flag.get()) {
+        1
+    } else if direction < 0 {
         // Counting down: completely to 10, else by the largest divisor
         // that is at most 10.
         if cost > 4 {

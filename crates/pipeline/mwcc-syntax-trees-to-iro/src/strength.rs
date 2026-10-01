@@ -6,9 +6,12 @@ use mwcc_iro::{BinaryOp, Expr, ExprKind, Function, Place, Stmt, Type, VarId, Var
 
 /// `fold_start`: a constant start of the induction variable folds into
 /// the cursors' starts (GC/1.0-1.2.5n compute `base + i*k` after it).
-pub fn strength_reduce(function: &mut Function, fold_start: bool) {
+/// `cursors`: addresses become pointer cursors (with an explicit speed
+/// goal); otherwise only constants are hoisted.
+pub fn strength_reduce(function: &mut Function, fold_start: bool, cursors: bool) {
     let first_cursor = function.variables.len();
     let mut body = std::mem::take(&mut function.body);
+    CURSORS.with(|flag| flag.set(cursors));
     statements(&mut body, function, fold_start);
     if std::env::var_os("MWCC_IRO_NO_CURSOR_COPIES").is_none() {
         let whole = body.clone();
@@ -118,6 +121,10 @@ fn uses(body: &[Stmt], variable: VarId) -> usize {
         .sum()
 }
 
+thread_local! {
+    static CURSORS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
 fn statements(body: &mut Vec<Stmt>, function: &mut Function, fold_start: bool) {
     let mut index = 0;
     while index < body.len() {
@@ -155,6 +162,7 @@ fn statements(body: &mut Vec<Stmt>, function: &mut Function, fold_start: bool) {
             }
         }
         let (inits, folded) = match &mut body[index] {
+            _ if !CURSORS.with(|flag| flag.get()) => (Vec::new(), false),
             Stmt::Loop { condition, body: inner, step, effects, .. } => {
                 reduce_loop(condition.as_mut(), inner, step, effects, initial, fold_start, function)
             }
