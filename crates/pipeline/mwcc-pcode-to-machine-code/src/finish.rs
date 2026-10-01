@@ -179,6 +179,27 @@ pub fn finish(
             })
             .collect()
     };
+    // A loop back to the entry block must not re-run the prologue: the
+    // entry gets a block of its own.
+    if framed && pcode.blocks.iter().any(|block| block.successors.contains(&0)) && !toggle("MWCC_PCODE_NO_ENTRY_SPLIT") {
+        for block in &mut pcode.blocks {
+            for successor in &mut block.successors {
+                *successor += 1;
+            }
+            for instruction in &mut block.instructions {
+                if let Instruction::Branch { target } | Instruction::BranchConditionalForward { target, .. } = &mut instruction.instruction {
+                    *target += 1;
+                }
+            }
+        }
+        for (targets, _) in &mut pcode.jump_tables {
+            for target in targets.iter_mut() {
+                *target += 1;
+            }
+        }
+        let weight = pcode.blocks[0].weight;
+        pcode.blocks.insert(0, mwcc_pcode::Block { instructions: Vec::new(), successors: vec![1], weight });
+    }
     let exit = pcode.blocks.len() - 1;
     let mut framed_blocks = vec![false; pcode.blocks.len()];
     // Code that never returns (an endless loop) has no epilogue.
