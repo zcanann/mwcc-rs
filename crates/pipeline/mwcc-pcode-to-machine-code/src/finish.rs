@@ -643,37 +643,56 @@ fn forward_physical_reads(pcode: &mut PCodeFunction) {
                 let last_use = instructions.iter().rposition(|instruction| instruction.uses(class).contains(&v));
                 last_use.map_or(true, |last| !instructions[from..last].iter().any(|instruction| instruction.instruction.is_call()))
             };
-            let eligible: Vec<bool> = (0..block.instructions.len())
-                .map(|index| {
-                    block.instructions[index].copy(class).is_some_and(|(v, p)| v >= 32 && p < 32 && p != 0 && local(v, index, &block.instructions))
+            // A copy whose value stays block-local forwards every read; one
+            // that lives on forwards only reads as a memory base.
+            let eligible: Vec<Option<bool>> = (0..block.instructions.len())
+                .map(|index| match block.instructions[index].copy(class) {
+                    Some((v, p)) if v >= 32 && p < 32 && p != 0 => {
+                        if local(v, index, &block.instructions) {
+                            Some(false)
+                        } else {
+                            (!toggle("MWCC_PCODE_NO_BASE_FORWARD")).then_some(true)
+                        }
+                    }
+                    _ => None,
                 })
                 .collect();
-            let mut active: Vec<(u32, u32)> = Vec::new();
+            let mut active: Vec<(u32, u32, bool)> = Vec::new();
             for (index, instruction) in block.instructions.iter_mut().enumerate() {
                 if !active.is_empty() && instruction.copy(class).is_none() {
                     // (Not a register the instruction also writes: an
                     // in-place update such as `rlwimi`.)
                     let written = instruction.defs(class);
-                    let active: Vec<(u32, u32)> = active.iter().copied().filter(|(v, _)| !written.contains(v)).collect();
+                    let memory_bases: Vec<u32> = if matches!(
+                        instruction.instruction,
+                        Instruction::AddImmediate { .. } | Instruction::AddImmediateShifted { .. }
+                    ) {
+                        Vec::new()
+                    } else {
+                        instruction.not_r0.clone()
+                    };
+                    let active: Vec<(u32, u32, bool)> = active
+                        .iter()
+                        .copied()
+                        .filter(|(v, _, base_only)| !written.contains(v) && (!base_only || memory_bases.contains(v)))
+                        .collect();
                     let active = &active;
                     mwcc_vreg::for_each_register(&mut instruction.instruction, |role, operand_class, field| {
                         if role == RegisterRole::Use && operand_class == class {
-                            if let Some(&(_, physical)) = active.iter().find(|&&(v, _)| v == *field) {
+                            if let Some(&(_, physical, _)) = active.iter().find(|&&(v, _, _)| v == *field) {
                                 *field = physical;
                             }
                         }
                     });
                 }
                 for defined in instruction.defs(class) {
-                    active.retain(|&(v, p)| v != defined && p != defined);
+                    active.retain(|&(v, p, _)| v != defined && p != defined);
                 }
                 if instruction.instruction.is_call() {
                     active.clear();
                 }
-                if let Some(copy) = instruction.copy(class) {
-                    if eligible[index] {
-                        active.push(copy);
-                    }
+                if let (Some((v, p)), Some(base_only)) = (instruction.copy(class), eligible[index]) {
+                    active.push((v, p, base_only));
                 }
             }
         }
