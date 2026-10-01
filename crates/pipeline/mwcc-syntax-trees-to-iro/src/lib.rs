@@ -820,6 +820,8 @@ impl Builder<'_, '_> {
                 return Ok(out);
             }
             Statement::Break => Stmt::Break,
+            Statement::Goto(name) => Stmt::Goto(name.clone()),
+            Statement::Label(name) => Stmt::Label(name.clone()),
             Statement::Continue => Stmt::Continue,
             Statement::Store { target, value } if matches!(target, Expression::BitFieldRead { .. }) => {
                 return self.assignment(target, value);

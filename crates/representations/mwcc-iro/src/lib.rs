@@ -195,6 +195,10 @@ pub enum Stmt {
     Switch { value: Expr, cases: Vec<(i64, usize)>, arms: Vec<Vec<Stmt>>, default: Option<usize> },
     Break,
     Continue,
+    /// `goto name;`
+    Goto(String),
+    /// `name:` (a join point).
+    Label(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -584,6 +588,8 @@ impl Function {
                     }
                     Stmt::Break => out.push_str(&format!("{pad}break\n")),
                     Stmt::Continue => out.push_str(&format!("{pad}continue\n")),
+                    Stmt::Goto(name) => out.push_str(&format!("{pad}goto {name}\n")),
+                    Stmt::Label(name) => out.push_str(&format!("{name}:\n")),
                 }
             }
         }

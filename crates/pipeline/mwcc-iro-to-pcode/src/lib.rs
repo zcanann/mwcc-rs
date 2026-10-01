@@ -94,6 +94,7 @@ pub fn lower(
         frame_cursor: 8,
         reserved_end: 0,
         escaped_frame_objects: Vec::new(),
+        source_labels: HashMap::new(),
     };
     lowerer.lower_function(returns_through_variable)?;
     Ok(Lowered { pcode: lowerer.pcode, makes_calls: lowerer.makes_calls })
@@ -193,6 +194,8 @@ struct Lowerer<'a, 'u> {
     reserved_end: u32,
     /// Frame objects whose address the code computes.
     escaped_frame_objects: Vec<i16>,
+    /// Source labels (`goto` targets) by name.
+    source_labels: HashMap<String, Label>,
 }
 
 impl Lowerer<'_, '_> {
@@ -202,6 +205,16 @@ impl Lowerer<'_, '_> {
         self.labels.push(None);
         self.restorable.push(true);
         Label(self.labels.len() - 1)
+    }
+
+    /// A source label (`goto` target): a join point.
+    fn named_label(&mut self, name: &str) -> Label {
+        if let Some(&label) = self.source_labels.get(name) {
+            return label;
+        }
+        let label = self.new_join_label();
+        self.source_labels.insert(name.to_owned(), label);
+        label
     }
 
     /// A label whose block never inherits a branch's known values.
@@ -1009,7 +1022,11 @@ impl Lowerer<'_, '_> {
             {
                 self.tail_call(call)
             }
-            Stmt::If { condition, then_body, else_body } if condition.as_int().is_some() && !self.unoptimized => {
+            Stmt::If { condition, then_body, else_body }
+                if condition.as_int().is_some()
+                    && !self.unoptimized
+                    && !holds_label(if condition.as_int() != Some(0) { else_body } else { then_body }) =>
+            {
                 // IRO evaluates a constant condition: only one arm remains.
                 let arm = if condition.as_int() != Some(0) { then_body } else { else_body };
                 for statement in arm {
@@ -1018,7 +1035,7 @@ impl Lowerer<'_, '_> {
                 Ok(())
             }
             Stmt::Loop { test_first, condition: Some(condition), body, step, effects }
-                if condition.as_int() == Some(0) && !self.unoptimized && effects.is_empty() =>
+                if condition.as_int() == Some(0) && !self.unoptimized && effects.is_empty() && !holds_label(body) =>
             {
                 // A loop whose test is false: a do-while body runs once.
                 if !*test_first {
@@ -1101,6 +1118,16 @@ impl Lowerer<'_, '_> {
                 self.jump(exit);
                 Ok(())
             }
+            Stmt::Goto(name) => {
+                let label = self.named_label(name);
+                self.jump(label);
+                Ok(())
+            }
+            Stmt::Label(name) => {
+                let label = self.named_label(name);
+                self.place_label(label);
+                Ok(())
+            }
             Stmt::Continue => {
                 let (_, next) = *self.loops.last().ok_or_else(|| unsupported("continue outside a loop"))?;
                 self.jump(next);
@@ -1123,6 +1150,14 @@ impl Lowerer<'_, '_> {
             {
                 let (exit, next) = *self.loops.last().expect("checked");
                 let label = if matches!(then_body[0], Stmt::Break) { exit } else { next };
+                self.branch_on(condition, true, label)
+            }
+            // `if (c) goto l;`: one branch on `c` to the label.
+            Stmt::If { condition, then_body, else_body }
+                if else_body.is_empty() && matches!(then_body.as_slice(), [Stmt::Goto(_)]) =>
+            {
+                let Stmt::Goto(name) = &then_body[0] else { unreachable!() };
+                let label = self.named_label(name);
                 self.branch_on(condition, true, label)
             }
             // `if (c) return;`: one branch on `c` to the exit.
@@ -4130,6 +4165,17 @@ struct Known {
 }
 
 /// Whether any statement assigns `variable`.
+/// Whether statements hold a source label (a `goto` target).
+fn holds_label(body: &[Stmt]) -> bool {
+    body.iter().any(|statement| match statement {
+        Stmt::Label(_) => true,
+        Stmt::If { then_body, else_body, .. } => holds_label(then_body) || holds_label(else_body),
+        Stmt::Loop { body, step, effects, .. } => holds_label(body) || holds_label(step) || holds_label(effects),
+        Stmt::Switch { arms, .. } => arms.iter().any(|arm| holds_label(arm)),
+        _ => false,
+    })
+}
+
 /// How many statements assign `variable`.
 fn assignments(body: &[Stmt], variable: VarId) -> usize {
     body.iter()
@@ -4357,7 +4403,7 @@ fn makes_calls(body: &[Stmt]) -> bool {
             condition.as_ref().is_some_and(expression) || makes_calls(body) || makes_calls(step) || makes_calls(effects)
         }
         Stmt::Switch { value, arms, .. } => expression(value) || arms.iter().any(|arm| makes_calls(arm)),
-        Stmt::Break | Stmt::Continue => false,
+        Stmt::Break | Stmt::Continue | Stmt::Goto(_) | Stmt::Label(_) => false,
     })
 }
 
@@ -4430,7 +4476,7 @@ fn references_weighted(body: &[Stmt], variable: VarId, base: usize) -> usize {
             Stmt::Switch { value, arms, .. } => {
                 expression(value, variable) + arms.iter().map(|arm| references_weighted(arm, variable, base)).sum::<usize>()
             }
-            Stmt::Break | Stmt::Continue => 0,
+            Stmt::Break | Stmt::Continue | Stmt::Goto(_) | Stmt::Label(_) => 0,
         })
         .sum()
 }

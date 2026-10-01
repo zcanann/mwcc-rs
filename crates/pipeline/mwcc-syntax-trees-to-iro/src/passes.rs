@@ -177,7 +177,8 @@ pub fn run(function: &mut Function, branch_preserving: bool) {
         for_each_expression(&mut function.body, &mut |expression| logical_constants(expression));
         constant_branches(&mut function.body);
     }
-    if enabled("FORWARD") {
+    // (Forwarding reasons in structured order: not across `goto`s.)
+    if enabled("FORWARD") && !has_label(&function.body) {
         forward_offsets(function);
     }
     if enabled("ALGEBRA") {
@@ -375,6 +376,17 @@ fn logical_constants(expression: &mut Expr) {
     }
 }
 
+/// Whether statements hold a source label (a `goto` target).
+pub fn has_label(body: &[Stmt]) -> bool {
+    body.iter().any(|statement| match statement {
+        Stmt::Label(_) => true,
+        Stmt::If { then_body, else_body, .. } => has_label(then_body) || has_label(else_body),
+        Stmt::Loop { body, step, effects, .. } => has_label(body) || has_label(step) || has_label(effects),
+        Stmt::Switch { arms, .. } => arms.iter().any(|arm| has_label(arm)),
+        _ => false,
+    })
+}
+
 /// Branches on constants (even at -O0): the taken arm replaces an `if`, a
 /// loop never entered disappears, and a `do ... while (0)` without
 /// `break`/`continue` becomes its body.
@@ -403,11 +415,17 @@ pub fn constant_branches(body: &mut Vec<Stmt>) {
             _ => {}
         }
         match statement {
-            Stmt::If { condition, then_body, else_body } if condition.as_int().is_some() => {
+            // (Code holding a `goto` target is never dropped.)
+            Stmt::If { condition, then_body, else_body }
+                if condition.as_int().is_some()
+                    && !has_label(if condition.as_int() != Some(0) { &else_body } else { &then_body }) =>
+            {
                 out.extend(if condition.as_int() != Some(0) { then_body } else { else_body });
             }
             // (A false first test still runs the effects before it.)
-            Stmt::Loop { test_first: true, condition: Some(condition), effects, .. } if condition.as_int() == Some(0) => {
+            Stmt::Loop { test_first: true, condition: Some(condition), effects, body, .. }
+                if condition.as_int() == Some(0) && !has_label(&body) =>
+            {
                 out.extend(effects);
             }
             Stmt::Loop { test_first: false, condition: Some(condition), body, step, effects }
@@ -420,7 +438,9 @@ pub fn constant_branches(body: &mut Vec<Stmt>) {
             // A switch on a constant runs the selected arm (falling through
             // to the next) up to its `break`.
             Stmt::Switch { value, cases, arms, default }
-                if value.as_int().is_some() && std::env::var_os("MWCC_IRO_NO_CONSTANT_SWITCH").is_none() =>
+                if value.as_int().is_some()
+                    && !arms.iter().any(|arm| has_label(arm))
+                    && std::env::var_os("MWCC_IRO_NO_CONSTANT_SWITCH").is_none() =>
             {
                 let selected = value.as_int().expect("checked");
                 let start = cases.iter().find(|&&(case, _)| case == selected).map(|&(_, arm)| arm).or(default);
@@ -575,7 +595,7 @@ pub fn for_each_expression(body: &mut [Stmt], rewrite: &mut dyn FnMut(&mut Expr)
                     for_each_expression(arm, rewrite);
                 }
             }
-            Stmt::Break | Stmt::Continue => {}
+            Stmt::Break | Stmt::Continue | Stmt::Goto(_) | Stmt::Label(_) => {}
         }
     }
 }
