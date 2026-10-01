@@ -244,17 +244,26 @@ fn remove_dead_definitions(function: &mut PCodeFunction, class: Class, live_out:
     for (index, block) in function.blocks.iter_mut().enumerate() {
         let mut live = Bits(live_out[index].0.clone());
         let mut keep = vec![true; block.instructions.len()];
+        // (The carry a later `adde`/`subfe` reads keeps its setter.)
+        let mut carry_live = false;
         for (position, instruction) in block.instructions.iter().enumerate().rev() {
             let defs = instruction.defs(class);
             let other_defs = instruction.defs(other_class(class));
             let dead = !instruction.has_side_effects()
                 && !defines_condition_register(instruction)
+                && !(carry_live && sets_carry(&instruction.instruction))
                 && other_defs.is_empty()
                 && !defs.is_empty()
                 && defs.iter().all(|register| !live.get(*register as usize));
             if dead {
                 keep[position] = false;
                 continue;
+            }
+            if sets_carry(&instruction.instruction) {
+                carry_live = false;
+            }
+            if reads_carry(&instruction.instruction) {
+                carry_live = true;
             }
             for register in defs {
                 live.clear(register as usize);
@@ -270,6 +279,33 @@ fn remove_dead_definitions(function: &mut PCodeFunction, class: Class, live_out:
             kept
         });
     }
+}
+
+/// Instructions that set XER[CA].
+fn sets_carry(instruction: &mwcc_machine_code::Instruction) -> bool {
+    use mwcc_machine_code::Instruction::*;
+    matches!(
+        instruction,
+        AddCarrying { .. }
+            | SubtractFromCarrying { .. }
+            | AddExtended { .. }
+            | SubtractFromExtended { .. }
+            | AddToZeroExtended { .. }
+            | SubtractFromZeroExtended { .. }
+            | AddImmediateCarrying { .. }
+            | AddImmediateCarryingRecord { .. }
+            | SubtractFromImmediate { .. }
+            | ShiftRightAlgebraicImmediate { .. }
+    )
+}
+
+/// Instructions that read XER[CA].
+fn reads_carry(instruction: &mwcc_machine_code::Instruction) -> bool {
+    use mwcc_machine_code::Instruction::*;
+    matches!(
+        instruction,
+        AddExtended { .. } | SubtractFromExtended { .. } | AddToZeroExtended { .. } | SubtractFromZeroExtended { .. }
+    )
 }
 
 fn other_class(class: Class) -> Class {

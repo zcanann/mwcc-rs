@@ -46,8 +46,13 @@ impl Lowerer<'_, '_> {
             }
             ExprKind::Var(id) if self.homes[*id].is_none() => Ok(self.wide_registers(*id)),
             ExprKind::Int(value) => {
-                let (high, low) = (self.temporary(), self.temporary());
+                let low = self.temporary();
                 self.load_constant(low, i64::from(*value as i32))?;
+                // (Equal halves share their register.)
+                if i64::from(*value as i32) == value >> 32 {
+                    return Ok((low, low));
+                }
+                let high = self.temporary();
                 self.load_constant(high, value >> 32)?;
                 Ok((high, low))
             }
@@ -241,9 +246,114 @@ impl Lowerer<'_, '_> {
 
     /// The returned wide value in `r3:r4`.
     pub(super) fn return_wide(&mut self, value: &Expr) -> Compilation<()> {
+        // (A constant loads each half straight into its register.)
+        let constant = match &value.kind {
+            ExprKind::Convert(inner) => inner.as_int(),
+            _ => value.as_int(),
+        };
+        if let Some(constant) = constant {
+            self.load_constant(4, i64::from(constant as i32))?;
+            self.load_constant(3, constant >> 32)?;
+            return Ok(());
+        }
         let (high, low) = self.wide(value)?;
         self.emit_plain(Instruction::Or { a: 4, s: low, b: low });
         self.emit_plain(Instruction::Or { a: 3, s: high, b: high });
         Ok(())
+    }
+}
+
+impl Lowerer<'_, '_> {
+    /// Compare wide operands for a branch: the cr0 bit to test and whether
+    /// the relation holds when it is set.
+    pub(super) fn wide_compare(&mut self, op: BinaryOp, left: &Expr, right: &Expr) -> Compilation<(u8, bool)> {
+        match op {
+            BinaryOp::Equal | BinaryOp::NotEqual => {
+                self.wide_difference(left, right, true)?;
+                Ok((2, op == BinaryOp::Equal))
+            }
+            _ => {
+                let borrow = self.wide_borrow(op, left, right)?;
+                let d = self.temporary();
+                self.emit_plain(Instruction::NegateRecord { d, a: borrow });
+                Ok((2, matches!(op, BinaryOp::LessEqual | BinaryOp::GreaterEqual)))
+            }
+        }
+    }
+
+    /// A wide comparison as a 0/1 value.
+    pub(super) fn wide_compare_value(&mut self, op: BinaryOp, left: &Expr, right: &Expr) -> Compilation<u32> {
+        match op {
+            BinaryOp::Equal => {
+                let difference = self.wide_difference(left, right, false)?;
+                let zeros = self.temporary();
+                self.emit_plain(Instruction::CountLeadingZeros { a: zeros, s: difference });
+                let d = self.temporary();
+                self.emit_plain(Instruction::RotateAndMask { a: d, s: zeros, shift: 27, begin: 5, end: 31 });
+                Ok(d)
+            }
+            BinaryOp::NotEqual => {
+                let difference = self.wide_difference(left, right, false)?;
+                let less = self.temporary();
+                self.emit_plain(Instruction::AddImmediateCarrying { d: less, a: difference, immediate: -1 });
+                let d = self.temporary();
+                self.emit_plain(Instruction::SubtractFromExtended { d, a: less, b: difference });
+                Ok(d)
+            }
+            _ => {
+                let borrow = self.wide_borrow(op, left, right)?;
+                let d = self.temporary();
+                self.emit_plain(Instruction::Negate { d, a: borrow });
+                if matches!(op, BinaryOp::LessEqual | BinaryOp::GreaterEqual) {
+                    let inverted = self.temporary();
+                    self.emit_plain(Instruction::SubtractFromImmediate { d: inverted, a: d, immediate: 1 });
+                    return Ok(inverted);
+                }
+                Ok(d)
+            }
+        }
+    }
+
+    /// `(a_lo ^ b_lo) | (a_hi ^ b_hi)` (recorded for a branch).
+    fn wide_difference(&mut self, left: &Expr, right: &Expr, record: bool) -> Compilation<u32> {
+        let (a_high, a_low) = self.wide(left)?;
+        let (b_high, b_low) = self.wide(right)?;
+        let (low, high) = (self.temporary(), self.temporary());
+        self.emit_plain(Instruction::Xor { a: low, s: a_low, b: b_low });
+        self.emit_plain(Instruction::Xor { a: high, s: a_high, b: b_high });
+        let d = self.temporary();
+        self.emit_plain(if record { Instruction::OrRecord { a: d, s: low, b: high } } else { Instruction::Or { a: d, s: low, b: high } });
+        Ok(d)
+    }
+
+    /// `-1` when the comparison's minuend is below its subtrahend, else 0
+    /// (`subfc; subfe; subfe x,x`): `a < b` and `a >= b` subtract `b` from
+    /// `a`, `a > b` and `a <= b` `a` from `b`. Signed operands flip their
+    /// high words' signs first.
+    fn wide_borrow(&mut self, op: BinaryOp, left: &Expr, right: &Expr) -> Compilation<u32> {
+        let (mut l_high, l_low) = self.wide(left)?;
+        let (mut r_high, r_low) = self.wide(right)?;
+        let signed = left.ty != Type::UnsignedLongLong && right.ty != Type::UnsignedLongLong;
+        if signed {
+            let flipped = self.temporary();
+            self.emit_plain(Instruction::XorImmediateShifted { a: flipped, s: l_high, immediate: 0x8000 });
+            l_high = flipped;
+            let flipped = self.temporary();
+            self.emit_plain(Instruction::XorImmediateShifted { a: flipped, s: r_high, immediate: 0x8000 });
+            r_high = flipped;
+        }
+        let ((m_high, m_low), (s_high, s_low)) = match op {
+            BinaryOp::Less | BinaryOp::GreaterEqual => ((l_high, l_low), (r_high, r_low)),
+            _ => ((r_high, r_low), (l_high, l_low)),
+        };
+        let low = self.temporary();
+        self.emit_plain(Instruction::SubtractFromCarrying { d: low, a: s_low, b: m_low });
+        let high = self.temporary();
+        self.emit_plain(Instruction::SubtractFromExtended { d: high, a: s_high, b: m_high });
+        // (Of the left operand's high word, whose value cancels.)
+        let filler = if self.unit.signed_promoted_truth { l_low } else { l_high };
+        let borrow = self.temporary();
+        self.emit_plain(Instruction::SubtractFromExtended { d: borrow, a: filler, b: filler });
+        Ok(borrow)
     }
 }

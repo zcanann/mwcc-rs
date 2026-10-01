@@ -1484,6 +1484,12 @@ impl Lowerer<'_, '_> {
                 self.branch(Instruction::BranchConditionalForward { options, condition_bit: bit, target: 0 }, label);
                 Ok(())
             }
+            // Truth of a wide value: `value != 0`.
+            _ if is_wide(condition.ty) => {
+                let zero = Expr { kind: ExprKind::Int(0), ty: condition.ty };
+                let test = Expr::binary(BinaryOp::NotEqual, condition.clone(), zero, Type::Int);
+                self.branch_on(&test, when, label)
+            }
             // Truth of a floating value: `value != 0.0`.
             _ if is_float(condition.ty) => {
                 let zero = Expr { kind: ExprKind::Float(0.0), ty: condition.ty };
@@ -1519,6 +1525,9 @@ impl Lowerer<'_, '_> {
     /// Emit a compare for `left op right`; returns the cr0 bit to test and
     /// whether the relation holds when that bit is set.
     fn compare(&mut self, op: BinaryOp, left: &Expr, right: &Expr) -> Compilation<(u8, bool)> {
+        if is_wide(left.ty) || is_wide(right.ty) {
+            return self.wide_compare(op, left, right);
+        }
         if is_float(left.ty) || is_float(right.ty) {
             let (a, _) = self.expression(left)?;
             let (b, _) = self.expression(right)?;
@@ -1633,6 +1642,19 @@ impl Lowerer<'_, '_> {
                 }
                 return Ok((low, ty));
             }
+        }
+        // (A wide comparison's value; `!wide` is `wide == 0`.)
+        match &expression.kind {
+            ExprKind::Binary(op, left, right) if op.is_comparison() && (is_wide(left.ty) || is_wide(right.ty)) => {
+                self.target = None;
+                return Ok((self.wide_compare_value(*op, left, right)?, ty));
+            }
+            ExprKind::Unary(UnaryOp::LogicalNot, operand) if is_wide(operand.ty) => {
+                self.target = None;
+                let zero = Expr { kind: ExprKind::Int(0), ty: operand.ty };
+                return Ok((self.wide_compare_value(BinaryOp::Equal, operand, &zero)?, ty));
+            }
+            _ => {}
         }
         let target = self.target.take();
         match &expression.kind {
