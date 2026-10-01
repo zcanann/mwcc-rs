@@ -5,9 +5,110 @@
 use mwcc_iro::{BinaryOp, Expr, ExprKind, Function, Place, Stmt, Type, VarId, VariableKind};
 
 pub fn strength_reduce(function: &mut Function) {
+    let first_cursor = function.variables.len();
     let mut body = std::mem::take(&mut function.body);
     statements(&mut body, function);
+    if std::env::var_os("MWCC_IRO_NO_CURSOR_COPIES").is_none() {
+        let whole = body.clone();
+        propagate_cursor_copies(&mut body, &whole, first_cursor, function);
+    }
     function.body = body;
+}
+
+/// `a = cursor` in a loop body, `a` assigned nowhere else and read only in
+/// that body: its reads read the cursor (copy propagation).
+fn propagate_cursor_copies(body: &mut [Stmt], whole: &[Stmt], first_cursor: VarId, function: &Function) {
+    for statement in body.iter_mut() {
+        match statement {
+            Stmt::If { then_body, else_body, .. } => {
+                propagate_cursor_copies(then_body, whole, first_cursor, function);
+                propagate_cursor_copies(else_body, whole, first_cursor, function);
+            }
+            Stmt::Switch { arms, .. } => {
+                arms.iter_mut().for_each(|arm| propagate_cursor_copies(arm, whole, first_cursor, function))
+            }
+            Stmt::Loop { body: inner, .. } => {
+                propagate_cursor_copies(inner, whole, first_cursor, function);
+                let mut position = 0;
+                while position < inner.len() {
+                    let copy = match &inner[position] {
+                        Stmt::Assign { variable, value } => match value.kind {
+                            ExprKind::Var(cursor) if cursor >= first_cursor && *variable < first_cursor => {
+                                Some((*variable, cursor))
+                            }
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    let Some((variable, cursor)) = copy else {
+                        position += 1;
+                        continue;
+                    };
+                    let local = &function.variables[variable];
+                    let eligible = local.frame.is_none()
+                        && !local.volatile
+                        && count_assignments(whole, variable) == 1
+                        && uses(whole, variable) == uses(&inner[position + 1..], variable)
+                        && count_assignments(&inner[position + 1..], cursor) == 0;
+                    if !eligible {
+                        position += 1;
+                        continue;
+                    }
+                    let value = Expr { kind: ExprKind::Var(cursor), ty: local.ty };
+                    crate::passes::substitute(&mut inner[position + 1..], variable, &value);
+                    inner.remove(position);
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Reads of `variable`.
+fn uses(body: &[Stmt], variable: VarId) -> usize {
+    fn expression(e: &Expr, variable: VarId) -> usize {
+        match &e.kind {
+            ExprKind::Var(id) | ExprKind::LocalAddress(id) => usize::from(*id == variable),
+            ExprKind::Load { base, index, .. } => {
+                expression(base, variable) + index.as_deref().map_or(0, |index| expression(index, variable))
+            }
+            ExprKind::Unary(_, operand) | ExprKind::Convert(operand) => expression(operand, variable),
+            ExprKind::Binary(_, left, right) => expression(left, variable) + expression(right, variable),
+            ExprKind::Select { condition, when_true, when_false } => {
+                expression(condition, variable) + expression(when_true, variable) + expression(when_false, variable)
+            }
+            ExprKind::Call { arguments, .. } => arguments.iter().map(|argument| expression(argument, variable)).sum(),
+            // (Conservatively, an idiom reads everything.)
+            ExprKind::Idiom(_) => 1,
+            _ => 0,
+        }
+    }
+    body.iter()
+        .map(|statement| match statement {
+            Stmt::Assign { value, .. } | Stmt::Eval(value) | Stmt::SetReturn(value) => expression(value, variable),
+            Stmt::Return(value) => value.as_ref().map_or(0, |value| expression(value, variable)),
+            Stmt::Store { place, value, .. } => {
+                expression(value, variable)
+                    + match place {
+                        Place::Memory { base, index, .. } => {
+                            expression(base, variable) + index.as_deref().map_or(0, |index| expression(index, variable))
+                        }
+                        Place::Global(_) => 0,
+                    }
+            }
+            Stmt::If { condition, then_body, else_body } => {
+                expression(condition, variable) + uses(then_body, variable) + uses(else_body, variable)
+            }
+            Stmt::Loop { condition, body, step, effects, .. } => {
+                condition.as_ref().map_or(0, |condition| expression(condition, variable))
+                    + uses(body, variable)
+                    + uses(step, variable)
+                    + uses(effects, variable)
+            }
+            Stmt::Switch { value, arms, .. } => expression(value, variable) + arms.iter().map(|arm| uses(arm, variable)).sum::<usize>(),
+            Stmt::Break | Stmt::Continue | Stmt::Goto(_) | Stmt::Label(_) => 0,
+        })
+        .sum()
 }
 
 fn statements(body: &mut Vec<Stmt>, function: &mut Function) {
