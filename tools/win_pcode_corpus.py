@@ -35,7 +35,7 @@ import tempfile
 HERE = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(HERE / "tools"))
 import win_parity as parity  # noqa: E402
-from win_pcode_eval import classify  # noqa: E402
+from win_pcode_eval import classify, relocation_fields  # noqa: E402
 
 # Builds whose selects keep branches (refused by PCode) or that mwcc-rs does
 # not model are not worth sampling for a PCode comparison.
@@ -44,7 +44,7 @@ SKIPPED = re.compile(r"mwcc: parity skipped function '([^']*)': (.*)")
 
 
 def compile_ours(mwcc: Path, tu: dict, flags: list[str], project: Path, output: Path,
-                 timeout: int, pcode: bool) -> tuple[dict[str, bytes], dict[str, str], str]:
+                 timeout: int, pcode: bool) -> tuple[dict[str, bytes], dict[str, str], str, tuple]:
     environment = dict(os.environ)
     if pcode:
         environment["MWCC_PCODE"] = "only"
@@ -59,14 +59,16 @@ def compile_ours(mwcc: Path, tu: dict, flags: list[str], project: Path, output: 
         log = process.stdout.decode("latin-1", "replace")
         code = process.returncode
     except subprocess.TimeoutExpired:
-        return {}, {}, "TIMEOUT"
+        return {}, {}, "TIMEOUT", ({}, [])
     skipped = {}
     for line in log.splitlines():
         match = SKIPPED.match(line.strip())
         if match:
             skipped[match.group(1)] = match.group(2)[:160]
-    functions = parity.elf_functions(output.read_bytes()) if code == 0 and output.is_file() else {}
-    return functions, skipped, "" if code == 0 else parity.last_diag(log)
+    ok = code == 0 and output.is_file()
+    functions = parity.elf_functions(output.read_bytes()) if ok else {}
+    relocations = parity.elf_relocations(output.read_bytes()) if ok else ({}, [])
+    return functions, skipped, "" if code == 0 else parity.last_diag(log), relocations
 
 
 def evaluate(tu: dict, mwcc: Path, root: Path, timeout: int) -> dict:
@@ -103,8 +105,9 @@ def evaluate(tu: dict, mwcc: Path, root: Path, timeout: int) -> dict:
             return result
         flags = access + flags
         reference = parity.elf_functions(ref_o.read_bytes())
+        ref_relocs, ref_layout = parity.elf_relocations(ref_o.read_bytes())
         # (PCode is the only code generator: one compile serves both.)
-        pcode, pcode_skipped, pcode_failure = compile_ours(
+        pcode, pcode_skipped, pcode_failure, (our_relocs, our_layout) = compile_ours(
             mwcc, tu, flags, project, scratch / "pcode.o", timeout, pcode=True)
         legacy, legacy_skipped, legacy_failure = pcode, pcode_skipped, pcode_failure
         result["status"] = "OK" if not (legacy_failure or pcode_failure) else "PARTIAL"
@@ -125,6 +128,9 @@ def evaluate(tu: dict, mwcc: Path, root: Path, timeout: int) -> dict:
                 "reference_words": code.hex() if kind else "",
                 "produced_words": produced.hex() if kind else "",
             })
+            if kind:
+                result["functions"][-1].update(relocation_fields(
+                    ref_relocs.get(name, []), ref_layout, our_relocs.get(name, []), our_layout))
         return result
     finally:
         shutil.rmtree(scratch, ignore_errors=True)

@@ -98,6 +98,8 @@ def compile_one(source: Path, build: str, mwcc: Path, compiler: Path, legacy_too
                             "-c", str(source), "-o", str(legacy)], capture_output=True, env=legacy_env)
         reference = win_parity.elf_functions(ref.read_bytes())
         produced = win_parity.elf_functions(ours.read_bytes()) if ours.is_file() else {}
+        ref_relocs, ref_layout = win_parity.elf_relocations(ref.read_bytes())
+        our_relocs, our_layout = win_parity.elf_relocations(ours.read_bytes()) if ours.is_file() else ({}, [])
         old = win_parity.elf_functions(legacy.read_bytes()) if legacy.is_file() else {}
         skipped = {}
         for line in run.stderr.splitlines():
@@ -121,7 +123,20 @@ def compile_one(source: Path, build: str, mwcc: Path, compiler: Path, legacy_too
                 "reference_words": code.hex() if kind else "",
                 "produced_words": produced[name].hex() if kind else "",
             })
+            if kind:
+                # Relocations and the data they reach, for tools/ppc_semantic_check.py.
+                functions[-1].update(relocation_fields(ref_relocs.get(name, []), ref_layout,
+                                                       our_relocs.get(name, []), our_layout))
         return {"source": source.name, "functions": functions}
+
+
+def relocation_fields(ref_relocs: list, ref_layout: list, our_relocs: list, our_layout: list) -> dict:
+    return {
+        "reference_relocs": ref_relocs,
+        "produced_relocs": our_relocs,
+        "reference_layout": win_parity.function_layout(ref_relocs, ref_layout),
+        "produced_layout": win_parity.function_layout(our_relocs, our_layout),
+    }
 
 
 def opcode_shape(word: int) -> int:

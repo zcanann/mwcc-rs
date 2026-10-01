@@ -105,6 +105,91 @@ def elf_functions(data: bytes) -> dict[str, bytes]:
     return functions
 
 
+READ_ONLY_DATA = (".rodata", ".sdata2", ".sbss2")
+
+
+def elf_relocations(data: bytes) -> tuple[dict[str, list], list[dict]]:
+    """Relocations of each function and the object's data layout.
+
+    Returns ``(relocs, layout)``:
+
+    * ``relocs`` maps function symbol name -> list of
+      ``[offset_in_function, elf_reloc_type, symbol_name, addend]`` taken from
+      the SHT_RELA sections that apply to the function's section;
+    * ``layout`` lists every non-function, non-file symbol defined in a
+      section as ``{"name", "section", "value", "size", "type", "bind"}``
+      (section symbols are named after their section; local labels such as
+      ``...bss.0`` and ``@123`` are included). Objects in initialized
+      read-only sections and ``@N`` objects also carry ``"data"`` (hex of up
+      to 256 bytes) so their contents can be modeled.
+    """
+    if data[:4] != b"\x7fELF":
+        return {}, []
+    shoff, = struct.unpack_from(">I", data, 0x20)
+    shentsize, shnum, shstrndx = struct.unpack_from(">HHH", data, 0x2E)
+    sections = [struct.unpack_from(">IIIIIIIIII", data, shoff + i * shentsize) for i in range(shnum)]
+
+    def cstr(offset: int) -> str:
+        end = data.index(b"\0", offset)
+        return data[offset:end].decode("latin-1")
+
+    shstr = sections[shstrndx][4] if shstrndx < len(sections) else 0
+    section_names = [cstr(shstr + sec[0]) if shstrndx else "" for sec in sections]
+    symbols: list[tuple[str, int, int, int, int, int]] = []  # name, value, size, type, bind, shndx
+    symtab_index = None
+    for index, sec in enumerate(sections):
+        if sec[1] != 2:  # SHT_SYMTAB
+            continue
+        symtab_index = index
+        strtab = sections[sec[6]]
+        for j in range(sec[5] // 16):
+            name_off, value, size, info, _other, shndx = struct.unpack_from(">IIIBBH", data, sec[4] + j * 16)
+            name = cstr(strtab[4] + name_off)
+            if info & 0xF == 3 and 0 < shndx < len(sections):  # STT_SECTION
+                name = section_names[shndx]
+            symbols.append((name, value, size, info & 0xF, info >> 4, shndx))
+        break
+    relocs: dict[str, list] = {}
+    if symtab_index is None:
+        return relocs, []
+    functions = [(s[0], s[5], s[1], s[2]) for s in symbols if s[3] == 2 and 0 < s[5] < len(sections)]
+    for sec in sections:
+        if sec[1] != 4 or sec[6] != symtab_index:  # SHT_RELA against our symtab
+            continue
+        target = sec[7]
+        entries = []
+        for j in range(sec[5] // 12):
+            r_offset, r_info, r_addend = struct.unpack_from(">IIi", data, sec[4] + j * 12)
+            entries.append((r_offset, r_info & 0xFF, r_info >> 8, r_addend))
+        for name, shndx, value, size in functions:
+            if shndx != target:
+                continue
+            rows = relocs.setdefault(name, [])
+            for r_offset, r_type, r_sym, r_addend in entries:
+                if value <= r_offset < value + size:
+                    symbol = symbols[r_sym][0] if r_sym < len(symbols) else ""
+                    rows.append([r_offset - value, r_type, symbol, r_addend])
+    layout = []
+    for name, value, size, kind, bind, shndx in symbols:
+        if kind in (2, 4) or not 0 < shndx < len(sections):  # FUNC, FILE, UNDEF, ABS
+            continue
+        section = section_names[shndx]
+        entry = {"name": name, "section": section, "value": value, "size": size, "type": kind, "bind": bind}
+        sec = sections[shndx]
+        if sec[1] == 1 and size and (section in READ_ONLY_DATA or name.startswith("@")):  # PROGBITS
+            entry["data"] = data[sec[4] + value: sec[4] + value + min(size, 256)].hex()
+        layout.append(entry)
+    return relocs, layout
+
+
+def function_layout(relocs: list, layout: list[dict]) -> list[dict]:
+    """The part of ``layout`` a function's relocations can reach: every
+    symbol in a section that one of its relocation symbols is defined in."""
+    names = {r[2] for r in relocs}
+    sections = {e["section"] for e in layout if e["name"] in names}
+    return [e for e in layout if e["section"] in sections]
+
+
 def run(cmd: list[str], cwd: Path, timeout: int) -> tuple[int, str]:
     try:
         proc = subprocess.run(
