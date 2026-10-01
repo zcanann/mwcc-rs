@@ -539,7 +539,7 @@ impl Lowerer<'_, '_> {
     fn lower_unoptimized(&mut self, calls: bool) -> Compilation<()> {
         let function = self.function;
         // (Early -O0 frames are not modeled; frameless leaves are.)
-        if self.unit.early_frame && (calls || function.variables.iter().any(|variable| variable.frame.is_some())) {
+        if self.unit.branch_preserving && (calls || function.variables.iter().any(|variable| variable.frame.is_some())) {
             return Err(unsupported("-O0 frames on GC/1.2.5 and earlier"));
         }
         // Floating register variables take saved FPRs from f31 down, like

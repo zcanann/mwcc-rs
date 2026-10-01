@@ -39,6 +39,9 @@ pub struct FinishOptions {
     /// 8-aligned at the top of an 8-aligned frame, `stmw`/`lmw` instead of
     /// the helpers, and `addi r1` before `mtlr`.
     pub early_frame: bool,
+    /// GC/1.1p1: the LR comes back from the caller's slot after the pop
+    /// (`addi r1; lwz r0,4(r1); mtlr`).
+    pub link_reload_after_pop: bool,
 }
 
 /// Schedule, color, frame, and flatten `pcode`. The last block is the exit
@@ -151,6 +154,7 @@ pub fn finish(
     let framed = makes_calls || !saved.is_empty() || !saved_float.is_empty() || pcode.frame_local_bytes > 0;
     let float_frame = FloatFrame {
         link_reload_last: options.link_reload_after_float_restores,
+        link_reload_after_pop: options.link_reload_after_pop,
         helper,
         multiple: options.use_lmw_stmw || options.early_frame,
         ..if options.early_frame {
@@ -1156,6 +1160,8 @@ pub(crate) fn toggle(name: &str) -> bool {
 struct FloatFrame {
     /// The GC/1.0-1.2.5n prologue and epilogue shapes.
     early: bool,
+    /// GC/1.1p1's LR reload after the pop.
+    link_reload_after_pop: bool,
     link_reload_last: bool,
     /// The GPRs go through `_savegpr_N`/`_restgpr_N` (r11 = top of their area).
     helper: bool,
@@ -1188,7 +1194,16 @@ impl FloatFrame {
             .enumerate()
             .map(|(k, &register)| (register, frame_size - float_area - 4 * (k as i16 + 1)))
             .collect();
-        FloatFrame { early: false, link_reload_last: false, helper: false, multiple: false, frame_size, floats, generals }
+        FloatFrame {
+            early: false,
+            link_reload_after_pop: false,
+            link_reload_last: false,
+            helper: false,
+            multiple: false,
+            frame_size,
+            floats,
+            generals,
+        }
     }
 
     /// GC/1.0-1.2.5n: the locals end 8-aligned, then the save area (FPRs
@@ -1203,7 +1218,16 @@ impl FloatFrame {
             .enumerate()
             .map(|(k, &register)| (register, frame_size - float_area - 4 * (k as i16 + 1)))
             .collect();
-        FloatFrame { early: true, link_reload_last: false, helper: false, multiple: true, frame_size, floats, generals }
+        FloatFrame {
+            early: true,
+            link_reload_after_pop: false,
+            link_reload_last: false,
+            helper: false,
+            multiple: true,
+            frame_size,
+            floats,
+            generals,
+        }
     }
 
     fn prologue(&self) -> Vec<Instruction> {
@@ -1254,8 +1278,13 @@ impl FloatFrame {
     /// final double reload follows the LR reload.
     fn epilogue(&self) -> Vec<Instruction> {
         if self.early {
-            // `lwz r0; lfd…; lwz…/lmw; addi r1; mtlr; blr`.
-            let mut instructions = vec![Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 }];
+            // `lwz r0; lfd…; lwz…/lmw; addi r1; mtlr; blr` (GC/1.1p1:
+            // `…; addi r1; lwz r0,4(r1); mtlr; blr`).
+            let mut instructions = if self.link_reload_after_pop {
+                Vec::new()
+            } else {
+                vec![Instruction::LoadWord { d: 0, a: 1, offset: self.frame_size + 4 }]
+            };
             for &(register, double, _) in &self.floats {
                 instructions.push(Instruction::LoadFloatDouble { d: register, a: 1, offset: double });
             }
@@ -1268,6 +1297,9 @@ impl FloatFrame {
                 }
             }
             instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
+            if self.link_reload_after_pop {
+                instructions.push(Instruction::LoadWord { d: 0, a: 1, offset: 4 });
+            }
             instructions.push(Instruction::MoveToLinkRegister { s: 0 });
             instructions.push(Instruction::BranchToLinkRegister);
             return instructions;

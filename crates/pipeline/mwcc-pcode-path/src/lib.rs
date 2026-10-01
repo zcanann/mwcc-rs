@@ -58,8 +58,10 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         return Err(mwcc_core::Diagnostic::error("PCode lowering: -O1 is not modeled (not yet supported)"));
     }
     let early_frame = matches!(request.config.build.label, "GC/1.0" | "GC/1.1" | "GC/1.2.5" | "GC/1.2.5n");
+    // (GC/1.1p1 shares the early frame shapes without the reservation.)
+    let patch_frame = request.config.build.label == "GC/1.1p1";
     // (GC/1.1p1 keeps a frame of its own, not modeled.)
-    if behavior.integer_select_style == mwcc_versions::IntegerSelectStyle::BranchPreserving && !early_frame {
+    if behavior.integer_select_style == mwcc_versions::IntegerSelectStyle::BranchPreserving && !early_frame && !patch_frame {
         return Err(mwcc_core::Diagnostic::error(
             "PCode lowering: the GC/1.1p1 frame (not yet supported)",
         ));
@@ -219,7 +221,7 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         tied_halves: request.config.build.label.starts_with("GC/3.")
             || request.config.build.label.starts_with("Wii/"),
         early_frame,
-        branch_preserving: early_frame,
+        branch_preserving: early_frame || patch_frame,
         // (GC/3.x divides by multiplication at every level.)
         // (And at any level with an explicit `,p`.)
         magic_division: behavior.optimization == mwcc_versions::Optimization::O4
@@ -280,7 +282,8 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
                 || request.config.build.label.starts_with("Wii/"),
             general_save_helper_minimum: behavior.general_save_helper_minimum,
             use_lmw_stmw: request.config.flags.use_lmw_stmw,
-            early_frame,
+            early_frame: early_frame || patch_frame,
+            link_reload_after_pop: patch_frame,
         },
     )?;
     output.section = request.function.section.clone();
