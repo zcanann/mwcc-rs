@@ -544,7 +544,7 @@ impl Builder<'_, '_> {
     fn effects_inner(&mut self, expression: &Expression) -> Compilation<Vec<Stmt>> {
         Ok(match expression {
             Expression::Call { name, arguments } => evaluated(self.call(name, arguments, true)?),
-            Expression::CallThrough { target, arguments } => vec![Stmt::Eval(self.indirect_call(target, arguments, true, None)?)],
+            Expression::CallThrough { target, arguments, .. } => vec![Stmt::Eval(self.indirect_call(target, arguments, true, None)?)],
             Expression::Cast { target_type: Type::Void, operand } => match operand.as_ref() {
                 Expression::Call { name, arguments } => evaluated(self.call(name, arguments, true)?),
                 // A discarded variable still counts as a reference (-O0
@@ -1296,6 +1296,9 @@ impl Builder<'_, '_> {
                 Expr { kind: ExprKind::Load { base, index, offset }, ty }
             }
             Expression::Call { name, arguments } => self.call(name, arguments, false)?,
+            Expression::CallThrough { target, arguments, return_type } => {
+                self.indirect_call(target, arguments, false, *return_type)?
+            }
             Expression::StringLiteral(bytes) => {
                 if self.unit.strings_packed {
                     return Err(unsupported("packed string literals"));

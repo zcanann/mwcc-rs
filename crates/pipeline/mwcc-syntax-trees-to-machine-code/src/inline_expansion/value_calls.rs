@@ -755,7 +755,8 @@ pub(super) fn expand_expression(
             element: *element,
             index_stride: *index_stride,
         },
-        Expression::CallThrough { target, arguments } => Expression::CallThrough {
+        Expression::CallThrough { target, arguments, return_type } => Expression::CallThrough {
+            return_type: *return_type,
             target: Box::new(recurse(target, active, changed, value_body_substitutions)),
             arguments: arguments
                 .iter()

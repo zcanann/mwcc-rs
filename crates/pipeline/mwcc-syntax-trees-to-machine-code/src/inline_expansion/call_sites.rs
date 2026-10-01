@@ -135,7 +135,7 @@ fn collect_expression_calls(expression: &Expression, counts: &mut HashMap<String
             collect_expression_calls(base, counts);
             collect_expression_calls(index, counts);
         }
-        Expression::CallThrough { target, arguments } => {
+        Expression::CallThrough { target, arguments, .. } => {
             collect_expression_calls(target, counts);
             for argument in arguments {
                 collect_expression_calls(argument, counts);

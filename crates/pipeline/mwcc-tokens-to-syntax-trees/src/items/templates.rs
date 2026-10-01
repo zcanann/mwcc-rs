@@ -1337,6 +1337,7 @@ impl Parser {
         let mut field_order = Vec::new();
         let mut function_pointer_fields = std::collections::HashSet::new();
         let mut function_pointer_types = HashMap::new();
+        let mut function_pointer_returns = HashMap::new();
         if let Some(base_pattern) = &template.base {
             let base = self.resolve_template_pattern(base_pattern, arguments)?;
             let base_layout = base.layout?;
@@ -1348,6 +1349,7 @@ impl Parser {
             }
             function_pointer_fields.extend(base_layout.function_pointer_fields);
             function_pointer_types.extend(base_layout.function_pointer_types);
+            function_pointer_returns.extend(base_layout.function_pointer_returns);
             offset = base_layout.size;
         }
         let resolved_fields = template
@@ -1467,6 +1469,7 @@ impl Parser {
             has_volatile_fields,
             function_pointer_fields,
             function_pointer_types,
+            function_pointer_returns,
             size,
             align: max_alignment as u8,
         })

@@ -1281,6 +1281,7 @@ impl Parser {
                         },
                     );
                     if row_stride.is_none() {
+                        layout.function_pointer_returns.insert(pointer_name.clone(), field_type);
                         layout.function_pointer_fields.insert(pointer_name);
                     }
                     offset = advance_layout_offset(offset, 4)?;
@@ -1555,6 +1556,9 @@ impl Parser {
                 layout
                     .function_pointer_types
                     .extend(inner.function_pointer_types.clone());
+                layout
+                    .function_pointer_returns
+                    .extend(inner.function_pointer_returns.clone());
                 *offset = advance_layout_offset(*offset, inner_size)?;
                 Ok(names)
             }
@@ -1719,6 +1723,9 @@ impl Parser {
                 layout
                     .function_pointer_types
                     .extend(inner.function_pointer_types.clone());
+                layout
+                    .function_pointer_returns
+                    .extend(inner.function_pointer_returns.clone());
                 *offset = advance_layout_offset(*offset, inner_size)?;
                 names
             }
@@ -1877,6 +1884,9 @@ impl Parser {
                     layout
                         .function_pointer_types
                         .extend(inner.function_pointer_types.clone());
+                    layout
+                        .function_pointer_returns
+                        .extend(inner.function_pointer_returns.clone());
                 }
                 max_size = max_size.max(inner_size);
                 max_align = max_align.max(inner_align);

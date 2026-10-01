@@ -2471,7 +2471,7 @@ impl InlineBodySet {
             Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
                 self.expression_contains_call(base)
             }
-            Expression::CallThrough { target, arguments } => {
+            Expression::CallThrough { target, arguments, .. } => {
                 self.expression_contains_call(target)
                     || arguments
                         .iter()

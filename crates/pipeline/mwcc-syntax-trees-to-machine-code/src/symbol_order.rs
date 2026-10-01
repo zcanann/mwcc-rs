@@ -300,7 +300,7 @@ fn collect_statement(statement: &Statement, names: &mut Names) {
 fn collect(expression: &Expression, names: &mut Names) {
     match expression {
         Expression::CompoundLiteral { .. } => {}
-        Expression::CallThrough { target, arguments } => {
+        Expression::CallThrough { target, arguments, .. } => {
             collect(target, names);
             for argument in arguments {
                 collect(argument, names);

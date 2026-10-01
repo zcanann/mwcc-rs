@@ -2383,6 +2383,7 @@ mod tests {
             value: Expression::CallThrough {
                 target: Box::new(Expression::Variable("callback".into())),
                 arguments: vec![Expression::Variable("value".into())],
+                return_type: None,
             },
         });
         function.return_expression = Some(Expression::Call {

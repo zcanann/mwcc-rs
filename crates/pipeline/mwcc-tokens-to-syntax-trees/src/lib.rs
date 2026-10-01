@@ -246,6 +246,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         anonymous_aggregate_definition_label_weight,
         nested_anonymous_aggregate_definition_label_weight,
         last_member_array_bytes: None,
+        last_member_callee: None,
         last_global_array_extent: None,
         global_structs: crate::shared::Shared::from(std::collections::HashMap::new()),
         global_nested_pointer_pointees: crate::shared::Shared::from(std::collections::HashMap::new()),
@@ -6462,6 +6463,7 @@ blr\n\
             Some(mwcc_syntax_trees::Expression::CallThrough {
                 target,
                 arguments,
+                ..
             }) if matches!(target.as_ref(), mwcc_syntax_trees::Expression::Member { offset: 0, .. })
                 && arguments.len() == 1
         ));

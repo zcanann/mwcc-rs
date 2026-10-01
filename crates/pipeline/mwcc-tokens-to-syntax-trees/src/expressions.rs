@@ -1522,7 +1522,10 @@ impl Parser {
             _ => None,
         };
         let mut pending_arrow_effect: Option<Expression> = None;
+        // The return type of the function-pointer member just accessed.
+        let mut member_callee: Option<Type> = None;
         loop {
+            let callee_return = member_callee.take();
             match self.peek() {
                 // `(*fp)(args)` — an indirect call through a function-pointer
                 // variable. The Call carries the VARIABLE's name; codegen
@@ -1658,7 +1661,16 @@ impl Parser {
                         }
                     }
                     self.expect(Token::ParenClose)?;
-                    expression = Expression::CallThrough { target, arguments };
+                    let return_type = match target.as_ref() {
+                        Expression::Member { .. } if callee_return.is_some() => callee_return,
+                        // `(*s->fp)(args)`: the member was parsed inside the parentheses.
+                        Expression::Member { offset, .. } => self
+                            .last_member_callee
+                            .filter(|(callee_offset, _)| callee_offset == offset)
+                            .map(|(_, ty)| ty),
+                        _ => None,
+                    };
+                    expression = Expression::CallThrough { target, arguments, return_type };
                 }
                 Token::BracketOpen => {
                     // A decayed array-typedef / row-pointer parameter (`Mtx m`): the ONLY
@@ -1919,6 +1931,17 @@ impl Parser {
                         .structs
                         .get(&tag)
                         .is_some_and(|layout| layout.function_pointer_fields.contains(&field));
+                    let field_callee = self
+                        .structs
+                        .get(&tag)
+                        .and_then(|layout| {
+                            layout.function_pointer_returns.get(&field).copied().or_else(|| {
+                                layout
+                                    .function_pointer_types
+                                    .get(&field)
+                                    .map(|function_type| function_type.source_identity().return_type.declared_type)
+                            })
+                        });
                     let is_data_field = self
                         .structs
                         .get(&tag)
@@ -2174,6 +2197,8 @@ impl Parser {
                         },
                     };
                     struct_tag = next_tag;
+                    member_callee = field_callee;
+                    self.last_member_callee = field_callee.map(|ty| (offset, ty));
                 }
                 _ => break,
             }

@@ -265,7 +265,7 @@ pub(crate) fn expression_assigns_name(expression: &Expression, name: &str) -> bo
                     .iter()
                     .any(|argument| expression_assigns_name(argument, name))
         }
-        Expression::CallThrough { target, arguments } => {
+        Expression::CallThrough { target, arguments, .. } => {
             expression_assigns_name(target, name)
                 || arguments
                     .iter()
@@ -389,7 +389,7 @@ pub(crate) fn count_name_occurrences(expression: &Expression, name: &str) -> usi
     match expression {
         // A compound literal is a constant image — no reads.
         Expression::CompoundLiteral { .. } => 0,
-        Expression::CallThrough { target, arguments } => {
+        Expression::CallThrough { target, arguments, .. } => {
             count_name_occurrences(target, name)
                 + arguments
                     .iter()
@@ -494,6 +494,7 @@ pub(crate) fn count_direct_call_argument_occurrences(expression: &Expression, na
         Expression::CallThrough {
             target,
             arguments: call_arguments,
+            ..
         } => count_direct_call_argument_occurrences(target, name) + arguments(call_arguments),
         Expression::VirtualCall {
             object,
@@ -649,7 +650,7 @@ fn collect_register_reads(
 ) {
     match expression {
         Expression::CompoundLiteral { .. } => {}
-        Expression::CallThrough { target, arguments } => {
+        Expression::CallThrough { target, arguments, .. } => {
             collect_register_reads(target, registers, collected);
             for argument in arguments {
                 collect_register_reads(argument, registers, collected);
@@ -865,7 +866,7 @@ fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>)
         // evaluated, so it cannot make those reads cross a call. Nested calls
         // inside one operand can: MWCC may evaluate the call-bearing operand
         // before another operand, just as it does for binary expressions.
-        Expression::CallThrough { target, arguments } => {
+        Expression::CallThrough { target, arguments, .. } => {
             let operands: Vec<_> = std::iter::once(target.as_ref())
                 .chain(arguments.iter())
                 .collect();
@@ -991,7 +992,7 @@ fn reads_register_after_call(expression: &Expression, registers: &HashSet<&str>)
 pub(crate) fn reads_register(expression: &Expression, registers: &HashSet<&str>) -> bool {
     match expression {
         Expression::CompoundLiteral { .. } => false,
-        Expression::CallThrough { target, arguments } => {
+        Expression::CallThrough { target, arguments, .. } => {
             reads_register(target, registers)
                 || arguments
                     .iter()
@@ -1642,7 +1643,7 @@ fn collect_computed_subexpressions<'a>(expression: &'a Expression, into: &mut Ve
     }
     match expression {
         Expression::CompoundLiteral { .. } => {}
-        Expression::CallThrough { target, arguments } => {
+        Expression::CallThrough { target, arguments, .. } => {
             collect_computed_subexpressions(target, into);
             for argument in arguments {
                 collect_computed_subexpressions(argument, into);

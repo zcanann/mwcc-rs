@@ -120,6 +120,8 @@ pub enum Expression {
     CallThrough {
         target: Box<Expression>,
         arguments: Vec<Expression>,
+        /// The pointer's declared return type, when its signature is known.
+        return_type: Option<Type>,
     },
     /// `object->method(arguments)` where `method` is virtual. The frontend has
     /// resolved the declaration to one ABI dispatch slot, but deliberately

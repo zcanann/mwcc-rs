@@ -337,7 +337,7 @@ fn analyze_expression(
         Expression::Member { base, .. } | Expression::MemberAddress { base, .. } => {
             analyze_expression(base, bindings)
         }
-        Expression::CallThrough { target, arguments } => {
+        Expression::CallThrough { target, arguments, .. } => {
             analyze_expression(target, bindings)
                 + arguments
                     .iter()

@@ -110,7 +110,7 @@ fn source_shape<'a>(
         Expression::Call { name, arguments } => {
             name == condition_global && arguments.is_empty()
         }
-        Expression::CallThrough { target, arguments } => {
+        Expression::CallThrough { target, arguments, .. } => {
             arguments.is_empty()
                 && matches!(
                     target.as_ref(),

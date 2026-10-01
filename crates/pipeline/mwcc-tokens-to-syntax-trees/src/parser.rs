@@ -82,6 +82,9 @@ pub(crate) struct StructLayout {
     /// retained them. Kept separately from layout so codegen can continue to
     /// use the compact callable-field set.
     pub(crate) function_pointer_types: HashMap<String, crate::cxx::CxxFunctionType>,
+    /// Return types of callable fields declared `RET (*name)(params)`, whose
+    /// parameter lists are skipped rather than parsed.
+    pub(crate) function_pointer_returns: HashMap<String, Type>,
     /// The struct's total size in bytes (members plus trailing padding to the
     /// struct's alignment) — the stride for an array/pointer of this struct.
     pub(crate) size: u32,
@@ -685,6 +688,9 @@ pub(crate) struct Parser {
     /// (`Expression::MemberAddress`): the array's total byte size. Consumed by
     /// the `sizeof(s.arr)` fold, which resets it before parsing its operand.
     pub(crate) last_member_array_bytes: Option<u32>,
+    /// The last function-pointer member accessed: its offset and the
+    /// return type of the function it points to (for `(*s->fp)(args)`).
+    pub(crate) last_member_callee: Option<(u32, Type)>,
     /// Undecayed extent for a normalized global array row in a sizeof operand.
     pub(crate) last_global_array_extent: Option<(mwcc_syntax_trees::Expression, u32)>,
     /// Active block-scope shadow renames, innermost last: (source name,

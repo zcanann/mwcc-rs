@@ -245,7 +245,7 @@ fn collect_expression(
                 collect_expression(argument, owner, candidates, referenced);
             }
         }
-        Expression::CallThrough { target, arguments } => {
+        Expression::CallThrough { target, arguments, .. } => {
             collect_expression(target, owner, candidates, referenced);
             for argument in arguments {
                 collect_expression(argument, owner, candidates, referenced);

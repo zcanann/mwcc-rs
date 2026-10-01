@@ -360,7 +360,8 @@ pub(super) fn substitute_expression(
             element: *element,
             index_stride: *index_stride,
         },
-        Expression::CallThrough { target, arguments } => Expression::CallThrough {
+        Expression::CallThrough { target, arguments, return_type } => Expression::CallThrough {
+            return_type: *return_type,
             target: Box::new(substitute_expression(target, replacements)),
             arguments: arguments
                 .iter()
@@ -398,6 +399,7 @@ pub(super) fn substitute_expression(
                 Some(replacement) => Expression::CallThrough {
                     target: Box::new(replacement.clone()),
                     arguments,
+                    return_type: None,
                 },
                 None => Expression::Call {
                     name: name.clone(),

@@ -1411,7 +1411,7 @@ pub(super) fn expression_use_count(expression: &Expression, name: &str) -> usize
                     .map(|argument| expression_use_count(argument, name))
                     .sum::<usize>()
         }
-        Expression::CallThrough { target, arguments } => {
+        Expression::CallThrough { target, arguments, .. } => {
             expression_use_count(target, name)
                 + arguments
                     .iter()
@@ -1646,7 +1646,7 @@ fn expression_modifies_or_escapes<const MODIFIED: bool>(expression: &Expression,
                     .iter()
                     .any(|argument| expression_modifies_or_escapes::<MODIFIED>(argument, name))
         }
-        Expression::CallThrough { target, arguments } => {
+        Expression::CallThrough { target, arguments, .. } => {
             expression_modifies_or_escapes::<MODIFIED>(target, name)
                 || arguments
                     .iter()
@@ -1722,7 +1722,7 @@ fn expression_mentions(expression: &Expression, name: &str) -> bool {
                     .iter()
                     .any(|argument| expression_mentions(argument, name))
         }
-        Expression::CallThrough { target, arguments } => {
+        Expression::CallThrough { target, arguments, .. } => {
             expression_mentions(target, name)
                 || arguments
                     .iter()
