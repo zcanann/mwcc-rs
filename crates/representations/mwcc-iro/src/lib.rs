@@ -63,6 +63,9 @@ pub struct Unit<'a> {
     /// Division by a constant multiplies by its magic number (-O4); below,
     /// it divides (`li; divw`).
     pub magic_division: bool,
+    /// GC/3.x and Wii test a promoted unsigned narrow value signed (`cmpwi`)
+    /// unless it needed extending; earlier builds test it logically.
+    pub signed_promoted_truth: bool,
     /// Scalar-replaced struct locals still store their fields (GC/3.x, Wii).
     pub keeps_struct_stores: bool,
     /// Loaded `const` globals stay valid across calls (GC/3.x, Wii).

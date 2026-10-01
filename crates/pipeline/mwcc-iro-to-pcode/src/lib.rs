@@ -1249,7 +1249,11 @@ impl Lowerer<'_, '_> {
                     // An unsigned value compares logically.
                     // (An unsigned narrow value too.)
                     let unsigned = is_unsigned(promote(ty))
-                        || (is_unsigned_narrow(ty) && !toggle("MWCC_PCODE_NARROW_SIGNED_TRUTH"));
+                        || (is_unsigned_narrow(ty) && !toggle("MWCC_PCODE_NARROW_SIGNED_TRUTH"))
+                        // (A raw unsigned narrow value extended for the test.)
+                        || (is_unsigned_narrow(unpromoted(condition).ty)
+                            && (self.is_raw(unpromoted(condition)) || !self.unit.signed_promoted_truth)
+                            && !toggle("MWCC_PCODE_PROMOTED_SIGNED_TRUTH"));
                     self.emit_plain(if unsigned && std::env::var_os("MWCC_PCODE_SIGNED_TRUTH").is_none() {
                         Instruction::CompareLogicalWordImmediate { a: register, immediate: 0 }
                     } else {
@@ -1732,6 +1736,8 @@ impl Lowerer<'_, '_> {
     fn is_raw(&self, expression: &Expr) -> bool {
         match &expression.kind {
             ExprKind::Load { .. } | ExprKind::Global(_) => expression.ty == Type::Char,
+            // A narrow call result is extended by the caller.
+            ExprKind::Call { .. } => is_narrow(expression.ty) && !toggle("MWCC_PCODE_EXTENDED_CALL_RESULTS"),
             ExprKind::Var(id) => self.raw_narrow[*id] || self.homes[*id].is_some() && expression.ty == Type::Char,
             // A same-type conversion is a no-op: still raw.
             ExprKind::Convert(operand) if operand.ty == expression.ty => self.is_raw(operand),
