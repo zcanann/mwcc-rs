@@ -1306,7 +1306,8 @@ impl Lowerer<'_, '_> {
                 if !self.record_form(register) {
                     // An unsigned value compares logically.
                     // (An unsigned narrow value too.)
-                    let unsigned = is_unsigned(promote(ty))
+                    // (GC/3.x tests every word's truth signed.)
+                    let unsigned = is_unsigned(promote(ty)) && !self.unit.signed_promoted_truth
                         || (is_unsigned_narrow(ty) && !toggle("MWCC_PCODE_NARROW_SIGNED_TRUTH"))
                         // (A raw unsigned narrow value extended for the test.)
                         || (is_unsigned_narrow(unpromoted(condition).ty)
@@ -1361,6 +1362,8 @@ impl Lowerer<'_, '_> {
         if right.as_int() == Some(0) && (!unsigned || equality) && self.record_form(a) {
             return Ok(comparison(op));
         }
+        // GC/3.x compares a word with zero for equality signed.
+        let unsigned = unsigned && !(equality && right.as_int() == Some(0) && self.unit.signed_promoted_truth);
         match (right.as_int(), unsigned) {
             (Some(value), false) if i16::try_from(value).is_ok() => {
                 self.emit_plain(Instruction::CompareWordImmediate { a, immediate: value as i16 });

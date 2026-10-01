@@ -883,6 +883,22 @@ pub fn algebra(expression: &mut Expr) {
             std::mem::swap(left, right);
         }
     }
+    // An unsigned word above zero is a nonzero one (`u > 0` = `u != 0`).
+    if let ExprKind::Binary(op, left, right) = &mut expression.kind {
+        let (relation, value) = match (left.as_int(), right.as_int()) {
+            (None, Some(0)) => (*op, &**left),
+            (Some(0), None) => (op.mirror(), &**right),
+            _ => (*op, &**left),
+        };
+        let word = mwcc_iro::is_unsigned(value.ty) && !mwcc_iro::is_narrow(value.ty);
+        if word && (left.as_int() == Some(0)) != (right.as_int() == Some(0)) {
+            match relation {
+                BinaryOp::Greater => *op = BinaryOp::NotEqual,
+                BinaryOp::LessEqual => *op = BinaryOp::Equal,
+                _ => {}
+            }
+        }
+    }
     // A mask keeping every bit of a zero-extended unsigned narrow value
     // (`u8 & 0xFF`, `u16 & 0xFFFF`) is the value.
     if let ExprKind::Binary(BinaryOp::BitAnd, value, mask) = &expression.kind {
