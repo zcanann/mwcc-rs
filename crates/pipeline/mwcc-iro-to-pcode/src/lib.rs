@@ -1016,6 +1016,17 @@ impl Lowerer<'_, '_> {
                 let label = if matches!(then_body[0], Stmt::Break) { exit } else { next };
                 self.branch_on(condition, true, label)
             }
+            // `if (c) return;`: one branch on `c` to the exit.
+            Stmt::If { condition, then_body, else_body }
+                if else_body.is_empty()
+                    && matches!(then_body.as_slice(), [Stmt::Return(None)])
+                    // (A `&&`/`||` condition keeps its `b exit` block.)
+                    && !matches!(condition.kind, ExprKind::Binary(BinaryOp::LogicalAnd | BinaryOp::LogicalOr, ..))
+                    && !toggle("MWCC_PCODE_NO_DIRECT_RETURN") =>
+            {
+                let exit = self.exit_label;
+                self.branch_on(condition, true, exit)
+            }
             Stmt::If { condition, then_body, else_body } => {
                 let otherwise = self.new_label();
                 self.branch_on(condition, false, otherwise)?;
