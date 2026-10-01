@@ -174,6 +174,10 @@ fn replace_fields(body: Vec<Stmt>, id: VarId, map: &HashMap<i32, VarId>, keep: b
 /// no sign-mask idioms and keep two-way assignments as branches.
 pub fn run(function: &mut Function, branch_preserving: bool) {
     let enabled = |name: &str| std::env::var_os(format!("MWCC_IRO_NO_{name}")).is_none();
+    if enabled("UNROLL") && !branch_preserving {
+        unroll(&mut function.body);
+        merge_constant_updates(&mut function.body);
+    }
     if enabled("FOLD") {
         for_each_expression(&mut function.body, &mut |expression| fold(expression));
     }
@@ -380,6 +384,152 @@ fn logical_constants(expression: &mut Expr) {
     }
 }
 
+// ---------------------------------------------------------------- unrolling
+
+/// The unroller's full expansion: a counted loop `v = a; while (v < b) {
+/// body; v = v + 1; }` with constant bounds, a straight-line call-free body
+/// that leaves `v` alone, a trip count whose prime factors are all at most 7
+/// and at most 48 operations in all becomes that many copies of its body
+/// (with `v` the iteration's constant), then `v = b`. Other counted loops
+/// MWCC unrolls partially (not modeled: the lowering refuses them).
+pub fn unroll(body: &mut Vec<Stmt>) {
+    for statement in body.iter_mut() {
+        match statement {
+            Stmt::If { then_body, else_body, .. } => {
+                unroll(then_body);
+                unroll(else_body);
+            }
+            Stmt::Loop { body, .. } => unroll(body),
+            Stmt::Switch { arms, .. } => arms.iter_mut().for_each(unroll),
+            _ => {}
+        }
+    }
+    let mut index = 1;
+    while index < body.len() {
+        let Some((_, statements)) = unrolled(&body[index - 1], &body[index]) else {
+            index += 1;
+            continue;
+        };
+        // (The start assignment goes too: the copies hold the constants
+        // and the final value follows them.)
+        let count = statements.len();
+        body.splice(index - 1..=index, statements);
+        index += count - 1;
+    }
+}
+
+fn unrolled(before: &Stmt, statement: &Stmt) -> Option<(VarId, Vec<Stmt>)> {
+    let Stmt::Assign { variable, value: start } = before else { return None };
+    let start = start.as_int()?;
+    let Stmt::Loop { test_first: true, condition: Some(condition), body, step, effects } = statement else { return None };
+    if !effects.is_empty() {
+        return None;
+    }
+    let variable = *variable;
+    // `v = v + 1`.
+    let [Stmt::Assign { variable: stepped, value: increment }] = step.as_slice() else { return None };
+    if *stepped != variable {
+        return None;
+    }
+    let ExprKind::Binary(BinaryOp::Add, base, one) = &increment.kind else { return None };
+    if base.as_var() != Some(variable) || one.as_int() != Some(1) {
+        return None;
+    }
+    // `v < n` / `v <= n`.
+    let ExprKind::Binary(op, left, right) = &condition.kind else { return None };
+    let (Some(tested), Some(bound)) = (left.as_var(), right.as_int()) else { return None };
+    if tested != variable {
+        return None;
+    }
+    let end = match op {
+        BinaryOp::Less => bound,
+        BinaryOp::LessEqual => bound + 1,
+        _ => return None,
+    };
+    let trips = end - start;
+    if trips < 1 {
+        return None;
+    }
+    let mut remaining = trips;
+    for prime in [2, 3, 5, 7] {
+        while remaining % prime == 0 {
+            remaining /= prime;
+        }
+    }
+    if remaining != 1 {
+        return None;
+    }
+    // A straight-line, call-free body that leaves the induction alone.
+    fn plain(statement: &Stmt, variable: VarId) -> bool {
+        let calls = format!("{statement:?}").contains("Call {");
+        !calls
+            && match statement {
+                Stmt::Assign { variable: assigned, .. } => *assigned != variable,
+                Stmt::Store { .. } => true,
+                _ => false,
+            }
+    }
+    if body.is_empty() || !body.iter().all(|statement| plain(statement, variable)) {
+        return None;
+    }
+    fn operations(e: &Expr) -> i64 {
+        match &e.kind {
+            ExprKind::Load { .. } => 1,
+            ExprKind::Binary(_, left, right) => 1 + operations(left) + operations(right),
+            ExprKind::Unary(_, operand) | ExprKind::Convert(operand) => 1 + operations(operand),
+            _ => 0,
+        }
+    }
+    let cost: i64 = body
+        .iter()
+        .map(|statement| match statement {
+            Stmt::Assign { value, .. } | Stmt::Store { value, .. } => 1 + operations(value),
+            _ => 1,
+        })
+        .sum();
+    if cost * trips > 48 {
+        return None;
+    }
+    let mut out = Vec::new();
+    for k in 0..trips {
+        let mut copy = body.clone();
+        substitute(&mut copy, variable, &Expr::int(start + k));
+        out.extend(copy);
+    }
+    out.push(Stmt::Assign { variable, value: Expr::int(end) });
+    Some((variable, out))
+}
+
+/// `v = k; v = f(v);` (an unrolled accumulation) is `v = f(k);`, folded.
+fn merge_constant_updates(body: &mut Vec<Stmt>) {
+    let mut index = 0;
+    while index + 1 < body.len() {
+        let merged = match (&body[index], &body[index + 1]) {
+            (Stmt::Assign { variable, value: constant }, Stmt::Assign { variable: next, value })
+                if variable == next && constant.as_int().is_some() && value.mentions(*variable) && !format!("{value:?}").contains("Call {") =>
+            {
+                let mut value = value.clone();
+                let mut statement = [Stmt::Eval(value.clone())];
+                substitute(&mut statement, *variable, constant);
+                if let [Stmt::Eval(substituted)] = statement {
+                    value = substituted;
+                }
+                algebra(&mut value);
+                fold(&mut value);
+                Some(Stmt::Assign { variable: *variable, value })
+            }
+            _ => None,
+        };
+        match merged {
+            Some(statement) => {
+                body[index] = statement;
+                body.remove(index + 1);
+            }
+            None => index += 1,
+        }
+    }
+}
+
 /// Whether statements hold a source label (a `goto` target).
 pub fn has_label(body: &[Stmt]) -> bool {
     body.iter().any(|statement| match statement {
@@ -494,6 +644,13 @@ pub fn displacements(body: &mut [Stmt]) {
 /// addend into the displacement (optimized builds only).
 pub fn displacements_with(body: &mut [Stmt], distribute: bool) {
     fn absorb(base: &mut Box<Expr>, index: &mut Option<Box<Expr>>, offset: &mut i32, distribute: bool) {
+        // A constant index (an unrolled `p[k]`) is a displacement.
+        if let Some(constant) = index.as_deref().and_then(Expr::as_int) {
+            if let Ok(total) = i16::try_from(i64::from(*offset) + constant) {
+                *index = None;
+                *offset = i32::from(total);
+            }
+        }
         // `p[i + k]`: the constant part of the index joins the displacement
         // (`add` then `lwz k*size`).
         if let (Some(ix), true) = (index.as_deref(), distribute) {
