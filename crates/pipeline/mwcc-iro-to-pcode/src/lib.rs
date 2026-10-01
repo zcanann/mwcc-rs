@@ -2970,8 +2970,9 @@ impl Lowerer<'_, '_> {
         // -O0 narrows a full-width value before a narrow store.
         // (Not a narrow value updated by a constant, `x--`, done in its own
         // type; not an assignment's value or a bit-field insert.)
-        let narrow_update = matches!(&value.kind, ExprKind::Binary(_, left, right)
-            if right.as_int().is_some() && is_narrow(unpromoted(left).ty));
+        let narrow_update = matches!(&value.kind, ExprKind::Binary(op, left, right)
+            if right.as_int().is_some() && is_narrow(unpromoted(left).ty)
+                && (matches!(op, BinaryOp::Add | BinaryOp::Subtract) || toggle("MWCC_PCODE_O0_BITWISE_UPDATE_RAW")));
         let already = match &value.kind {
             ExprKind::Var(id) => self.function.variables[*id].kind == VariableKind::Temporary,
             ExprKind::Idiom(Idiom::Insert { .. }) => true,
