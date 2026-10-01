@@ -1093,8 +1093,12 @@ impl Lowerer<'_, '_> {
             return Ok(());
         }
         if is_float(return_type) {
-            let (register, _) = self.expression(value)?;
-            self.copy(return_type, 1, register);
+            // (-O0 computes the value straight into f1.)
+            let direct = (self.unoptimized && value.ty == return_type && !toggle("MWCC_PCODE_O0_FLOAT_RETURN_COPY")).then_some(1);
+            let (register, _) = self.expression_with_target(value, direct)?;
+            if register != 1 {
+                self.copy(return_type, 1, register);
+            }
             return Ok(());
         }
         let direct = self.unoptimized.then_some(3);
@@ -1990,7 +1994,29 @@ impl Lowerer<'_, '_> {
         let loaded = matches!(&right.kind, ExprKind::Load { base, index: None, .. }
                 if matches!(base.kind, ExprKind::Var(_) | ExprKind::GlobalAddress(_) | ExprKind::LocalAddress(_)))
             && std::env::var_os("MWCC_PCODE_FLOAT_LOAD_FIRST").is_none();
-        let (a, b) = if commutative && right.as_var().is_none() && !loaded { (b, a) } else { (a, b) };
+        // A constant goes first; a computed right operand goes first (a
+        // loaded one keeps source order); a variable goes before a
+        // computed binary left operand.
+        let refined = !toggle("MWCC_PCODE_NO_FLOAT_VARIABLE_FIRST");
+        let constant = |e: &Expr| match &e.kind {
+            ExprKind::Float(_) => true,
+            ExprKind::Global(name) => self.unit.globals.get(name).is_some_and(|global| global.is_const),
+            ExprKind::Convert(inner) => matches!(inner.kind, ExprKind::Float(_)),
+            _ => false,
+        };
+        let swap = commutative
+            && if refined && constant(left) {
+                false
+            } else if refined && constant(right) {
+                true
+            } else if refined && right.as_var().is_some() && matches!(left.kind, ExprKind::Binary(..)) {
+                true
+            } else if refined && left.as_var().is_some() && !toggle("MWCC_PCODE_FLOAT_COMPUTED_FIRST") {
+                false
+            } else {
+                right.as_var().is_none() && !loaded
+            };
+        let (a, b) = if swap { (b, a) } else { (a, b) };
         let d = self.result_for(ty, target);
         self.emit_plain(match (op, single) {
             (BinaryOp::Add, true) => Instruction::FloatAddSingle { d, a, b },
