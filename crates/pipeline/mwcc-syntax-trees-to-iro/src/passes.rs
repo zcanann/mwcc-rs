@@ -296,6 +296,17 @@ pub fn run_unoptimized(function: &mut Function) {
             {
                 operand.as_int().map(|value| Expr::typed_int(value, expression.ty))
             }
+            // An integer constant converted to a floating type is that
+            // floating constant.
+            ExprKind::Convert(operand)
+                if mwcc_iro::is_float(expression.ty)
+                    && operand.as_int().is_some()
+                    && std::env::var_os("MWCC_IRO_O0_RUNTIME_CONSTANT_CONVERSION").is_none() =>
+            {
+                let value = operand.as_int().expect("checked");
+                let value = if mwcc_iro::is_unsigned(operand.ty) { f64::from(value as u32) } else { value as f64 };
+                Some(Expr { kind: ExprKind::Float(value), ty: expression.ty })
+            }
             ExprKind::Binary(op, left, right) => match (left.as_int(), right.as_int()) {
                 (Some(a), Some(b)) => fold_literals(*op, a, b).map(|value| Expr::typed_int(value, expression.ty)),
                 _ => None,
