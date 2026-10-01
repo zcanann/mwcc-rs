@@ -31,6 +31,9 @@ fn initialized(bytes: Option<&[u8]>, values: Option<&[i64]>, relocated: bool) ->
 
 /// Lower `request.function`, or explain what is not modeled yet.
 pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
+    if std::env::var_os("MWCC_PCODE_TRACE").is_some() {
+        eprintln!("mwcc: lowering '{}'", request.function.name);
+    }
     let behavior = Behavior::resolve(request.config);
     let unoptimized = behavior.optimization == mwcc_versions::Optimization::O0;
     // -O2/-O3 take the -O4 pipeline (unscheduled: MWCC schedules by

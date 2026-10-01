@@ -547,7 +547,12 @@ impl Lowerer<'_, '_> {
                     .map(|id| (id, None)),
             )
             .collect();
-        ranked.sort_by_key(|&(id, argument)| (std::cmp::Reverse(weight(id)), argument.is_some(), id));
+        // (Tied parameters: the later declared first.)
+        let reverse_parameters = !toggle("MWCC_PCODE_O0_PARAMETERS_IN_ORDER");
+        ranked.sort_by_key(|&(id, argument)| {
+            let order = if argument.is_some() && reverse_parameters { usize::MAX - id } else { id };
+            (std::cmp::Reverse(weight(id)), argument.is_some(), order)
+        });
         let order: Vec<(usize, Option<u32>)> = ranked
             .into_iter()
             .chain(
@@ -1230,6 +1235,12 @@ impl Lowerer<'_, '_> {
                 let options = if when == true_when_set { 12 } else { 4 };
                 self.branch(Instruction::BranchConditionalForward { options, condition_bit: bit, target: 0 }, label);
                 Ok(())
+            }
+            // Truth of a floating value: `value != 0.0`.
+            _ if is_float(condition.ty) => {
+                let zero = Expr { kind: ExprKind::Float(0.0), ty: condition.ty };
+                let test = Expr::binary(BinaryOp::NotEqual, condition.clone(), zero, Type::Int);
+                self.branch_on(&test, when, label)
             }
             _ => {
                 // Truth of a value: compare against zero.
@@ -3418,14 +3429,35 @@ impl Lowerer<'_, '_> {
             .map(|argument| !toggle("MWCC_PCODE_ARGUMENTS_IN_ORDER") && format!("{:?}", argument.kind).contains("Call {"))
             .collect();
         let mut values = vec![None; arguments.len()];
+        // -O0 evaluates an argument without calls straight into its
+        // register (in order, after those that call).
+        let mut registers = Vec::with_capacity(arguments.len());
+        let (mut general, mut float) = (FIRST_GENERAL_ARGUMENT, 1);
+        for argument in arguments {
+            if is_float(argument.ty) {
+                registers.push(float);
+                float += 1;
+            } else {
+                registers.push(general);
+                general += 1;
+            }
+        }
         for pass in [true, false] {
             for (index, argument) in arguments.iter().enumerate() {
                 if calls[index] != pass {
                     continue;
                 }
+                let direct = self.unoptimized && !pass && !is_float(argument.ty) && !toggle("MWCC_PCODE_O0_ARGUMENT_TEMPORARIES");
                 // A constant argument is loaded straight into its register.
                 values[index] = match argument.as_int() {
                     Some(_) if !self.unoptimized => None,
+                    _ if direct => {
+                        let (value, _) = self.expression_with_target(argument, Some(registers[index]))?;
+                        if value != registers[index] {
+                            self.emit_plain(Instruction::Or { a: registers[index], s: value, b: value });
+                        }
+                        Some(registers[index])
+                    }
                     _ => Some(self.expression(argument)?.0),
                 };
             }
@@ -3443,6 +3475,7 @@ impl Lowerer<'_, '_> {
             let register = general;
             general += 1;
             match value {
+                Some(value) if value == register => {}
                 Some(value) => self.emit_plain(Instruction::Or { a: register, s: value, b: value }),
                 None => self.load_constant(register, arguments[index].as_int().expect("constant"))?,
             }
