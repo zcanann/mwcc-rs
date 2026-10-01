@@ -2084,7 +2084,10 @@ impl Lowerer<'_, '_> {
             }
         }
         // (An operand that calls is evaluated first.)
-        let (a, b) = if contains_call(right) && !contains_call(left) && !toggle("MWCC_PCODE_CALL_OPERAND_IN_ORDER") {
+        let (a, b) = if contains_call(right)
+            && (!contains_call(left) || !toggle("MWCC_PCODE_BOTH_CALLS_IN_ORDER"))
+            && !toggle("MWCC_PCODE_CALL_OPERAND_IN_ORDER")
+        {
             let (b, _) = self.expression(right)?;
             let (a, _) = self.expression(left)?;
             (a, b)
@@ -2757,10 +2760,13 @@ impl Lowerer<'_, '_> {
             && right.as_int().is_none()
             && !toggle("MWCC_PCODE_ADDRESS_FIRST");
         // An operand that calls is evaluated first.
+        // (When both call, the right one still goes first.)
         let calls_first = immediate.is_none()
             && right.as_int().is_none()
             && contains_call(right)
-            && !contains_call(left)
+            // (Integer operands that both call: right first, except for a
+            // subtraction.)
+            && (!contains_call(left) || (op != BinaryOp::Subtract && !toggle("MWCC_PCODE_BOTH_CALLS_IN_ORDER")))
             && !toggle("MWCC_PCODE_CALL_OPERAND_IN_ORDER");
         let early = if index_first || calls_first { Some(self.expression(right)?.0) } else { None };
         let (a, _) = self.expression(left)?;
@@ -2943,8 +2949,16 @@ impl Lowerer<'_, '_> {
     fn divide_registers(&mut self, op: BinaryOp, left: &Expr, right: &Expr, ty: Type, target: Option<u32>) -> Compilation<(u32, Type)> {
         let unsigned = is_unsigned(ty);
         {
-            let (x, _) = self.expression(left)?;
-            let (y, _) = self.expression(right)?;
+            // (A divisor that calls is evaluated first.)
+            let (x, y) = if contains_call(right) && !toggle("MWCC_PCODE_CALL_OPERAND_IN_ORDER") {
+                let (y, _) = self.expression(right)?;
+                let (x, _) = self.expression(left)?;
+                (x, y)
+            } else {
+                let (x, _) = self.expression(left)?;
+                let (y, _) = self.expression(right)?;
+                (x, y)
+            };
             let quotient = if op == BinaryOp::Divide { self.result(target) } else { self.temporary() };
             self.emit_plain(if unsigned {
                 Instruction::DivideWordUnsigned { d: quotient, a: x, b: y }
