@@ -164,6 +164,11 @@ fn lower_function_body(
     if function.asm_body.is_some() {
         return asm::assemble_asm_function(function, Behavior::resolve(&config));
     }
+    // A variadic definition needs its register save area and va_list
+    // support, which are not modeled.
+    if variadic_definitions.contains(&function.name) {
+        return Err(Diagnostic::error("PCode lowering: a variadic function definition (not yet supported)"));
+    }
     // Whether MWCC expands a call inline: None (an ordinary call), or
     // the body it expands (None inside when not modeled). Under
     // `-inline auto` a definition preceding the caller (any definition
