@@ -107,6 +107,9 @@ pub struct Unit<'a> {
     pub strings_small_data: bool,
     /// Literals are packed into one `@stringBase` object (not modeled).
     pub strings_packed: bool,
+    /// The unit's `.data` objects are addressable from its section anchor
+    /// (string literals among them).
+    pub data_anchor: bool,
     /// Bit-field stores use the declared type's unit (GC/3.x, Wii; the
     /// front end records the smallest covering unit).
     pub bit_field_declared_units: bool,

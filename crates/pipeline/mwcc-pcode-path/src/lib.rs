@@ -117,6 +117,7 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         .collect();
     // A section is anchored only while every object of it sits within a
     // signed 16-bit displacement of its start.
+    let mut data_anchor = true;
     for section in ["...bss.0", "...data.0"] {
         let total: u32 = request
             .globals
@@ -138,6 +139,9 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
             })
             .sum();
         if total > 0x7fff {
+            if section == "...data.0" {
+                data_anchor = false;
+            }
             for info in globals.values_mut() {
                 if info.anchor == Some(section) {
                     info.anchor = None;
@@ -237,6 +241,8 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
             || request.config.build.label.starts_with("Wii/"),
         strings_small_data: behavior.global_addressing == GlobalAddressing::SmallData,
         strings_packed: behavior.string_literals_packed,
+        // (Read-only literals live in `.rodata`.)
+        data_anchor: data_anchor && !request.config.flags.string_literals_read_only,
         returns_bool: request.returns_bool,
         cxx: request.cxx,
         bit_field_declared_units: request.config.build.label.starts_with("GC/3.")

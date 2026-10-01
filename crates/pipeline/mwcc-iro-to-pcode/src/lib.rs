@@ -1539,7 +1539,16 @@ impl Lowerer<'_, '_> {
             ExprKind::StringAddress(index) => {
                 // `@@strN` is resolved to the pooled `@N` per unit.
                 let placeholder = || RelocationTarget::External(format!("@@str{index}"));
-                let bytes = self.function.strings[*index].len() + 1;
+                if let Some(anchor) = self.anchored.get(&format!("@@str{index}")).copied() {
+                    // `addi d,anchor,<offset of the literal>`
+                    let base = self.anchor_register(anchor);
+                    let d = self.result(target);
+                    let mut addi = PInstr::new(Instruction::AddImmediate { d, a: base, immediate: 0 });
+                    addi.not_r0.push(base);
+                    addi.displacement_symbol = Some(format!("@@str{index}"));
+                    self.emit(addi);
+                    return Ok((d, ty));
+                }
                 if self.small_string(expression) {
                     let d = self.result(target);
                     let mut li = PInstr::new(Instruction::AddImmediate { d, a: 0, immediate: 0 });
@@ -4119,7 +4128,12 @@ impl Lowerer<'_, '_> {
         // Constants are rematerialized rather than kept across a call.
         self.constants.clear();
         self.float_constants.clear();
-        self.common.retain(|key, _| !key.starts_with('&') && !key.contains('@') && !key.starts_with('*'));
+        // (A section anchor stays live across the call.)
+        let keep_anchors = !toggle("MWCC_PCODE_ANCHOR_AFTER_CALL");
+        self.common.retain(|key, _| {
+            (keep_anchors && key.starts_with("&@..."))
+                || (!key.starts_with('&') && !key.contains('@') && !key.starts_with('*'))
+        });
         let result = self.result_for(ty, target);
         // (A result wanted in the result register stays there.)
         if result != result_register(ty) {
@@ -4606,23 +4620,41 @@ fn anchored_objects(function: &Function, unit: &Unit<'_>) -> HashMap<String, &'s
         return anchored;
     }
     let listing = format!("{:?}", function.body);
-    let mut names: Vec<&str> = Vec::new();
+    let mut names: Vec<String> = Vec::new();
     for marker in ["Global(\"", "GlobalAddress(\""] {
         let mut rest = listing.as_str();
         while let Some(at) = rest.find(marker) {
             rest = &rest[at + marker.len()..];
             let Some(end) = rest.find('"') else { break };
-            let name = &rest[..end];
+            let name = rest[..end].to_owned();
             if !names.contains(&name) {
                 names.push(name);
             }
         }
     }
+    // String literals in `.data` count too (as their `@@strN` placeholders).
+    let data_string = |index: usize| {
+        unit.data_anchor
+            && !unit.strings_packed
+            && !(unit.strings_small_data && function.strings[index].len() + 1 <= 8)
+            && !toggle("MWCC_PCODE_NO_STRING_ANCHOR")
+    };
+    let mut strings: Vec<String> = Vec::new();
+    let mut rest = listing.as_str();
+    while let Some(at) = rest.find("StringAddress(") {
+        rest = &rest[at + "StringAddress(".len()..];
+        let Some(index) = rest.split(')').next().and_then(|digits| digits.parse::<usize>().ok()) else { continue };
+        let name = format!("@@str{index}");
+        if data_string(index) && !strings.contains(&name) {
+            strings.push(name);
+        }
+    }
     for section in ["...bss.0", "...data.0"] {
         let members: Vec<&str> = names
             .iter()
-            .copied()
+            .map(String::as_str)
             .filter(|name| unit.globals.get(*name).is_some_and(|global| global.anchor == Some(section)))
+            .chain(strings.iter().map(String::as_str).filter(|_| section == "...data.0"))
             .collect();
         if members.len() >= 3 {
             for name in members {
