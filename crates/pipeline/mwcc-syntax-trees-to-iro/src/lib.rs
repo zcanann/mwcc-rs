@@ -940,8 +940,16 @@ impl Builder<'_, '_> {
     fn aggregate_address(&mut self, base: &Expression) -> Compilation<Expr> {
         match base {
             Expression::AddressOf { operand } => self.address_of(operand),
-            // An indexed struct element (`p[i].m`): the element's address.
-            Expression::Index { base, index } => self.pointer_sum(base, index),
+            // An indexed struct element (`p[i].m`): the element's address;
+            // an indexed pointer (`p[i]->m`) is loaded.
+            Expression::Index { base: array, index } => {
+                let sum = self.pointer_sum(array, index)?;
+                if matches!(sum.ty, Type::StructPointer { .. }) {
+                    Ok(sum)
+                } else {
+                    self.expression(base)
+                }
+            }
             other => self.expression(other),
         }
     }

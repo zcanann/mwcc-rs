@@ -72,6 +72,8 @@ pub fn lower(
         extended: HashMap::new(),
         constants: HashMap::new(),
         unoptimized,
+        memory_base: 0,
+        addressing: false,
         homes: vec![None; function.variables.len()],
         loops: Vec::new(),
         known_constant: None,
@@ -134,6 +136,11 @@ struct Lowerer<'a, 'u> {
     /// `-O0`: locals are register variables (r31 down), no CSE, and a
     /// parameter used at most once in a calling function lives in the frame.
     unoptimized: bool,
+    /// The memory access base being lowered (by address): its sum computes
+    /// the base before the index.
+    memory_base: usize,
+    /// The binary operation being lowered is a memory access base.
+    addressing: bool,
     /// Frame home (`offset(r1)`) of a parameter kept in memory.
     homes: Vec<Option<i16>>,
     /// Enclosing loops' (break, continue) labels.
@@ -813,6 +820,14 @@ impl Lowerer<'_, '_> {
 
     /// A base and displacement for `base + offset`: a displacement beyond 16
     /// bits adds its high half first (`addis t,base,hi; lwz d,lo(t)`).
+    /// A memory access base.
+    fn base_expression(&mut self, base: &Expr) -> Compilation<(u32, Type)> {
+        let outer = std::mem::replace(&mut self.memory_base, base as *const Expr as usize);
+        let result = self.expression(base);
+        self.memory_base = outer;
+        result
+    }
+
     fn displacement(&mut self, base: u32, offset: i32) -> Compilation<(u32, i16)> {
         if let Ok(offset) = i16::try_from(offset) {
             return Ok((base, offset));
@@ -1440,6 +1455,7 @@ impl Lowerer<'_, '_> {
                         return Ok((register, ty));
                     }
                 }
+                self.addressing = std::ptr::eq(expression, self.memory_base as *const Expr);
                 let result = self.binary(*op, left, right, ty, target)?;
                 if let Some((key, variables)) = key {
                     self.common.insert(key, (result.0, result.1, variables));
@@ -1514,7 +1530,7 @@ impl Lowerer<'_, '_> {
                     // completed with add, then accessed at 0.
                     // (A loaded or variable base comes first; an absolute
                     // array's index first.)
-                    if !self.absolute_base(base) && !matches!(base.kind, ExprKind::Binary(..)) && !toggle("MWCC_PCODE_O0_INDEX_FIRST") {
+                    if !matches!(base.kind, ExprKind::GlobalAddress(_) | ExprKind::Binary(..)) && !toggle("MWCC_PCODE_O0_INDEX_FIRST") {
                         let (a, _) = self.expression(base)?;
                         let (b, _) = self.expression(index)?;
                         return self.indexed_load(ty, a, b, target);
@@ -1535,7 +1551,7 @@ impl Lowerer<'_, '_> {
                     }
                     return self.indexed_load(ty, a, b, target);
                 }
-                let (a, _) = self.expression(base)?;
+                let (a, _) = self.base_expression(base)?;
                 match index {
                     Some(index) => {
                         let (b, _) = self.expression(index)?;
@@ -2374,8 +2390,11 @@ impl Lowerer<'_, '_> {
             self.emit_plain(Instruction::RotateAndMask { a: d, s: raw, shift: (32 - shift) % 32, begin: 32 - bits + shift, end: 31 });
             return Ok((d, ty));
         }
-        // An absolute array's index is computed before its address.
-        let index_first = op == BinaryOp::Add
+        // An absolute array's index is computed before its address (at -O4
+        // unless the sum is a memory access base).
+        let addressing = std::mem::take(&mut self.addressing);
+        let index_first = (self.unoptimized || !addressing)
+            && op == BinaryOp::Add
             && immediate.is_none()
             && self.absolute_base(left)
             && right.as_int().is_none()
@@ -2855,7 +2874,7 @@ impl Lowerer<'_, '_> {
                 }
             }
             Place::Memory { base, index, offset } => {
-                let (base, _) = self.expression(base)?;
+                let (base, _) = self.base_expression(base)?;
                 let index = match index {
                     Some(index) => Some(self.expression(index)?.0),
                     None => None,

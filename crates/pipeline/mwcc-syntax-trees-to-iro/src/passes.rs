@@ -178,9 +178,6 @@ pub fn run(function: &mut Function) {
     if enabled("ALGEBRA") {
         for_each_expression(&mut function.body, &mut |expression| algebra(expression));
     }
-    if enabled("REASSOCIATE_OFFSETS") {
-        for_each_expression(&mut function.body, &mut |expression| reassociate_offsets(expression));
-    }
     if enabled("DISPLACEMENTS") {
         displacements(&mut function.body);
     }
