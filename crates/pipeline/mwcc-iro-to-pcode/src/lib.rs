@@ -87,6 +87,9 @@ pub fn lower(
         anchored: anchored_objects(function, unit),
         store_displacement: None,
         inserted: None,
+        conversion_base: None,
+        conversion_block: None,
+        conversion_count: 0,
         frame_cursor: 8,
         escaped_frame_objects: Vec::new(),
     };
@@ -175,6 +178,11 @@ struct Lowerer<'a, 'u> {
     /// An insert's value already computed (by address): -O0 evaluates a
     /// bit-field store's value before the unit's address.
     inserted: Option<(usize, u32)>,
+    /// -O0 conversion slots: the area's start, and the block and count of
+    /// the slots used in it.
+    conversion_base: Option<u32>,
+    conversion_block: Option<usize>,
+    conversion_count: u32,
     /// Next free byte of the local area (r1-relative).
     frame_cursor: u32,
     /// Frame objects whose address the code computes.
@@ -872,6 +880,22 @@ impl Lowerer<'_, '_> {
 
     /// A fresh 8-byte, 8-aligned slot for an integer/floating conversion.
     fn conversion_slot(&mut self) -> i16 {
+        // -O0 reuses its conversion slots in each basic block (the k-th
+        // conversion of a block takes the k-th slot).
+        if self.unoptimized && !toggle("MWCC_PCODE_O0_FRESH_CONVERSION_SLOTS") {
+            let base = *self.conversion_base.get_or_insert(self.frame_cursor.div_ceil(8) * 8);
+            let block = self.current_block();
+            let k = if self.conversion_block == Some(block) { self.conversion_count } else { 0 };
+            self.conversion_block = Some(block);
+            self.conversion_count = k + 1;
+            let offset = base + 8 * k;
+            self.frame_cursor = self.frame_cursor.max(offset + 8);
+            if !self.pcode.frame_objects.contains(&(offset as i16, offset as i16 + 8)) {
+                self.pcode.frame_objects.push((offset as i16, offset as i16 + 8));
+                self.pcode.private_frame_objects.push(offset as i16);
+            }
+            return offset as i16;
+        }
         let offset = self.frame_cursor.div_ceil(8) * 8;
         self.frame_cursor = offset + 8;
         self.pcode.frame_objects.push((offset as i16, offset as i16 + 8));
