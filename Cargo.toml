@@ -66,6 +66,10 @@ mwcc-syntax-trees-to-debug-info = { path = "crates/pipeline/mwcc-syntax-trees-to
 
 [profile.release]
 opt-level = 3
+# Rebuilds reuse unchanged code: the tools always drive target/release, and
+# a full release build of a large crate otherwise dominates iteration time.
+incremental = true
+codegen-units = 256
 
 # Release codegen with line tables, for sampling profilers (cdb/samply).
 [profile.profiling]

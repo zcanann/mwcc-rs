@@ -175,5 +175,97 @@ pub fn lower(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         },
     )?;
     output.section = request.function.section.clone();
+    stamp_object_metadata(request, &behavior, &mut output);
     Ok(output)
+}
+
+/// The per-function object facts the writer reads: linkage flags, the
+/// order referenced symbols are created, implicitly declared callees, and
+/// the unwind frame summary.
+fn stamp_object_metadata(
+    request: &PcodeRequest<'_>,
+    behavior: &mwcc_versions::Behavior,
+    output: &mut mwcc_machine_code::MachineFunction,
+) {
+    use mwcc_machine_code::{FrameInfo, Instruction, RelocationKind, RelocationTarget};
+    let function = request.function;
+    output.is_static = function.is_static;
+    output.is_weak = function.is_weak;
+    output.text_deferred = function.text_deferred;
+    output.force_active = function.force_active;
+    if function.name.contains("@unnamed@") && !output.static_locals.is_empty() {
+        output.static_locals_lead = true;
+    }
+    // Referenced names in relocation order (GC 3/Wii create symbols as their
+    // relocations are emitted).
+    let mut seen = std::collections::HashSet::new();
+    let relocation_order: Vec<String> = output
+        .relocations
+        .iter()
+        .filter_map(|relocation| match &relocation.target {
+            RelocationTarget::External(name) | RelocationTarget::ExternalWithAddend(name, _) => Some(name.clone()),
+            _ => None,
+        })
+        .filter(|name| !name.starts_with("@@") && seen.insert(name.clone()))
+        .collect();
+    if behavior.symbol_traversal_style == mwcc_versions::SymbolTraversalStyle::RelocationOrder {
+        output.symbol_order = relocation_order.clone();
+    }
+    output.referenced_function_symbols = relocation_order
+        .iter()
+        .filter(|name| request.call_return_types.contains_key(name.as_str()))
+        .cloned()
+        .collect();
+    // A call target without a prototype was declared implicitly at the call.
+    if behavior.symbol_traversal_style != mwcc_versions::SymbolTraversalStyle::RelocationOrder {
+        let mut seen = std::collections::HashSet::new();
+        for relocation in &output.relocations {
+            if let (RelocationKind::Rel24, RelocationTarget::External(name)) = (&relocation.kind, &relocation.target) {
+                let helper = name.starts_with("_savegpr_") || name.starts_with("_restgpr_");
+                if !helper && !request.prototyped.contains(name.as_str()) && seen.insert(name.clone()) {
+                    output.implicit_external_callees.push(name.clone());
+                }
+            }
+        }
+    }
+    // Unwind tables: a function with a frame, with C++ exceptions on.
+    let framed = output
+        .instructions
+        .iter()
+        .any(|instruction| matches!(instruction, Instruction::StoreWordWithUpdate { s: 1, a: 1, .. }));
+    let calls = output.relocations.iter().any(|relocation| {
+        relocation.kind == RelocationKind::Rel24
+            && matches!(&relocation.target, RelocationTarget::External(name)
+                if !name.starts_with("_savegpr_") && !name.starts_with("_restgpr_"))
+    });
+    if framed && request.config.flags.cpp_exceptions && (calls || behavior.emit_leaf_frame_unwind) {
+        let mut general = std::collections::BTreeSet::new();
+        let mut float = std::collections::BTreeSet::new();
+        for (index, instruction) in output.instructions.iter().enumerate() {
+            match instruction {
+                Instruction::StoreWord { s, a: 1, .. } if *s >= 14 => {
+                    general.insert(*s);
+                }
+                Instruction::StoreFloatDouble { s, a: 1, .. } if *s >= 14 => {
+                    float.insert(*s);
+                }
+                Instruction::BranchAndLink { .. } => {
+                    let target = output.relocations.iter().find(|relocation| relocation.instruction_index == index);
+                    if let Some(RelocationTarget::External(name)) = target.map(|relocation| &relocation.target) {
+                        if let Some(first) = name.strip_prefix("_savegpr_").and_then(|n| n.parse::<u32>().ok()) {
+                            general.extend(first..32);
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+        let touches_fpu = output.instructions.iter().any(|instruction| instruction.is_single_precision_floating_point());
+        let single_arithmetic = output.instructions.iter().any(|instruction| instruction.is_single_precision_arithmetic());
+        output.frame = Some(FrameInfo {
+            saved_gpr_count: general.len() as u8,
+            saved_fpr_count: float.len() as u8,
+            uses_fpu: behavior.mark_single_precision_extab && ((calls && touches_fpu) || single_arithmetic),
+        });
+    }
 }
