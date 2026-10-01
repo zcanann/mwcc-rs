@@ -331,6 +331,120 @@ pub const WII_1_0: CompilerBuild = CompilerBuild {
     profile: &Wii43Build145,
 };
 
+/// Later GameCube 3.0 builds: measured `.comment` identities (0x0e through
+/// 3.0a3.4, 0x0f from 3.0a5); otherwise the GC/3.0a3 conventions and
+/// profile until characterized.
+pub const GC_3_0A3_2: CompilerBuild = CompilerBuild {
+    label: "GC/3.0a3.2",
+    product: "CodeWarrior for GameCube 3.0 alpha 3.2",
+    version: (4, 1, 0),
+    build: 60126,
+    comment_marker: 0x0e,
+    ..GC_3_0A3
+};
+
+pub const GC_3_0A3_3: CompilerBuild = CompilerBuild {
+    label: "GC/3.0a3.3",
+    product: "CodeWarrior for GameCube 3.0 alpha 3.3",
+    version: (4, 1, 0),
+    build: 60209,
+    comment_marker: 0x0e,
+    ..GC_3_0A3
+};
+
+pub const GC_3_0A3_4: CompilerBuild = CompilerBuild {
+    label: "GC/3.0a3.4",
+    product: "CodeWarrior for GameCube 3.0 alpha 3.4",
+    version: (4, 2, 0),
+    build: 60308,
+    comment_marker: 0x0e,
+    ..GC_3_0A3
+};
+
+pub const GC_3_0A5: CompilerBuild = CompilerBuild {
+    label: "GC/3.0a5",
+    product: "CodeWarrior for GameCube 3.0 alpha 5",
+    version: (4, 2, 0),
+    build: 60422,
+    comment_marker: 0x0f,
+    ..GC_3_0A3
+};
+
+pub const GC_3_0A5_2: CompilerBuild = CompilerBuild {
+    label: "GC/3.0a5.2",
+    product: "CodeWarrior for GameCube 3.0 alpha 5.2",
+    version: (4, 1, 0),
+    build: 60831,
+    comment_marker: 0x0f,
+    ..GC_3_0A3
+};
+
+/// Other Wii builds: measured identities share the Wii/1.0 object
+/// conventions (marker 0x0f, 16-byte code, read-only `.sdata2`).
+pub const WII_1_0RC1: CompilerBuild = CompilerBuild {
+    label: "Wii/1.0RC1",
+    product: "CodeWarrior for Wii 1.0 RC1",
+    version: (4, 2, 0),
+    build: 140,
+    ..WII_1_0
+};
+
+pub const WII_1_0A: CompilerBuild = CompilerBuild {
+    label: "Wii/1.0a",
+    product: "CodeWarrior for Wii 1.0a",
+    version: (4, 2, 0),
+    build: 142,
+    ..WII_1_0
+};
+
+pub const WII_0X4201_127: CompilerBuild = CompilerBuild {
+    label: "Wii/0x4201_127",
+    product: "CodeWarrior for Wii (build 0x4201_127)",
+    version: (4, 2, 0),
+    build: 142,
+    ..WII_1_0
+};
+
+pub const WII_1_1: CompilerBuild = CompilerBuild {
+    label: "Wii/1.1",
+    product: "CodeWarrior for Wii 1.1",
+    version: (4, 3, 0),
+    build: 151,
+    ..WII_1_0
+};
+
+pub const WII_1_3: CompilerBuild = CompilerBuild {
+    label: "Wii/1.3",
+    product: "CodeWarrior for Wii 1.3",
+    version: (4, 3, 0),
+    build: 172,
+    ..WII_1_0
+};
+
+pub const WII_1_5: CompilerBuild = CompilerBuild {
+    label: "Wii/1.5",
+    product: "CodeWarrior for Wii 1.5",
+    version: (4, 3, 0),
+    build: 188,
+    ..WII_1_0
+};
+
+pub const WII_1_6: CompilerBuild = CompilerBuild {
+    label: "Wii/1.6",
+    product: "CodeWarrior for Wii 1.6",
+    version: (4, 3, 0),
+    build: 202,
+    ..WII_1_0
+};
+
+pub const WII_1_7: CompilerBuild = CompilerBuild {
+    label: "Wii/1.7",
+    product: "CodeWarrior for Wii 1.7",
+    version: (4, 3, 0),
+    build: 213,
+    ..WII_1_0
+};
+
 /// Every build the generator reproduces byte-for-byte across the canary suite.
 pub const SUPPORTED: &[CompilerBuild] = &[
     GC_1_3, GC_1_3_2, GC_1_3_2R, GC_2_0, GC_2_0P1, GC_2_5, GC_2_6, GC_2_7,
@@ -339,7 +453,9 @@ pub const SUPPORTED: &[CompilerBuild] = &[
 /// Known compiler identities whose profiles are still incomplete. They are
 /// available only through the explicit experimental-build opt-in.
 pub const EXPERIMENTAL: &[CompilerBuild] = &[
-    GC_1_1, GC_1_1P1, GC_1_2_5, GC_1_2_5N, GC_3_0A3, GC_3_0A3P1, WII_1_0,
+    GC_1_1, GC_1_1P1, GC_1_2_5, GC_1_2_5N, GC_3_0A3, GC_3_0A3P1, GC_3_0A3_2, GC_3_0A3_3, GC_3_0A3_4,
+    GC_3_0A5, GC_3_0A5_2, WII_1_0RC1, WII_1_0A, WII_0X4201_127, WII_1_0, WII_1_1, WII_1_3, WII_1_5,
+    WII_1_6, WII_1_7,
 ];
 
 /// The default build new compilations target until one is selected.
