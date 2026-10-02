@@ -361,6 +361,15 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
             }
             later_in_order = Some(index);
         }
+        // (Final pass: a copy expanded after scheduling follows all the
+        // code before it.)
+        if !virtual_registers && instruction.flags.block_copy && std::env::var_os("MWCC_SCHED_EARLY_COPIES").is_none() {
+            for earlier in 0..index {
+                if !instructions[earlier].flags.block_copy {
+                    edges.push((earlier, index, 0));
+                }
+            }
+        }
         // (Prescheduling: the parameters' entry copies precede the frame
         // addresses.)
         if virtual_registers && instruction.flags.entry_copy && std::env::var_os("MWCC_SCHED_FREE_ENTRY_COPIES").is_none() {
@@ -503,6 +512,14 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
                     chosen = Some(candidate);
                     continue;
                 };
+                // (A copy expanded after this pass comes after other code.)
+                let copies = (instructions[candidate].flags.block_copy, instructions[best].flags.block_copy);
+                if copies.0 != copies.1 && std::env::var_os("MWCC_SCHED_EARLY_COPIES").is_none() {
+                    if !copies.0 {
+                        chosen = Some(candidate);
+                    }
+                    continue;
+                }
                 if !(cycle < deadline[best] || deadline[candidate] <= cycle) {
                     continue;
                 }

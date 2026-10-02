@@ -4324,6 +4324,23 @@ impl Lowerer<'_, '_> {
     /// through pre-decremented pointers with update forms. -O0 moves units
     /// of the struct's alignment the same way, looping above 16 bytes.
     fn block_copy(&mut self, place: &Place, size: u32, align: u8, value: &Expr) -> Compilation<()> {
+        let block = self.current_block();
+        let start = self.pcode.blocks[block].instructions.len();
+        self.block_copy_units(place, size, align, value)?;
+        // (MWCC expands the copy after the first scheduling pass: other code
+        // goes ahead of it.)
+        // (Only a local's initializer image.)
+        let image = matches!(&value.kind, ExprKind::Load { base, .. } if matches!(base.kind, ExprKind::Image(_)));
+        if image && self.current_block() == block && !toggle("MWCC_PCODE_NO_LATE_COPIES") {
+            for instruction in &mut self.pcode.blocks[block].instructions[start..] {
+                let name = format!("{:?}", instruction.instruction);
+                instruction.flags.block_copy = name.starts_with("Load") || name.starts_with("Store");
+            }
+        }
+        Ok(())
+    }
+
+    fn block_copy_units(&mut self, place: &Place, size: u32, align: u8, value: &Expr) -> Compilation<()> {
         self.forget_frame_loads();
         let ExprKind::Load { base: source, index: None, offset: source_offset } = &value.kind else {
             return Err(unsupported("struct copy from this value"));

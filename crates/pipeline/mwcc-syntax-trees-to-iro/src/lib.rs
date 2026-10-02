@@ -217,7 +217,9 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         if frame.is_some()
             && local.data_bytes.is_some()
             && (!local.data_relocations.is_empty()
-                || local.array_length.is_none()
+                // (A struct copies its image too.)
+                || (local.array_length.is_none()
+                    && (!matches!(local.declared_type, Type::Struct { .. }) || std::env::var_os("MWCC_IRO_NO_STRUCT_IMAGES").is_some()))
                 || std::env::var_os("MWCC_IRO_NO_IMAGES").is_some())
         {
             return Err(unsupported("an initialized frame array"));

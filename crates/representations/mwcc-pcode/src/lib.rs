@@ -75,6 +75,8 @@ pub struct InstructionFlags {
     pub entry_copy: bool,
     /// The store of a compound update (`x op= v`).
     pub compound: bool,
+    /// Part of a struct/image copy (expanded after prescheduling).
+    pub block_copy: bool,
     /// The definition stays in the web of the register's reaching
     /// definition without reading it (a carry-only `subfc` into the
     /// register the result later takes).
