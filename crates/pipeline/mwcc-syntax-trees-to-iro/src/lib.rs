@@ -313,6 +313,8 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
     // (Early frames: locals whose initializer is a constant, an inline
     // expansion's value or a floating-to-integer conversion.)
     let mut slotted: Vec<VarId> = Vec::new();
+    let mut inline_slotted: Vec<VarId> = Vec::new();
+    let source_listing = format!("{:?}", function);
     for local in &function.locals {
         // (A folded static has no variable and no runtime initialization.)
         if builder.folded.contains_key(&local.name) {
@@ -357,11 +359,19 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
                 }
                 floating_conversion(&value)
             };
-            if literal_value(initializer, local.declared_type).is_some()
-                || builder.expansions != expansions
-                || converts_float
-                || unit.inline_initialized_locals.contains(&local.name)
-            {
+            let inline = builder.expansions != expansions || unit.inline_initialized_locals.contains(&local.name);
+            // (A value derived from an inline-initialized local is the
+            // expansion too, once MWCC propagates that local into it.)
+            // (Only a local read just there is propagated into it.)
+            let derived = inline_slotted.iter().any(|&id| {
+                value.mentions(id)
+                    && source_listing.matches(&format!("Variable({:?})", variables[id].name)).count() == 1
+            })
+                && std::env::var_os("MWCC_IRO_NO_DERIVED_INLINE_SLOTS").is_none();
+            if inline || derived {
+                inline_slotted.push(variable);
+            }
+            if literal_value(initializer, local.declared_type).is_some() || inline || derived || converts_float {
                 slotted.push(variable);
             }
             body.append(&mut builder.pending);
