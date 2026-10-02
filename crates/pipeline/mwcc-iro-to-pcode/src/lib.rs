@@ -3814,8 +3814,10 @@ impl Lowerer<'_, '_> {
         // A loaded left operand keeps source order (`*p + b`).
         let loaded = match &unpromoted(left).kind {
             ExprKind::Global(_) => true,
-            // (Any load at -O0.)
-            ExprKind::Load { .. } if self.unoptimized && !toggle("MWCC_PCODE_O0_LOAD_SWAP") => true,
+            // (Any unindexed load at -O0.)
+            ExprKind::Load { index: None, .. } if self.unoptimized && !toggle("MWCC_PCODE_O0_LOAD_SWAP") => true,
+            // (An indexed one too in a compound update: `a[i] |= x`.)
+            ExprKind::Load { .. } if self.unoptimized && (self.compound_store || toggle("MWCC_PCODE_O0_INDEXED_LOAD_KEEP")) => true,
             ExprKind::Load { base, index: None, .. } => {
                 matches!(base.kind, ExprKind::Var(_) | ExprKind::GlobalAddress(_) | ExprKind::LocalAddress(_))
                     // (Through a global pointer: `gp->c | x`; or a fixed address.)
@@ -3830,7 +3832,13 @@ impl Lowerer<'_, '_> {
             && !loaded
             && !(self.unit.branch_preserving && self.absolute_base(left))
             && leaf(right)
-            && (!one_register(left) || std::env::var_os("MWCC_PCODE_LEAF_FIRST_ALWAYS").is_some());
+            // (-O0 puts the leaf first after a product.)
+            && (!one_register(left)
+                || (self.unoptimized
+                    && matches!(&unpromoted(left).kind, ExprKind::Binary(BinaryOp::Multiply, _, k)
+                        if !k.as_int().is_some_and(|k| k > 0 && (k as u64).is_power_of_two()))
+                    && !toggle("MWCC_PCODE_O0_ONE_REGISTER_ORDER"))
+                || std::env::var_os("MWCC_PCODE_LEAF_FIRST_ALWAYS").is_some());
         // (A call's result goes second in a commutative operation.)
         let call_order = !toggle("MWCC_PCODE_CALL_OPERAND_IN_ORDER");
         let swap = if call_order && op.is_commutative() && contains_call(left) != contains_call(right) {
