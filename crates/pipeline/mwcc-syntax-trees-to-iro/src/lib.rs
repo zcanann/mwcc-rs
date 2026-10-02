@@ -301,6 +301,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         variables: &variables,
         pending: Vec::new(),
         post: Vec::new(),
+        memory_steps: Vec::new(),
         strings: Vec::new(),
         images: Vec::new(),
         guarded: 0,
@@ -618,6 +619,8 @@ struct Builder<'a, 'u> {
     /// Post-increments inside the expression being built, applied after the
     /// statement that contains it.
     post: Vec<Stmt>,
+    /// Positions in `pending` of memory post-steps (`p->n++`'s store).
+    memory_steps: Vec<usize>,
     /// Inside a conditionally or repeatedly evaluated operand, where an
     /// assignment cannot be hoisted.
     guarded: usize,
@@ -651,10 +654,13 @@ impl Builder<'_, '_> {
     fn effects(&mut self, expression: &Expression) -> Compilation<Vec<Stmt>> {
         let outer = std::mem::take(&mut self.pending);
         let outer_post = std::mem::take(&mut self.post);
+        let outer_steps = std::mem::take(&mut self.memory_steps);
         let result = self.effects_inner(expression);
-        let hoisted = std::mem::replace(&mut self.pending, outer);
-        let after = std::mem::replace(&mut self.post, outer_post);
+        let mut hoisted = std::mem::replace(&mut self.pending, outer);
+        let mut after = std::mem::replace(&mut self.post, outer_post);
+        let steps = std::mem::replace(&mut self.memory_steps, outer_steps);
         let mut out = result?;
+        self.settle_memory_steps(&out, &mut hoisted, &mut after, &steps);
         if !hoisted.is_empty() {
             out.splice(0..0, hoisted);
         }
@@ -829,10 +835,13 @@ impl Builder<'_, '_> {
     fn statement(&mut self, statement: &Statement) -> Compilation<Vec<Stmt>> {
         let outer = std::mem::take(&mut self.pending);
         let outer_post = std::mem::take(&mut self.post);
+        let outer_steps = std::mem::take(&mut self.memory_steps);
         let result = self.statement_inner(statement);
-        let hoisted = std::mem::replace(&mut self.pending, outer);
-        let after = std::mem::replace(&mut self.post, outer_post);
+        let mut hoisted = std::mem::replace(&mut self.pending, outer);
+        let mut after = std::mem::replace(&mut self.post, outer_post);
+        let steps = std::mem::replace(&mut self.memory_steps, outer_steps);
         let mut out = result?;
+        self.settle_memory_steps(&out, &mut hoisted, &mut after, &steps);
         if !hoisted.is_empty() {
             out.splice(0..0, hoisted);
         }
@@ -866,6 +875,38 @@ impl Builder<'_, '_> {
         let id = self.variables.len() + self.temporaries.len();
         self.temporaries.push(Variable { name: format!("@a{id}"), ty, kind: VariableKind::Temporary, frame: None, initialized: false, raw: false, volatile: false });
         id
+    }
+
+    /// A store through a pointer comes before the memory post-steps its
+    /// operands make (`*dl->ptr++ = v`, `*o = s->n++`): they move from before
+    /// the statement (`hoisted`, at `steps`) to after it, their address
+    /// computed before it.
+    fn settle_memory_steps(&mut self, out: &[Stmt], hoisted: &mut Vec<Stmt>, after: &mut Vec<Stmt>, steps: &[usize]) {
+        // (Never past a call: the callee may read the stepped value.)
+        let through_pointer = matches!(out, [Stmt::Store { place: Place::Memory { base, .. }, .. }]
+            if !matches!(base.kind, ExprKind::GlobalAddress(_) | ExprKind::LocalAddress(_) | ExprKind::Int(_)))
+            && !format!("{out:?}").contains("Call {");
+        if !through_pointer || std::env::var_os("MWCC_IRO_STEPS_BEFORE_POINTER_STORES").is_some() {
+            return;
+        }
+        let mut moved = Vec::new();
+        for &position in steps.iter().rev() {
+            if !matches!(hoisted.get(position), Some(Stmt::Store { compound: true, .. })) {
+                continue;
+            }
+            let mut step = hoisted.remove(position);
+            if let Stmt::Store { place: Place::Memory { base, .. }, .. } = &mut step {
+                if !matches!(base.kind, ExprKind::Var(_) | ExprKind::GlobalAddress(_) | ExprKind::LocalAddress(_) | ExprKind::Int(_)) {
+                    let ty = base.ty;
+                    let id = self.temporary(ty);
+                    let value = std::mem::replace(base.as_mut(), Expr { kind: ExprKind::Var(id), ty });
+                    hoisted.insert(position, Stmt::Assign { variable: id, value });
+                }
+            }
+            moved.insert(0, step);
+        }
+        moved.append(after);
+        *after = moved;
     }
 
     /// A struct argument: copied into a caller frame object (before the
@@ -1661,6 +1702,7 @@ impl Builder<'_, '_> {
                 } else {
                     Expr::binary(op, promoted(current.clone()), Expr::int(1), promote(ty))
                 };
+                self.memory_steps.push(self.pending.len());
                 self.pending.push(Stmt::Store { place, ty: stored, value: assigned(stepped, stored), compound: true });
                 current
             }
@@ -2535,3 +2577,4 @@ fn references_variable(body: &[Stmt], variable: VarId) -> bool {
     passes::for_each_expression(&mut body, &mut |e| found |= e.mentions(variable));
     found
 }
+

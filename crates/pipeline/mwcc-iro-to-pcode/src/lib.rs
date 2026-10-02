@@ -1604,6 +1604,30 @@ impl Lowerer<'_, '_> {
             return Ok(());
         }
         self.common.retain(|_, (_, _, read)| !read.contains(&variable));
+        // A temporary assigned once takes the register its value is
+        // computed into (numbered after its operands').
+        let variable_type = self.function.variables[variable].ty;
+        if self.registers[variable].is_none()
+            && !self.unoptimized
+            && self.function.variables[variable].kind == VariableKind::Temporary
+            && !is_narrow(variable_type)
+            && !is_wide(variable_type)
+            && assignments(&self.function.body, variable) == 1
+            && !toggle("MWCC_PCODE_EAGER_TEMPORARIES")
+        {
+            let class = if is_float(variable_type) { Class::Float } else { Class::General };
+            let mark = self.pcode.register_count(class);
+            let (source, source_type) = self.expression(value)?;
+            if source >= mark && source_type == variable_type && !self.registers.contains(&Some(source)) {
+                self.registers[variable] = Some(source);
+            } else {
+                let destination = self.register(variable);
+                if source != destination {
+                    self.copy(variable_type, destination, source);
+                }
+            }
+            return Ok(());
+        }
         let destination = self.register(variable);
         let stale: Vec<String> = self
             .loaded_globals
@@ -1614,7 +1638,6 @@ impl Lowerer<'_, '_> {
         for global in stale {
             self.loaded_globals.remove(&global);
         }
-        let variable_type = self.function.variables[variable].ty;
         // -O0 raw variables take narrow values as they are, and updates of
         // themselves (`i++`, `i += n`) unextended.
         let kept_raw = (self.unoptimized || self.function.variables[variable].raw)
