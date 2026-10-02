@@ -2751,8 +2751,16 @@ impl Lowerer<'_, '_> {
             && matches!(right.kind, ExprKind::Float(_))
             && !matches!(left.kind, ExprKind::Float(_))
             && !toggle("MWCC_PCODE_CONSTANT_OPERAND_IN_ORDER");
+        // (-O0: of two results, the one needing fewer registers first.)
+        let need_first = self.unoptimized
+            && matches!(op, BinaryOp::Add | BinaryOp::Multiply)
+            && matches!(left.kind, ExprKind::Binary(..))
+            && matches!(right.kind, ExprKind::Binary(..))
+            && register_need(left) > register_need(right)
+            && !toggle("MWCC_PCODE_NO_FLOAT_NEED_ORDER");
         // (An operand that calls is evaluated first.)
         let (a, b) = if constant_first
+            || need_first
             || contains_call(right)
                 && (!contains_call(left) || !toggle("MWCC_PCODE_BOTH_CALLS_IN_ORDER"))
                 && !toggle("MWCC_PCODE_CALL_OPERAND_IN_ORDER")
@@ -2810,7 +2818,8 @@ impl Lowerer<'_, '_> {
                     }
                     _ => false,
                 };
-                matches!(left.kind, ExprKind::Binary(..))
+                need_first
+                    || matches!(left.kind, ExprKind::Binary(..))
                     && !single(left)
                     && right.as_var().is_some_and(|id| {
                         self.function.variables[id].kind != VariableKind::Temporary
@@ -3694,7 +3703,16 @@ impl Lowerer<'_, '_> {
             && immediate.is_none()
             && right.as_int().is_none()
             && !toggle("MWCC_PCODE_O0_MINUEND_FIRST");
-        let early = if index_first || calls_first || subtrahend_first { Some(self.expression(right)?.0) } else { None };
+        // (Of two results of a commutative operation, the one needing fewer
+        // registers goes first; -O0 also computes it first.)
+        let need_order = op.is_commutative()
+            && !op.is_comparison()
+            && matches!(unpromoted(left).kind, ExprKind::Binary(..))
+            && matches!(unpromoted(right).kind, ExprKind::Binary(..))
+            && register_need(left) > register_need(right)
+            && !toggle("MWCC_PCODE_NO_INTEGER_NEED_ORDER");
+        let need_first = need_order && self.unoptimized;
+        let early = if index_first || calls_first || subtrahend_first || need_first { Some(self.expression(right)?.0) } else { None };
         let (a, _) = self.expression(left)?;
         // GC/3.x: `x * (2^n ± 1)` = `(x << n) ± x`; `x * (1 - 2^n)` = `x - (x << n)`.
         let shift_add = (op == BinaryOp::Multiply && self.unit.shift_add_multiply)
@@ -3885,6 +3903,7 @@ impl Lowerer<'_, '_> {
                     })
                     && !toggle("MWCC_PCODE_O0_ONE_REGISTER_ORDER"))
                 || std::env::var_os("MWCC_PCODE_LEAF_FIRST_ALWAYS").is_some());
+        let swap = swap || need_order;
         // (A call's result goes second in a commutative operation.)
         let call_order = !toggle("MWCC_PCODE_CALL_OPERAND_IN_ORDER");
         let swap = if call_order && op.is_commutative() && contains_call(left) != contains_call(right) {
