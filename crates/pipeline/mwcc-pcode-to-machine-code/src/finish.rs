@@ -163,12 +163,14 @@ pub fn finish(
     // Enough saved GPRs go through the helpers, which save rN..r31.
     let helper = saved.len() >= options.general_save_helper_minimum && !toggle("MWCC_PCODE_NO_SAVE_HELPERS");
     if helper {
-        if !makes_calls && !options.use_lmw_stmw && !options.early_frame {
+        if !makes_calls && !options.use_lmw_stmw && !options.early_frame && toggle("MWCC_PCODE_NO_LEAF_HELPERS") {
             return Err(mwcc_core::Diagnostic::error("PCode frame: save helpers in a leaf function"));
         }
         let lowest = *saved.last().expect("saved registers");
         saved = (lowest..32).rev().collect();
     }
+    // (Calling the helpers makes a leaf save the link register.)
+    let makes_calls = makes_calls || (helper && !options.use_lmw_stmw && !options.early_frame);
     let framed = makes_calls || !saved.is_empty() || !saved_float.is_empty() || pcode.frame_local_bytes > 0;
     let float_frame = FloatFrame {
         link_reload_last: options.link_reload_after_float_restores,
