@@ -67,6 +67,8 @@ pub struct Unit<'a> {
     /// Pointer variables (by name) whose pointee has no volatile storage:
     /// loads through them may be reused until a store or call.
     pub nonvolatile_pointers: &'a std::collections::HashSet<String>,
+    /// Locals (by name) whose initializer substituted an inline call.
+    pub inline_initialized_locals: &'a std::collections::HashSet<String>,
     /// Pointer variables (by name) declared `const T *`: MWCC orders loads
     /// through them against no store.
     pub const_pointers: &'a std::collections::HashSet<String>,

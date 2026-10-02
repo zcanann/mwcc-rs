@@ -341,7 +341,11 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
                 }
                 floating_conversion(&value)
             };
-            if literal_value(initializer, local.declared_type).is_some() || builder.expansions != expansions || converts_float {
+            if literal_value(initializer, local.declared_type).is_some()
+                || builder.expansions != expansions
+                || converts_float
+                || unit.inline_initialized_locals.contains(&local.name)
+            {
                 slotted.push(variable);
             }
             body.append(&mut builder.pending);

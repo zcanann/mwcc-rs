@@ -1091,6 +1091,7 @@ fn compile(
                 nonvolatile_pointer_bindings: &unit.function_nonvolatile_pointer_bindings,
                 parameter_pointee_const: &unit.function_parameter_pointee_const,
                 dont_inline_functions: &unit.dont_inline_functions,
+                inline_initialized_locals: &unit.function_inline_initialized_locals,
                 local_pointee_const: &unit.function_local_pointee_const,
                 parameter_fundamentals: &unit.function_parameter_fundamentals,
                 local_fundamentals: &unit.function_local_fundamentals,

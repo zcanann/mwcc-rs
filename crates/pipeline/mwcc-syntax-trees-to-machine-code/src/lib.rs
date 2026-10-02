@@ -72,6 +72,8 @@ pub struct SourceFunctionFacts<'a> {
     pub parameter_pointee_const: &'a HashSet<(String, String)>,
     /// Functions defined under `#pragma dont_inline on`.
     pub dont_inline_functions: &'a HashSet<String>,
+    /// Locals whose initializer substituted an inline call.
+    pub inline_initialized_locals: &'a HashSet<(String, String)>,
     pub local_pointee_const: &'a HashSet<(String, String)>,
     pub parameter_fundamentals:
         &'a HashMap<(String, String), mwcc_syntax_trees::SourceFundamentalType>,
@@ -278,6 +280,12 @@ fn lower_function_body(
         cxx: source_facts.is_cxx,
         nonvolatile_pointers: &source_facts
             .nonvolatile_pointer_bindings
+            .iter()
+            .filter(|(owner, _)| owner == &function.name)
+            .map(|(_, name)| name.clone())
+            .collect(),
+        inline_initialized_locals: &source_facts
+            .inline_initialized_locals
             .iter()
             .filter(|(owner, _)| owner == &function.name)
             .map(|(_, name)| name.clone())

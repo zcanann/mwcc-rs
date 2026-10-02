@@ -883,6 +883,8 @@ pub(crate) struct Parser {
     /// Number of single-return inline substitutions made in the function body
     /// currently being parsed.
     pub(crate) inline_substitution_count: usize,
+    /// Locals (by function) whose initializer substituted an inline call.
+    pub(crate) function_inline_initialized_locals: std::collections::HashSet<(String, String)>,
     /// Per-function provenance retained after those calls disappear from ASTs.
     pub(crate) inline_expansion_facts:
         Shared<std::collections::HashMap<String, mwcc_syntax_trees::InlineExpansionFacts>>,

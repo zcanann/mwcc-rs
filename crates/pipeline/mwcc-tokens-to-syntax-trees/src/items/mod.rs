@@ -1391,6 +1391,7 @@ impl Parser {
         }
         Ok(TranslationUnit {
             dont_inline_functions: std::mem::take(&mut self.dont_inline_functions),
+            function_inline_initialized_locals: std::mem::take(&mut self.function_inline_initialized_locals),
             globals,
             functions,
             global_destructor_records: startup.destructor_records,
@@ -5839,6 +5840,7 @@ impl Parser {
                 } else {
                     None
                 };
+                let substitutions_before = self.inline_substitution_count;
                 let initializer = if direct_static_constructor.is_some() {
                     direct_static_constructor
                 } else if direct_constructor.is_some() {
@@ -5923,6 +5925,12 @@ impl Parser {
                     };
                     self.variable_array_bytes
                         .insert(name.clone(), element_bytes * length as u32);
+                }
+                // (An initializer that substituted an inline call.)
+                if self.inline_substitution_count != substitutions_before {
+                    if let Some(function) = self.current_debug_function_name.clone() {
+                        self.function_inline_initialized_locals.insert((function, name.clone()));
+                    }
                 }
                 locals.push(LocalDeclaration {
                     declared_type,

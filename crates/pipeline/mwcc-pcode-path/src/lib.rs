@@ -247,6 +247,7 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
             || request.config.build.label.starts_with("Wii/"),
         signed_promoted_truth: request.config.build.label.starts_with("GC/3.") || request.config.build.label.starts_with("Wii/"),
         nonvolatile_pointers: request.nonvolatile_pointers,
+        inline_initialized_locals: request.inline_initialized_locals,
         // (GC/1.x orders them like any load.)
         const_pointers: if request.config.build.label.starts_with("GC/1.") {
             &no_const_pointers

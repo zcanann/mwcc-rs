@@ -38,6 +38,8 @@ pub struct PcodeRequest<'a> {
     pub nonvolatile_pointers: &'a HashSet<String>,
     /// Pointer parameters and locals declared `const T *`.
     pub const_pointers: &'a HashSet<String>,
+    /// Locals whose initializer substituted an inline call.
+    pub inline_initialized_locals: &'a HashSet<String>,
     /// The body MWCC expands for a call, when that expansion is modeled.
     pub inline_bodies: &'a HashMap<String, &'a Function>,
     /// The function returns C++ `bool` (stored like `unsigned char`).
