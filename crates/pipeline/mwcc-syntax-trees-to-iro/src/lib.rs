@@ -436,6 +436,10 @@ fn pure_lvalue(expression: &Expression) -> bool {
         Expression::Index { base, index } => pure_lvalue(base) && pure_lvalue(index),
         Expression::Cast { operand, .. } => pure_lvalue(operand),
         Expression::Binary { left, right, .. } => pure_lvalue(left) && pure_lvalue(right),
+        // (`(&g->thaga)->head_p`: an address computed, nothing read but the base.)
+        Expression::AddressOf { operand } => {
+            matches!(operand.as_ref(), Expression::Member { .. } | Expression::Index { .. }) && pure_lvalue(operand)
+        }
         _ => false,
     }
 }
