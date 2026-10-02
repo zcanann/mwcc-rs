@@ -87,6 +87,9 @@ pub fn finish(
     if options.move_record && !options.unoptimized && !toggle("MWCC_PCODE_NO_MOVE_RECORD") {
         move_records(&mut pcode);
     }
+    if !options.early_frame && !options.unoptimized && !toggle("MWCC_PCODE_NO_REDUNDANT_COPIES") {
+        remove_redundant_copies(&mut pcode);
+    }
     // (GC/3.x folds at -O0 too.)
     if !options.unoptimized || options.fold_absolute_into_own_base {
         fold_absolute_displacements(&mut pcode, options.fold_absolute_into_own_base);
@@ -1641,5 +1644,56 @@ fn move_records(pcode: &mut PCodeFunction) {
             }
             index += 1;
         }
+    }
+}
+
+/// A copy into a register that already holds the value (`mr r31,r3; ...;
+/// mr r3,r31` with neither changed) is dropped, also into a fall-through
+/// successor reached only from the copy's block.
+fn remove_redundant_copies(pcode: &mut PCodeFunction) {
+    use mwcc_pcode::Class;
+    let count = pcode.blocks.len();
+    let mut predecessors = vec![0usize; count];
+    for block in &pcode.blocks {
+        for &successor in &block.successors {
+            predecessors[successor] += 1;
+        }
+    }
+    let mut equal: Vec<(u32, u32)> = Vec::new();
+    for index in 0..count {
+        let continues = index > 0 && predecessors[index] == 1 && pcode.blocks[index - 1].successors.contains(&index);
+        if !continues {
+            equal.clear();
+        }
+        let block = &mut pcode.blocks[index];
+        let mut keep = vec![true; block.instructions.len()];
+        for (position, instruction) in block.instructions.iter().enumerate() {
+            if let Instruction::Or { a, s, b } | Instruction::OrRecord { a, s, b } = instruction.instruction {
+                let record = matches!(instruction.instruction, Instruction::OrRecord { .. });
+                if s == b && a != s {
+                    if !record && equal.iter().any(|&(x, y)| (x, y) == (a, s) || (x, y) == (s, a)) {
+                        keep[position] = false;
+                        continue;
+                    }
+                    equal.retain(|&(x, y)| x != a && y != a);
+                    equal.push((a, s));
+                    continue;
+                }
+            }
+            if instruction.instruction.is_call() {
+                // (A call changes the volatile registers.)
+                let volatile = |r: u32| r == 0 || (3..=12).contains(&r);
+                equal.retain(|&(x, y)| !volatile(x) && !volatile(y));
+            }
+            for register in instruction.defs(Class::General) {
+                equal.retain(|&(x, y)| x != register && y != register);
+            }
+        }
+        let mut position = 0;
+        block.instructions.retain(|_| {
+            let kept = keep[position];
+            position += 1;
+            kept
+        });
     }
 }
