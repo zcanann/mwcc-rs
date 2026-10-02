@@ -43,7 +43,7 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     if std::env::var_os("MWCC_IRO_NO_SCALARIZE").is_none() {
         passes::scalarize(&mut built.function, unit.keeps_struct_stores);
     }
-    if unit.reassociates_sums && std::env::var_os("MWCC_IRO_NO_FLOAT_NEGATIONS").is_none() {
+    if unit.cancels_float_negations && std::env::var_os("MWCC_IRO_NO_FLOAT_NEGATIONS").is_none() {
         passes::float_negations(&mut built.function.body);
     }
     passes::run(&mut built.function, unit.branch_preserving, unit.reassociates_sums, unit.unrolling);
@@ -78,7 +78,7 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
 /// front end's literal folding, and every `return` leaves directly.
 pub fn build_unoptimized_compile(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     let mut built = build_unoptimized(function, unit)?;
-    if unit.reassociates_sums && std::env::var_os("MWCC_IRO_NO_FLOAT_NEGATIONS").is_none() {
+    if unit.cancels_float_negations && std::env::var_os("MWCC_IRO_NO_FLOAT_NEGATIONS").is_none() {
         passes::float_negations(&mut built.function.body);
     }
     passes::run_unoptimized(&mut built.function);
@@ -886,7 +886,7 @@ impl Builder<'_, '_> {
         let through_pointer = matches!(out, [Stmt::Store { place: Place::Memory { base, .. }, .. }]
             if !matches!(base.kind, ExprKind::GlobalAddress(_) | ExprKind::LocalAddress(_) | ExprKind::Int(_)))
             && !format!("{out:?}").contains("Call {");
-        if !through_pointer || std::env::var_os("MWCC_IRO_STEPS_BEFORE_POINTER_STORES").is_some() {
+        if !through_pointer || !self.unit.steps_after_pointer_stores || std::env::var_os("MWCC_IRO_STEPS_BEFORE_POINTER_STORES").is_some() {
             return;
         }
         let mut moved = Vec::new();
@@ -1672,7 +1672,10 @@ impl Builder<'_, '_> {
                 if pure_lvalue(target)
                     && (!matches!(target.as_ref(), Expression::Variable(_))
                         || matches!(target.as_ref(), Expression::Variable(name)
-                            if self.names.get(name).is_some_and(|&id| self.variables[id].frame.is_some()))) =>
+                            if self.names.get(name).map_or(
+                                // (A global steps like memory too.)
+                                self.unit.globals.contains_key(name) && std::env::var_os("MWCC_IRO_NO_GLOBAL_POST_VALUE").is_none(),
+                                |&id| self.variables[id].frame.is_some()))) =>
             {
                 // (In call arguments too, when no argument of an enclosing call
                 // calls: the step then precedes the calls either way.)

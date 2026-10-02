@@ -102,7 +102,20 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
                     is_function: false,
                     is_const: global.is_const && !global.is_volatile,
                     anchor: (defined.contains(global.name.as_str()) && !small_data && !global.is_const)
-                        .then(|| if initialized(global.data_bytes.as_deref(), global.initializer.as_deref(), !global.data_relocations.is_empty() || global.address_initializer.is_some()) { "...data.0" } else { "...bss.0" }),
+                        .then(|| {
+                            // (As the driver routes it: an explicitly initialized
+                            // array or struct stays in `.data` even when zero.)
+                            let aggregate = global.address_initializer.is_none()
+                                && (global.data_bytes.is_some() || global.initializer.is_some())
+                                && (global.array_length.is_some()
+                                    || matches!(global.declared_type, mwcc_syntax_trees::Type::Struct { .. })
+                                    || global.name.starts_with("__vt__"));
+                            if aggregate || initialized(global.data_bytes.as_deref(), global.initializer.as_deref(), !global.data_relocations.is_empty() || global.address_initializer.is_some()) {
+                                "...data.0"
+                            } else {
+                                "...bss.0"
+                            }
+                        }),
                     fixed_address: None,
                     // (The driver drops a `static const` scalar's object.)
                     folded: (global.is_static
@@ -245,6 +258,8 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         unrolling: matches!(behavior.optimization, mwcc_versions::Optimization::O3 | mwcc_versions::Optimization::O4)
             && request.config.flags.explicit_speed_goal,
         reassociates_sums: !request.config.build.label.starts_with("GC/3.") && !request.config.build.label.starts_with("Wii/"),
+        cancels_float_negations: !request.config.build.label.starts_with("GC/3.") && !request.config.build.label.starts_with("Wii/"),
+        steps_after_pointer_stores: request.config.build.label.starts_with("GC/3.") || request.config.build.label.starts_with("Wii/"),
         // (At any level with an explicit `,p`; GC/3.x and Wii also by
         // default, but not when optimizing for size.)
         magic_division: request.config.flags.explicit_speed_goal

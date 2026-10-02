@@ -105,6 +105,11 @@ pub struct Unit<'a> {
     pub branch_preserving: bool,
     /// GC/1.x-2.x reassociate integer sums (`a + b + c` = `a + (b + c)`).
     pub reassociates_sums: bool,
+    /// GC/1.x-2.x cancel floating negations (`-(-x)`, `-a * -b`).
+    pub cancels_float_negations: bool,
+    /// GC/3.x and Wii store through a pointer before the memory post-steps
+    /// its statement makes (`*p->ptr++ = v`); earlier builds step first.
+    pub steps_after_pointer_stores: bool,
     /// Loop strength reduction (`-O3`/`-O4`).
     pub strength_reduction: bool,
     /// GC/1.3-2.x subtract a word converted to signed `long long` with a
