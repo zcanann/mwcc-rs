@@ -86,6 +86,8 @@ pub enum DeferredDisplacementTarget {
     /// once the unit's data layout is known.
     SymbolAddress(String),
     AnonymousRodata(usize),
+    /// The function's pool constant (by index), in `.rodata`.
+    Constant(usize),
     /// Byte offset from the caller's stack pointer at function entry.
     IncomingStack(i16),
 }

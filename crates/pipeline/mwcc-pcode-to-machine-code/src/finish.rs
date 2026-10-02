@@ -73,6 +73,10 @@ pub fn finish(
         forward_physical_reads(&mut pcode);
     }
     dump(&pcode, "AFTER INSTRUCTION SCHEDULING");
+    // (Stores fold an absolute address before coloring.)
+    if !options.unoptimized && !options.fold_absolute_into_own_base && !toggle("MWCC_PCODE_LATE_STORE_FOLD") {
+        fold_absolute_stores(&mut pcode);
+    }
     let colors = coloring::color(&mut pcode, options.delete_dead)?;
     dump(&pcode, "AFTER REGISTER COLORING");
     // (GC/3.x folds at -O0 too.)
@@ -403,7 +407,10 @@ pub fn finish(
             if let Some(symbol) = &instruction.displacement_symbol {
                 deferred_displacements.push(mwcc_machine_code::DeferredDisplacement {
                     instruction_index: instructions.len(),
-                    target: mwcc_machine_code::DeferredDisplacementTarget::Symbol(symbol.clone()),
+                    target: match symbol.strip_prefix("@@const").and_then(|index| index.parse().ok()) {
+                        Some(index) => mwcc_machine_code::DeferredDisplacementTarget::Constant(index),
+                        None => mwcc_machine_code::DeferredDisplacementTarget::Symbol(symbol.clone()),
+                    },
                 });
             }
             if let Some(relocation) = &instruction.relocation {
@@ -1010,14 +1017,53 @@ fn fold_absolute_displacements(pcode: &mut PCodeFunction, into_own_base: bool) {
                     continue;
                 }
             };
-            let access = &block.instructions[index + 1];
-            // (A section-anchor access keeps its own displacement.)
-            if access.displacement_symbol.is_some() {
+            // The address's next use, with neither register redefined before
+            // it (the peephole runs before final scheduling).
+            let next = (index + 1..block.instructions.len()).find(|&at| {
+                let instruction = &block.instructions[at];
+                instruction.uses(Class::General).contains(&address)
+                    || instruction.defs(Class::General).contains(&address)
+                    || instruction.defs(Class::General).contains(&base)
+            });
+            let Some(at) = next.filter(|&at| {
+                at == index + 1 || !toggle("MWCC_PCODE_ADJACENT_ABSOLUTE_FOLD")
+            }) else {
+                index += 1;
+                continue;
+            };
+            let access = &block.instructions[at];
+            // (Before GC/3.0 a load folds only an `addi` that kept its
+            // source register: `addi r,r,sym@l`.)
+            let loads = access.defs(Class::General).len() + access.defs(Class::Float).len() > 0
+                && !matches!(access.instruction, Instruction::StoreWordWithUpdate { .. });
+            let late_stores = toggle("MWCC_PCODE_LATE_STORE_FOLD");
+            if (loads || late_stores) && !into_own_base && address != base && !toggle("MWCC_PCODE_FOLD_ANY_ADDI") {
                 index += 1;
                 continue;
             }
-            let later_use = block.instructions[index + 2..].iter().any(|i| i.uses(Class::General).contains(&address))
-                || live_out[number] & (1 << address) != 0;
+            // (A section-anchor access keeps its own displacement.)
+            if access.displacement_symbol.is_some()
+                || !access.uses(Class::General).contains(&address)
+                || (at != index + 1 && access.defs(Class::General).contains(&base) && !access.uses(Class::General).contains(&base))
+            {
+                index += 1;
+                continue;
+            }
+            // (Read again before being redefined, or live out.)
+            let later_use = {
+                let mut read = None;
+                for instruction in &block.instructions[at + 1..] {
+                    if instruction.uses(Class::General).contains(&address) {
+                        read = Some(true);
+                        break;
+                    }
+                    if instruction.defs(Class::General).contains(&address) {
+                        read = Some(false);
+                        break;
+                    }
+                }
+                read.unwrap_or(live_out[number] & (1 << address) != 0)
+            };
             let folded = match access.instruction.clone() {
                 Instruction::LoadWord { d, a, offset: 0 } if a == address && (d != address || into_own_base) => {
                     Some(Instruction::LoadWord { d, a: base, offset: 0 })
@@ -1071,17 +1117,72 @@ fn fold_absolute_displacements(pcode: &mut PCodeFunction, into_own_base: bool) {
                 _ => None,
             };
             match (folded, updated) {
-                (_, Some(instruction)) if later_use => {
-                    block.instructions[index + 1].instruction = instruction;
-                    block.instructions[index + 1].relocation = Some(relocation);
+                (_, Some(instruction)) if later_use && at == index + 1 => {
+                    block.instructions[at].instruction = instruction;
+                    block.instructions[at].relocation = Some(relocation);
                     block.instructions.remove(index);
                 }
                 (Some(instruction), _) if !later_use => {
-                    block.instructions[index + 1].instruction = instruction;
-                    block.instructions[index + 1].relocation = Some(relocation);
+                    block.instructions[at].instruction = instruction;
+                    block.instructions[at].relocation = Some(relocation);
                     block.instructions.remove(index);
                 }
                 _ => index += 1,
+            }
+        }
+    }
+}
+
+/// `addi vA,vB,sym@l` whose one use is a store through vA at offset 0: the
+/// store takes `sym@l(vB)` (on virtual registers, before coloring).
+fn fold_absolute_stores(pcode: &mut PCodeFunction) {
+    use mwcc_pcode::Class;
+    let mut uses: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    for block in &pcode.blocks {
+        for instruction in &block.instructions {
+            for register in instruction.uses(Class::General) {
+                *uses.entry(register).or_default() += 1;
+            }
+        }
+    }
+    for block in &mut pcode.blocks {
+        let mut index = 0;
+        while index < block.instructions.len() {
+            let (address, base, relocation) = match (&block.instructions[index].instruction, &block.instructions[index].relocation) {
+                (Instruction::AddImmediate { d, a, immediate: 0 }, Some(relocation))
+                    if relocation.kind == RelocationKind::Addr16Lo && *a != 0 && *d >= 32 && uses.get(d) == Some(&1) =>
+                {
+                    (*d, *a, relocation.clone())
+                }
+                _ => {
+                    index += 1;
+                    continue;
+                }
+            };
+            let next = (index + 1..block.instructions.len()).find(|&at| {
+                let instruction = &block.instructions[at];
+                instruction.uses(Class::General).contains(&address) || instruction.defs(Class::General).contains(&base)
+            });
+            let folded = next.and_then(|at| {
+                let instruction = match block.instructions[at].instruction.clone() {
+                    Instruction::StoreWord { s, a, offset: 0 } if a == address && s != address => Instruction::StoreWord { s, a: base, offset: 0 },
+                    Instruction::StoreHalfword { s, a, offset: 0 } if a == address && s != address => Instruction::StoreHalfword { s, a: base, offset: 0 },
+                    Instruction::StoreByte { s, a, offset: 0 } if a == address && s != address => Instruction::StoreByte { s, a: base, offset: 0 },
+                    Instruction::StoreFloatSingle { s, a, offset: 0 } if a == address => Instruction::StoreFloatSingle { s, a: base, offset: 0 },
+                    Instruction::StoreFloatDouble { s, a, offset: 0 } if a == address => Instruction::StoreFloatDouble { s, a: base, offset: 0 },
+                    _ => return None,
+                };
+                (block.instructions[at].displacement_symbol.is_none()).then_some((at, instruction))
+            });
+            match folded {
+                Some((at, instruction)) => {
+                    block.instructions[at].instruction = instruction;
+                    block.instructions[at].relocation = Some(relocation);
+                    block.instructions[at].not_r0.retain(|&register| register != address);
+                    block.instructions[at].not_r0.push(base);
+                    block.instructions.remove(index);
+                }
+                None => index += 1,
             }
         }
     }
@@ -1111,9 +1212,14 @@ fn general_live_out(pcode: &PCodeFunction) -> Vec<u32> {
         changed = false;
         for block in (0..pcode.blocks.len()).rev() {
             let successors = &pcode.blocks[block].successors;
-            // The function's exit reads its result (r3) and the
+            // The function's exit reads its result (r3, r3:r4) and the
             // registers live everywhere.
-            let exit = if successors.is_empty() { (1 << 3) | bits(pcode.exit_uses.clone()) } else { 0 };
+            let result = match pcode.returns {
+                mwcc_pcode::ReturnRegisters::General => 1 << 3,
+                mwcc_pcode::ReturnRegisters::GeneralPair => (1 << 3) | (1 << 4),
+                mwcc_pcode::ReturnRegisters::None | mwcc_pcode::ReturnRegisters::Float => 0,
+            };
+            let exit = if successors.is_empty() { result | bits(pcode.exit_uses.clone()) } else { 0 };
             let out = successors.iter().fold(exit, |mask, &s| mask | live_in[s]);
             let inside = summary[block].0 | (out & !summary[block].1);
             if out != live_out[block] || inside != live_in[block] {

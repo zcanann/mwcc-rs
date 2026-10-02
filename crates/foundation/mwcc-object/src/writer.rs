@@ -796,6 +796,8 @@ fn apply_data_section_displacements(
             DataSectionDisplacementTarget::AnonymousRodata(blob) => {
                 anonymous_rodata_offsets[*blob]
             }
+            // (Patched once the constant pool is laid out.)
+            DataSectionDisplacementTarget::Constant(_) => continue,
         };
         let start = *byte_offset as usize;
         let selected = u16::from_be_bytes([text[start], text[start + 1]]);
@@ -1209,7 +1211,8 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                     function.data_section_displacements.iter().filter_map(
                         |(_, target)| match target {
                             DataSectionDisplacementTarget::Symbol(name) => Some(name.clone()),
-                            DataSectionDisplacementTarget::AnonymousRodata(_) => None,
+                            DataSectionDisplacementTarget::AnonymousRodata(_)
+                            | DataSectionDisplacementTarget::Constant(_) => None,
                         },
                     ),
                 )
@@ -1498,6 +1501,20 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
             offsets.push(offset);
         }
         constant_offsets.push(offsets);
+    }
+    // Pool constants addressed through the `...rodata.0` anchor: their
+    // displacement is the constant's `.rodata` offset.
+    for (index, function) in functions.iter().enumerate() {
+        for (byte_offset, target) in &function.data_section_displacements {
+            let DataSectionDisplacementTarget::Constant(constant) = target else { continue };
+            let payload = code_payloads
+                .get_mut(function_section(index))
+                .expect("the function's code section");
+            let start = (function_offset[index] + *byte_offset) as usize;
+            let selected = u16::from_be_bytes([payload[start], payload[start + 1]]);
+            let displacement = selected.wrapping_add(constant_offsets[index][*constant] as u16);
+            payload[start..start + 2].copy_from_slice(&displacement.to_be_bytes());
+        }
     }
     // Dropped-inline analysis constants materialize only after the function
     // pool walk, without changing their already assigned absolute ordinals.
@@ -3169,6 +3186,15 @@ pub fn write_object<'a>(input: &ObjectInput<'a>) -> Vec<u8> {
                             0
                         },
                     ));
+                    // (The `...rodata.0` anchor follows the first `.rodata`
+                    // symbol, a pooled constant too.)
+                    if rodata_anchor_needed && !rodata_anchor_emitted && constant.force_full_data_section {
+                        let section = index_of(".rodata") as u16;
+                        local_data_symbols.insert("...rodata.0", (symtab.len() / SYMBOL_SIZE) as u32);
+                        write_symbol(&mut symtab, strtab.add("...rodata.0"), 0, 0, 0, 0, section);
+                        comment_values.push((1, input.object_format.rodata_anchor_comment_flags));
+                        rodata_anchor_emitted = true;
+                    }
                 }
             }
         }

@@ -92,6 +92,10 @@ pub fn lower(
         loop_constants: Vec::new(),
         frame_offsets: vec![None; function.variables.len()],
         anchored: anchored_objects(function, unit),
+        constants_anchored: !unit.pool_small_data
+            && !unit.unoptimized
+            && pool_constant_count(&function.body) >= 3
+            && !toggle("MWCC_PCODE_NO_RODATA_ANCHOR"),
         store_displacement: None,
         inserted: None,
         conversion_base: None,
@@ -190,6 +194,9 @@ struct Lowerer<'a, 'u> {
     frame_offsets: Vec<Option<i16>>,
     /// Objects addressed through their section anchor in this function.
     anchored: HashMap<String, &'static str>,
+    /// Pool constants (outside small data) address through `...rodata.0`:
+    /// the function uses three or more.
+    constants_anchored: bool,
     /// The anchored object a store's displacement completes with.
     store_displacement: Option<String>,
     /// An insert's value already computed (by address): -O0 evaluates a
@@ -2429,12 +2436,25 @@ impl Lowerer<'_, '_> {
             }
         };
         let d = self.result_for(ty, target);
-        if !self.unit.pool_small_data {
-            // `lis r,@N@ha; lfs f,@N@l(r)`. Several constants in one function
-            // share a base at offsets (not modeled).
-            if self.pcode.pool.len() > 2 && !self.unoptimized {
-                return Err(unsupported("several floating constants outside small data"));
+        if !self.unit.pool_small_data && self.constants_anchored {
+            // `lfs f,<offset>(anchor)` off the `...rodata.0` base.
+            let base = self.anchor_register("...rodata.0");
+            let mut load = PInstr::new(if key.1 == 4 {
+                Instruction::LoadFloatSingle { d, a: base, offset: 0 }
+            } else {
+                Instruction::LoadFloatDouble { d, a: base, offset: 0 }
+            });
+            load.not_r0.push(base);
+            load.flags.read_only = true;
+            load.displacement_symbol = Some(format!("@@const{index}"));
+            self.emit(load);
+            if target.is_none() {
+                self.float_constants.insert(key, d);
             }
+            return Ok((d, ty));
+        }
+        if !self.unit.pool_small_data {
+            // `lis r,@N@ha; lfs f,@N@l(r)`.
             let pool = || RelocationTarget::Constant(index);
             let high = self.temporary();
             let mut lis = PInstr::new(Instruction::AddImmediateShifted { d: high, a: 0, immediate: 0 });
@@ -2515,10 +2535,20 @@ impl Lowerer<'_, '_> {
                 return Ok((d, ty));
             }
         }
+        // (A constant right operand of a commutative operation, which goes
+        // first, is loaded first too: it enters the pool before the other
+        // operand's constants.)
+        let constant_first = matches!(op, BinaryOp::Add | BinaryOp::Multiply)
+            && !self.unoptimized
+            && !contains_call(left)
+            && matches!(right.kind, ExprKind::Float(_))
+            && !matches!(left.kind, ExprKind::Float(_))
+            && !toggle("MWCC_PCODE_CONSTANT_OPERAND_IN_ORDER");
         // (An operand that calls is evaluated first.)
-        let (a, b) = if contains_call(right)
-            && (!contains_call(left) || !toggle("MWCC_PCODE_BOTH_CALLS_IN_ORDER"))
-            && !toggle("MWCC_PCODE_CALL_OPERAND_IN_ORDER")
+        let (a, b) = if constant_first
+            || contains_call(right)
+                && (!contains_call(left) || !toggle("MWCC_PCODE_BOTH_CALLS_IN_ORDER"))
+                && !toggle("MWCC_PCODE_CALL_OPERAND_IN_ORDER")
         {
             let (b, _) = self.expression(right)?;
             let (a, _) = self.expression(left)?;
@@ -5509,4 +5539,30 @@ fn for_each_statement_expression(body: &[Stmt], visit: &mut dyn FnMut(&Expr)) {
             _ => {}
         }
     }
+}
+
+/// Distinct floating literals a body uses (an integer conversion's bias
+/// does not count).
+fn pool_constant_count(body: &[Stmt]) -> usize {
+    let mut keys: Vec<(u64, u8)> = Vec::new();
+    let mut visit = |e: &Expr| {
+        fn walk(e: &Expr, keys: &mut Vec<(u64, u8)>) {
+            let key = match &e.kind {
+                ExprKind::Float(value) if e.ty == Type::Float => Some((u64::from((*value as f32).to_bits()), 4u8)),
+                ExprKind::Float(value) => Some((value.to_bits(), 8u8)),
+                _ => None,
+            };
+            if let Some(key) = key {
+                if !keys.contains(&key) {
+                    keys.push(key);
+                }
+            }
+            for child in expression_children(e) {
+                walk(child, keys);
+            }
+        }
+        walk(e, &mut keys);
+    };
+    for_each_statement_expression(body, &mut visit);
+    keys.len()
 }

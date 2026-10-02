@@ -25,7 +25,11 @@ pub use mwcc_object::DebugSections;
 pub use mwcc_object::{CommentFormat, DataRelocation, FunctionSymbolOrder, ObjectFormat};
 
 fn constant_uses_absolute_addressing(function: &MachineFunction, constant_index: usize) -> bool {
-    function.relocations.iter().any(|relocation| {
+    // (Or through the `...rodata.0` anchor.)
+    let anchored = function.deferred_displacements.iter().any(|fixup| {
+        matches!(fixup.target, mwcc_machine_code::DeferredDisplacementTarget::Constant(index) if index == constant_index)
+    });
+    anchored || function.relocations.iter().any(|relocation| {
         let targets_constant = matches!(
             relocation.target,
             MachineTarget::Constant(index) | MachineTarget::ConstantWithAddend(index, _)
@@ -218,6 +222,9 @@ pub fn assemble_object(
                                 blob,
                             ) => {
                                 mwcc_object::DataSectionDisplacementTarget::AnonymousRodata(*blob)
+                            }
+                            mwcc_machine_code::DeferredDisplacementTarget::Constant(index) => {
+                                mwcc_object::DataSectionDisplacementTarget::Constant(*index)
                             }
                         },
                     )

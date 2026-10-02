@@ -388,6 +388,9 @@ pub struct AnonymousRodataObject {
 pub enum DataSectionDisplacementTarget {
     Symbol(String),
     AnonymousRodata(usize),
+    /// The function's pool constant (by index) in `.rodata`, addressed
+    /// through the section's `...rodata.0` anchor.
+    Constant(usize),
 }
 
 /// A dense `switch`'s jump table — one `.text` body offset per index, plus how far
