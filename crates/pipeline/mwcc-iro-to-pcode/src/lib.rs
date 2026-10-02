@@ -1518,7 +1518,19 @@ impl Lowerer<'_, '_> {
         let truth = matches!(&value.kind, ExprKind::Binary(op, ..) if op.is_comparison())
             || matches!(&value.kind, ExprKind::Unary(UnaryOp::LogicalNot, _));
         // A `bool` result is already 0/1; other narrow results mask it.
-        let fits = mwcc_syntax_trees_to_iro_fits(value, return_type)
+        // (Or a value whose bounds fit the unsigned narrow type.)
+        let bounded = is_unsigned_narrow(return_type) && !truth && !toggle("MWCC_PCODE_NO_BOUNDED_RETURNS") && {
+            SUM_BOUNDS.with(|flag| flag.set(self.unit.branch_preserving));
+            let mut inner = value;
+            while let ExprKind::Convert(operand) = &inner.kind {
+                if !matches!(operand.ty, Type::Int | Type::UnsignedInt) {
+                    break;
+                }
+                inner = operand;
+            }
+            max_value(inner).is_some_and(|max| max < 1u64 << (8 * width(return_type)))
+        };
+        let fits = (mwcc_syntax_trees_to_iro_fits(value, return_type) || bounded)
             && !(truth && is_narrow(return_type) && !self.unit.returns_bool && std::env::var_os("MWCC_PCODE_TRUTH_FITS").is_none());
         if let Some(destination) = self.return_register {
             let raw = self.is_raw(value);
@@ -2371,9 +2383,30 @@ impl Lowerer<'_, '_> {
                 }
                 Ok(result)
             }
-            ExprKind::Convert(operand) if is_unsigned_narrow(ty) && max_value(operand).is_some_and(|max| max < 1u64 << (8 * width(ty))) => {
+            ExprKind::Convert(operand)
+                if is_unsigned_narrow(ty)
+                    && {
+                        SUM_BOUNDS.with(|flag| flag.set(self.unit.branch_preserving));
+                        max_value(operand).is_some_and(|max| max < 1u64 << (8 * width(ty)))
+                    } => {
                 let (source, _) = self.expression_with_target(operand, target)?;
                 Ok((source, ty))
+            }
+            // `(u8)(x >> n)`: one rotate keeping the low bits.
+            ExprKind::Convert(operand)
+                if is_unsigned_narrow(ty)
+                    && !self.unoptimized
+                    && matches!(&operand.kind, ExprKind::Binary(BinaryOp::ShiftRight, x, n)
+                        if x.ty == Type::UnsignedInt && n.as_int().is_some_and(|n| (1..32).contains(&n)))
+                    && !toggle("MWCC_PCODE_NO_NARROW_SHIFT_ROTATE") =>
+            {
+                let ExprKind::Binary(_, x, n) = &operand.kind else { unreachable!() };
+                let n = n.as_int().unwrap_or(0) as u8;
+                let (x, _) = self.expression(x)?;
+                let d = self.result(target);
+                let bits = 8 * width(ty) as u8;
+                self.emit_plain(Instruction::RotateAndMask { a: d, s: x, shift: 32 - n, begin: 32 - bits, end: 31 });
+                Ok((d, ty))
             }
             ExprKind::Convert(operand) => {
                 // A promotion of a raw narrow parameter: extended once per block.
@@ -5781,11 +5814,32 @@ fn max_value(expression: &Expr) -> Option<u64> {
             }
         }
         ExprKind::Binary(BinaryOp::ShiftRight, left, right) if !matches!(left.ty, Type::Int) || max_value(left).is_some() => {
-            Some(max_value(left)? >> right.as_int()?)
+            Some(max_value(left).or_else(|| unsigned_bound(left))? >> right.as_int()?)
         }
         ExprKind::Binary(op, ..) if op.is_comparison() => Some(1),
+        // (GC/1.0-1.2.5n: a small sum of bounded values.)
+        ExprKind::Binary(BinaryOp::Add, left, right) if SUM_BOUNDS.with(|flag| flag.get()) && !toggle("MWCC_PCODE_NO_SUM_BOUNDS") => {
+            let sum = max_value(left)?.checked_add(max_value(right)?)?;
+            (sum <= u64::from(u32::MAX)).then_some(sum)
+        }
+        ExprKind::Convert(_) | ExprKind::Load { .. } if SUM_BOUNDS.with(|flag| flag.get()) && !toggle("MWCC_PCODE_NO_SUM_BOUNDS") => {
+            let narrow = match &expression.kind {
+                ExprKind::Convert(operand) => operand.ty,
+                _ => expression.ty,
+            };
+            match narrow {
+                Type::UnsignedChar => Some(0xff),
+                Type::UnsignedShort => Some(0xffff),
+                _ => None,
+            }
+        }
         _ => None,
     }
+}
+
+/// The bound of an unsigned word of unknown value.
+fn unsigned_bound(expression: &Expr) -> Option<u64> {
+    (matches!(expression.ty, Type::UnsignedInt) && !toggle("MWCC_PCODE_NO_SUM_BOUNDS")).then_some(u64::from(u32::MAX))
 }
 
 /// A key for a simple pure operation on variables and constants (IRO common
@@ -6313,4 +6367,9 @@ fn plain_variable(expression: &Expr) -> bool {
         }
         _ => false,
     }
+}
+
+thread_local! {
+    /// The build bounds sums in narrowing conversions (GC/1.0-1.2.5n).
+    static SUM_BOUNDS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
