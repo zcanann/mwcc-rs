@@ -338,8 +338,9 @@ pub(super) fn expect_operand_count(
 /// encode time. Names come through as a `Label` (a bare identifier the assembler
 /// resolves) — mwcc's asm knows the Gekko SPR mnemonics.
 pub(super) fn special_register(mnemonic: &str, operand: &AsmOperand) -> Compilation<u16> {
+    // (Names are case-insensitive: `mfspr r3, hid0`.)
     let named = |name: &str| -> Option<u16> {
-        Some(match name {
+        Some(match name.to_ascii_uppercase().as_str() {
             "GQR0" => 912,
             "GQR1" => 913,
             "GQR2" => 914,

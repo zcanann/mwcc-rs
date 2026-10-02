@@ -6035,7 +6035,28 @@ impl Parser {
                     let source_line = self.current_location().line;
                     self.advance();
                     self.expect(Token::BraceOpen)?;
-                    let items = self.parse_asm_body()?;
+                    let body_start = self.position;
+                    // (A block the assembler parser can't read leaves only
+                    // its function uncompiled: skip to its closing brace.)
+                    let items = match self.parse_asm_body() {
+                        Ok(items) => items,
+                        Err(_) if std::env::var_os("MWCC_STRICT_EMBEDDED_ASM").is_none() => {
+                            self.position = body_start;
+                            let mut depth = 1usize;
+                            while depth > 0 {
+                                if self.position + 1 >= self.tokens.len() {
+                                    return Err(Diagnostic::error("unterminated asm block"));
+                                }
+                                match self.advance() {
+                                    Token::BraceOpen => depth += 1,
+                                    Token::BraceClose => depth -= 1,
+                                    _ => {}
+                                }
+                            }
+                            Vec::new()
+                        }
+                        Err(error) => return Err(error),
+                    };
                     inline_asm_blocks.push(mwcc_syntax_trees::InlineAsmBlock {
                         statement_index: statements.len(),
                         items,
