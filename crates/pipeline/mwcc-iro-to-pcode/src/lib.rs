@@ -647,7 +647,12 @@ impl Lowerer<'_, '_> {
         if home_slots > 0 {
             self.frame_cursor = 8 + home_bytes as u32;
         }
-        for id in (function.parameter_count..function.variables.len()).rev() {
+        // (By size class, as optimized.)
+        let mut ordered: Vec<VarId> = (function.parameter_count..function.variables.len()).rev().collect();
+        if !self.unit.early_frame && !toggle("MWCC_PCODE_FRAME_DECLARATION_ORDER") {
+            ordered.sort_by_key(|&id| function.variables[id].frame.map_or(0, |(size, _)| size.max(1).next_power_of_two()));
+        }
+        for id in ordered {
             if let (VariableKind::Local, Some((size, align))) = (function.variables[id].kind, function.variables[id].frame) {
                 let offset = self.frame_cursor.div_ceil(align.max(1)) * align.max(1);
                 self.frame_cursor = offset + size;

@@ -47,6 +47,9 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     if std::env::var_os("MWCC_IRO_NO_FRAME_BASES").is_none() {
         passes::fold_frame_bases(&mut built.function);
     }
+    if std::env::var_os("MWCC_IRO_KEEP_UNREAD_STORES").is_none() {
+        passes::remove_unread_frame_stores(&mut built.function);
+    }
     // (Without an explicit speed goal, -O3/-O4 count in CTR unrolled.)
     if unit.strength_reduction && !unit.branch_preserving && std::env::var_os("MWCC_IRO_NO_PARTIAL_UNROLL").is_none() {
         unroll::unroll_partially(&mut built.function, unit.unrolling);
@@ -155,13 +158,22 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
             _ => None,
         };
         // (An array or struct slot is word-aligned at least.)
-        // (Early frames keep natural alignment.)
-        let aggregate_align = |align: u32| {
-            if unit.early_frame || std::env::var_os("MWCC_IRO_NATURAL_FRAME_ALIGN").is_some() { align } else { align.max(4) }
+        // (Early frames, and -O0 before GC/3.x, keep natural alignment.)
+        let aggregate_align = |size: u32, align: u32| {
+            if unit.early_frame
+                || (unit.unoptimized && !unit.doubleword_aggregates)
+                || std::env::var_os("MWCC_IRO_NATURAL_FRAME_ALIGN").is_some()
+            {
+                align
+            } else if unit.doubleword_aggregates && size % 8 == 0 {
+                align.max(8)
+            } else {
+                align.max(4)
+            }
         };
         let frame = match (local.array_length, element) {
-            (Some(length), Some((size, align))) => Some((size * u32::from(length), aggregate_align(align))),
-            (None, Some((size, align))) if matches!(local.declared_type, Type::Struct { .. }) => Some((size, aggregate_align(align))),
+            (Some(length), Some((size, align))) => Some((size * u32::from(length), aggregate_align(size * u32::from(length), align))),
+            (None, Some((size, align))) if matches!(local.declared_type, Type::Struct { .. }) => Some((size, aggregate_align(size, align))),
             (None, Some(object))
                 if taken.contains(&local.name)
                     || initialized_only(local)
@@ -1673,7 +1685,15 @@ impl Builder<'_, '_> {
         }
         let map = |id: VarId| id + base;
         passes::map_variables(&mut inlined.body, &map);
-        for (index, argument) in arguments.iter().enumerate() {
+        // (As for a call: the arguments that call are evaluated first.)
+        let calls = |argument: &Expression| format!("{argument:?}").contains("Call");
+        let mut order: Vec<usize> = (0..arguments.len()).filter(|&index| calls(&arguments[index])).collect();
+        order.extend((0..arguments.len()).filter(|&index| !calls(&arguments[index])));
+        if std::env::var_os("MWCC_IRO_INLINE_ARGUMENTS_IN_ORDER").is_some() {
+            order = (0..arguments.len()).collect();
+        }
+        for index in order {
+            let argument = &arguments[index];
             let value = self.expression(argument)?;
             let ty = inlined.variables[index].ty;
             let value = assigned(promoted(value), ty);
@@ -1685,7 +1705,9 @@ impl Builder<'_, '_> {
             // (And arithmetic on those, re-evaluated at each use.)
             fn pure(e: &Expr, variables: &[Variable]) -> bool {
                 match &e.kind {
+                    // (A frame object's address is a constant too.)
                     ExprKind::Int(_) => true,
+                    ExprKind::LocalAddress(_) => std::env::var_os("MWCC_IRO_NO_INLINE_ADDRESSES").is_none(),
                     ExprKind::Var(id) => *id < variables.len() && variables[*id].frame.is_none(),
                     ExprKind::Binary(op, a, b) => {
                         !matches!(op, BinaryOp::Divide | BinaryOp::Modulo | BinaryOp::LogicalAnd | BinaryOp::LogicalOr)

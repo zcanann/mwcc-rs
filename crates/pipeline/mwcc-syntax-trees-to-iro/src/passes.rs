@@ -899,6 +899,117 @@ pub fn fold_frame_bases(function: &mut Function) {
     for_each_expression(&mut function.body, &mut |e| expression(e, &folds));
 }
 
+/// Stores into a frame object nothing reads (no load of it, its address
+/// never used as a value) are dead: they go, and with them its slot. An
+/// address held only by a variable nothing reads is no use.
+pub fn remove_unread_frame_stores(function: &mut Function) {
+    // `reads[id]`: the variable's value, or the object's address, is used.
+    fn expression(e: &Expr, reads: &mut [bool]) {
+        if let ExprKind::LocalAddress(id) | ExprKind::Var(id) = e.kind {
+            reads[id] = true;
+        }
+        let mut copy = e.clone();
+        children(&mut copy, &mut |child| expression(child, reads));
+    }
+    // (`held`: an assigned address counts only when its variable is read.)
+    fn statements(body: &[Stmt], reads: &mut [bool], held: Option<&[bool]>) {
+        for statement in body {
+            match statement {
+                Stmt::Store { place: mwcc_iro::Place::Memory { base, index, .. }, value, .. } => {
+                    // (A store's own base is no read.)
+                    if !matches!(base.kind, ExprKind::LocalAddress(_)) {
+                        expression(base, reads);
+                    }
+                    if let Some(index) = index {
+                        expression(index, reads);
+                    }
+                    expression(value, reads);
+                }
+                Stmt::Store { value, .. } => expression(value, reads),
+                Stmt::Assign { variable, value } => match (value.kind.clone(), held) {
+                    (ExprKind::LocalAddress(object), Some(held)) => reads[object] |= held[*variable],
+                    _ => expression(value, reads),
+                },
+                Stmt::Eval(value) | Stmt::SetReturn(value) => expression(value, reads),
+                Stmt::Return(value) => {
+                    if let Some(value) = value {
+                        expression(value, reads);
+                    }
+                }
+                Stmt::If { condition, then_body, else_body } => {
+                    expression(condition, reads);
+                    statements(then_body, reads, held);
+                    statements(else_body, reads, held);
+                }
+                Stmt::Loop { condition, body, step, effects, .. } => {
+                    if let Some(condition) = condition {
+                        expression(condition, reads);
+                    }
+                    statements(body, reads, held);
+                    statements(step, reads, held);
+                    statements(effects, reads, held);
+                }
+                Stmt::Counted { count, guard, body } => {
+                    expression(count, reads);
+                    if let Some(guard) = guard {
+                        expression(guard, reads);
+                    }
+                    statements(body, reads, held);
+                }
+                Stmt::Switch { value, arms, .. } => {
+                    expression(value, reads);
+                    arms.iter().for_each(|arm| statements(arm, reads, held));
+                }
+                _ => {}
+            }
+        }
+    }
+    let count = function.variables.len();
+    let mut variable_reads = vec![false; count];
+    statements(&function.body, &mut variable_reads, None);
+    let mut object_reads = vec![false; count];
+    statements(&function.body, &mut object_reads, Some(&variable_reads));
+    let dead: Vec<bool> = function
+        .variables
+        .iter()
+        .enumerate()
+        .map(|(id, variable)| {
+            variable.frame.is_some() && !variable.volatile && variable.kind != VariableKind::Parameter && !object_reads[id]
+        })
+        .collect();
+    if !dead.iter().any(|&dead| dead) {
+        return;
+    }
+    fn remove(body: &mut Vec<Stmt>, dead: &[bool], variable_reads: &[bool]) {
+        body.retain(|statement| match statement {
+            Stmt::Store { place: mwcc_iro::Place::Memory { base, index: None, .. }, value, .. } => {
+                !(matches!(base.kind, ExprKind::LocalAddress(id) if dead[id]) && !format!("{value:?}").contains("Call"))
+            }
+            Stmt::Assign { variable, value } => {
+                !(matches!(value.kind, ExprKind::LocalAddress(id) if dead[id]) && !variable_reads[*variable])
+            }
+            _ => true,
+        });
+        for statement in body.iter_mut() {
+            match statement {
+                Stmt::If { then_body, else_body, .. } => {
+                    remove(then_body, dead, variable_reads);
+                    remove(else_body, dead, variable_reads);
+                }
+                Stmt::Loop { body, step, effects, .. } => {
+                    remove(body, dead, variable_reads);
+                    remove(step, dead, variable_reads);
+                    remove(effects, dead, variable_reads);
+                }
+                Stmt::Counted { body, .. } => remove(body, dead, variable_reads),
+                Stmt::Switch { arms, .. } => arms.iter_mut().for_each(|arm| remove(arm, dead, variable_reads)),
+                _ => {}
+            }
+        }
+    }
+    remove(&mut function.body, &dead, &variable_reads);
+}
+
 /// Replace every read of `variable` with `value` (a constant argument of
 /// an inlined call).
 pub fn substitute(body: &mut [Stmt], variable: VarId, value: &Expr) {

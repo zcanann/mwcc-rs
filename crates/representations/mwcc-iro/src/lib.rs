@@ -89,6 +89,9 @@ pub struct Unit<'a> {
     /// from r1+8 (parameters in order, then locals in reverse declaration
     /// order), used or not.
     pub early_frame: bool,
+    /// GC/3.x and Wii frames: an array or struct slot is word-aligned even
+    /// at -O0, and doubleword-aligned when its size is a multiple of 8.
+    pub doubleword_aggregates: bool,
     /// GC/1.0-1.2.5n comparison values (carry forms; no zero shortcuts).
     pub branch_preserving: bool,
     /// GC/1.x-2.x reassociate integer sums (`a + b + c` = `a + (b + c)`).
