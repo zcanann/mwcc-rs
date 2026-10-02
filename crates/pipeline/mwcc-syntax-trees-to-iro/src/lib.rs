@@ -1290,6 +1290,7 @@ impl Builder<'_, '_> {
             }
             Expression::Binary { operator, left, right } => {
                 let op = binary_op(*operator);
+                let (left_source, right_source) = (left.as_ref(), right.as_ref());
                 let left = self.expression(left)?;
                 let right = if matches!(op, BinaryOp::LogicalAnd | BinaryOp::LogicalOr) {
                     let mark = (self.pending.len(), self.post.len());
@@ -1332,6 +1333,30 @@ impl Builder<'_, '_> {
                     let ty = if op.is_comparison() { Type::Int } else { common };
                     return Ok(Expr::binary(op, converted(left, common), converted(right, common), ty));
                 }
+                // (An unsigned bit-field compared with a nonnegative
+                // literal compares unsigned: `cmplwi`.)
+                let unsigned_field = |source: &Expression, built: &Expr| {
+                    matches!(source, Expression::BitFieldRead { .. })
+                        && match &built.kind {
+                            ExprKind::Binary(BinaryOp::BitAnd, _, mask) => mask.as_int().is_some_and(|m| m >= 0),
+                            ExprKind::Binary(BinaryOp::ShiftRight, value, _) => {
+                                matches!(&value.kind, ExprKind::Convert(inner) if is_unsigned(inner.ty))
+                            }
+                            _ => false,
+                        }
+                };
+                let as_unsigned = |e: Expr| Expr { kind: ExprKind::Convert(Box::new(e)), ty: Type::UnsignedInt };
+                let (left, right) = if op.is_comparison() && std::env::var_os("MWCC_IRO_SIGNED_FIELD_COMPARES").is_none() {
+                    if unsigned_field(left_source, &left) && right.as_int().is_some_and(|v| v >= 0) {
+                        (as_unsigned(left), Expr::typed_int(right.as_int().expect("checked"), Type::UnsignedInt))
+                    } else if unsigned_field(right_source, &right) && left.as_int().is_some_and(|v| v >= 0) {
+                        (Expr::typed_int(left.as_int().expect("checked"), Type::UnsignedInt), as_unsigned(right))
+                    } else {
+                        (left, right)
+                    }
+                } else {
+                    (left, right)
+                };
                 let ty = if op.is_comparison() || matches!(op, BinaryOp::LogicalAnd | BinaryOp::LogicalOr) {
                     Type::Int
                 } else if matches!(op, BinaryOp::ShiftLeft | BinaryOp::ShiftRight) {
