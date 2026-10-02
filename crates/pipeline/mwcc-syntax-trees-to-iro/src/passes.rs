@@ -693,7 +693,23 @@ pub fn displacements_with(body: &mut [Stmt], distribute: bool) {
             let ExprKind::Binary(op @ (BinaryOp::Add | BinaryOp::Subtract), inner, addend) = &base.kind else { break };
             let (Some(value), true) = (addend.as_int(), pointer_like(inner.ty)) else { break };
             let value = if *op == BinaryOp::Subtract { -value } else { value };
-            let Ok(total) = i16::try_from(i64::from(*offset) + value) else { break };
+            let Ok(total) = i16::try_from(i64::from(*offset) + value) else {
+                // (A large one: its high half stays on the base, `addis`,
+                // and its low half joins the displacement.)
+                let total = i64::from(*offset) + value;
+                let low = ((total + 0x8000) & 0xffff) - 0x8000;
+                let high = total - low;
+                if distribute
+                    && high != value
+                    && i32::try_from(total).is_ok()
+                    && std::env::var_os("MWCC_IRO_NO_SPLIT_DISPLACEMENTS").is_none()
+                {
+                    let ty = base.ty;
+                    *base = Box::new(Expr::binary(BinaryOp::Add, (**inner).clone(), Expr::int(high), ty));
+                    *offset = low as i32;
+                }
+                break;
+            };
             *offset = i32::from(total);
             *base = inner.clone();
         }
