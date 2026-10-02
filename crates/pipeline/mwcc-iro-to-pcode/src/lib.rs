@@ -89,6 +89,7 @@ pub fn lower(
         common: HashMap::new(),
         contract,
         float_constants: HashMap::new(),
+        loop_constants: Vec::new(),
         frame_offsets: vec![None; function.variables.len()],
         anchored: anchored_objects(function, unit),
         store_displacement: None,
@@ -182,6 +183,9 @@ struct Lowerer<'a, 'u> {
     contract: bool,
     /// Floating constants loaded in this block: (bits, width) -> register.
     float_constants: HashMap<(u64, u8), u32>,
+    /// Constants loaded before the enclosing loops (integer and floating),
+    /// available throughout them.
+    loop_constants: Vec<(Vec<(i64, u32)>, Vec<((u64, u8), u32)>)>,
     /// r1 offset of each frame variable.
     frame_offsets: Vec<Option<i16>>,
     /// Objects addressed through their section anchor in this function.
@@ -274,6 +278,77 @@ impl Lowerer<'_, '_> {
         self.constants.clear();
         self.common.clear();
         self.float_constants.clear();
+        // (Except the constants loaded before an enclosing loop.)
+        for (constants, float_constants) in &self.loop_constants {
+            self.constants.extend(constants.iter().copied());
+            self.float_constants.extend(float_constants.iter().copied());
+        }
+    }
+
+    /// The floating constants a call-free loop uses, and the integer
+    /// conversion's constants, are loaded before it (loop code motion).
+    fn preload_loop_constants(&mut self, parts: &[&[Stmt]], condition: Option<&Expr>) -> Compilation<bool> {
+        if self.unoptimized || toggle("MWCC_PCODE_NO_LOOP_CONSTANTS") || parts.iter().any(|part| makes_calls(part)) {
+            return Ok(false);
+        }
+        let mut floats: Vec<(f64, Type)> = Vec::new();
+        let mut conversions: Vec<bool> = Vec::new();
+        let mut visit = |e: &Expr| {
+            fn walk(e: &Expr, floats: &mut Vec<(f64, Type)>, conversions: &mut Vec<bool>) {
+                match &e.kind {
+                    ExprKind::Float(value) => {
+                        if !floats.iter().any(|&(v, t)| v.to_bits() == value.to_bits() && t == e.ty) {
+                            floats.push((*value, e.ty));
+                        }
+                    }
+                    ExprKind::Convert(operand)
+                        if is_float(e.ty)
+                            && matches!(operand.ty, Type::Int | Type::UnsignedInt | Type::Char | Type::Short | Type::UnsignedChar | Type::UnsignedShort) =>
+                    {
+                        let signed = matches!(operand.ty, Type::Int | Type::Char | Type::Short);
+                        if !conversions.contains(&signed) {
+                            conversions.push(signed);
+                        }
+                    }
+                    _ => {}
+                }
+                for child in expression_children(e) {
+                    walk(child, floats, conversions);
+                }
+            }
+            walk(e, &mut floats, &mut conversions);
+        };
+        // (In the order the loop's code uses them: the body, then the test.)
+        for part in parts {
+            for_each_statement_expression(part, &mut visit);
+        }
+        if let Some(condition) = condition {
+            visit(condition);
+        }
+        if floats.is_empty() && conversions.is_empty() {
+            return Ok(false);
+        }
+        let mut constants = Vec::new();
+        let mut float_constants = Vec::new();
+        for &signed in &conversions {
+            let (high, _) = self.expression(&Expr::int(0x4330_0000))?;
+            if !constants.iter().any(|&(value, _)| value == 0x4330_0000) {
+                constants.push((0x4330_0000, high));
+            }
+            let magic = if signed { 4503601774854144.0 } else { 4503599627370496.0 };
+            let (bias, _) = self.float_constant(magic, Type::Double, None)?;
+            float_constants.push(((f64::to_bits(magic), 8u8), bias));
+        }
+        for (value, ty) in floats {
+            if !matches!(ty, Type::Float | Type::Double) {
+                continue;
+            }
+            let (register, _) = self.float_constant(value, ty, None)?;
+            let key = if ty == Type::Float { (u64::from((value as f32).to_bits()), 4u8) } else { (value.to_bits(), 8u8) };
+            float_constants.push((key, register));
+        }
+        self.loop_constants.push((constants, float_constants));
+        Ok(true)
     }
 
     fn start_block_keeping(&mut self, falls_through: bool) -> usize {
@@ -1045,6 +1120,10 @@ impl Lowerer<'_, '_> {
         self.frame_cursor = offset + 8;
         self.pcode.frame_objects.push((offset as i16, offset as i16 + 8));
         self.pcode.private_frame_objects.push(offset as i16);
+        // (Its two words are stored independently.)
+        if !self.unit.early_frame && !toggle("MWCC_PCODE_CONVERSION_WORDS_ORDERED") {
+            self.pcode.struct_frame_objects.push(offset as i16);
+        }
         offset as i16
     }
 
@@ -1174,6 +1253,7 @@ impl Lowerer<'_, '_> {
                 let first_test_true = self.unit.strength_reduction
                     && effects.is_empty()
                     && condition.as_ref().is_some_and(|condition| initially_true(condition, &known));
+                let preloaded = self.preload_loop_constants(&[body, step, effects], condition.as_ref())?;
                 if *test_first && condition.is_some() && !first_test_true {
                     self.jump(test);
                 }
@@ -1198,6 +1278,9 @@ impl Lowerer<'_, '_> {
                     Some(condition) => self.branch_on(condition, true, top)?,
                     None => self.jump(top),
                 }
+                if preloaded {
+                    self.loop_constants.pop();
+                }
                 self.place_label(exit);
                 Ok(())
             }
@@ -1205,6 +1288,7 @@ impl Lowerer<'_, '_> {
                 // `mtctr count` (and the guard), the body, `bdnz`.
                 let top = self.new_join_label();
                 let exit = self.new_label();
+                let preloaded = self.preload_loop_constants(&[body], None)?;
                 let (counter, _) = self.expression(count)?;
                 // (A loop's `mtctr` keeps its place, last before the loop.)
                 let mut mtctr = PInstr::new(Instruction::MoveToCountRegister { s: counter });
@@ -1220,6 +1304,9 @@ impl Lowerer<'_, '_> {
                 }
                 self.loops.pop();
                 self.branch(Instruction::BranchConditionalForward { options: 16, condition_bit: 0, target: 0 }, top);
+                if preloaded {
+                    self.loop_constants.pop();
+                }
                 self.place_label(exit);
                 Ok(())
             }
@@ -5357,4 +5444,69 @@ fn escaping_frame_objects(body: &[Stmt], count: usize) -> Vec<bool> {
     out.iter_mut().for_each(|escaped| *escaped = false);
     statements(body, &mut out);
     out
+}
+
+/// The operands of an expression.
+fn expression_children(e: &Expr) -> Vec<&Expr> {
+    match &e.kind {
+        ExprKind::Load { base, index, .. } => {
+            let mut out = vec![base.as_ref()];
+            if let Some(index) = index {
+                out.push(index);
+            }
+            out
+        }
+        ExprKind::Unary(_, operand) | ExprKind::Convert(operand) => vec![operand],
+        ExprKind::Binary(_, left, right) => vec![left, right],
+        ExprKind::Select { condition, when_true, when_false } => vec![condition, when_true, when_false],
+        ExprKind::Call { arguments, .. } => arguments.iter().collect(),
+        ExprKind::Idiom(Idiom::Absolute(value) | Idiom::Unary(_, value)) => vec![value],
+        ExprKind::Idiom(Idiom::Insert { base, value, .. }) => vec![base, value],
+        ExprKind::Idiom(Idiom::Masked { tested, value, .. }) => vec![tested, value],
+        _ => Vec::new(),
+    }
+}
+
+/// Every expression a statement list evaluates (not recursing into them).
+fn for_each_statement_expression(body: &[Stmt], visit: &mut dyn FnMut(&Expr)) {
+    for statement in body {
+        match statement {
+            Stmt::Assign { value, .. } | Stmt::Eval(value) | Stmt::SetReturn(value) => visit(value),
+            Stmt::Return(Some(value)) => visit(value),
+            Stmt::Store { place, value, .. } => {
+                if let Place::Memory { base, index, .. } = place {
+                    visit(base);
+                    if let Some(index) = index {
+                        visit(index);
+                    }
+                }
+                visit(value);
+            }
+            Stmt::If { condition, then_body, else_body } => {
+                visit(condition);
+                for_each_statement_expression(then_body, visit);
+                for_each_statement_expression(else_body, visit);
+            }
+            Stmt::Loop { condition, body, step, effects, .. } => {
+                if let Some(condition) = condition {
+                    visit(condition);
+                }
+                for_each_statement_expression(body, visit);
+                for_each_statement_expression(step, visit);
+                for_each_statement_expression(effects, visit);
+            }
+            Stmt::Counted { count, guard, body } => {
+                visit(count);
+                if let Some(guard) = guard {
+                    visit(guard);
+                }
+                for_each_statement_expression(body, visit);
+            }
+            Stmt::Switch { value, arms, .. } => {
+                visit(value);
+                arms.iter().for_each(|arm| for_each_statement_expression(arm, visit));
+            }
+            _ => {}
+        }
+    }
 }
