@@ -84,8 +84,10 @@ pub fn finish(
     }
     let colors = coloring::color(&mut pcode, options.delete_dead)?;
     dump(&pcode, "AFTER REGISTER COLORING");
-    if options.move_record && !options.unoptimized && !toggle("MWCC_PCODE_NO_MOVE_RECORD") {
-        move_records(&mut pcode);
+    if !options.early_frame && !options.unoptimized && !toggle("MWCC_PCODE_NO_MOVE_RECORD") {
+        move_records(&mut pcode, options.move_record);
+    } else if options.move_record && !options.unoptimized && !toggle("MWCC_PCODE_NO_MOVE_RECORD") {
+        move_records(&mut pcode, true);
     }
     if !options.early_frame && !options.unoptimized && !toggle("MWCC_PCODE_NO_REDUNDANT_COPIES") {
         remove_redundant_copies(&mut pcode);
@@ -1610,7 +1612,8 @@ fn update_loads(pcode: &mut PCodeFunction) {
 
 /// `mr rD,rS` (or an early `addi rD,rS,0`) followed by `cmpwi rD,0`, with
 /// nothing between that touches rD or cr0, becomes `mr. rD,rS`.
-fn move_records(pcode: &mut PCodeFunction) {
+/// (GC/3.x instead tests the copy's source: `cmpwi rS,0`.)
+fn move_records(pcode: &mut PCodeFunction, record: bool) {
     use mwcc_pcode::Class;
     for block in &mut pcode.blocks {
         let mut index = 0;
@@ -1638,6 +1641,15 @@ fn move_records(pcode: &mut PCodeFunction) {
                 }
             }
             if let Some((d, s)) = found {
+                if !record {
+                    // (Only a plain copy whose source still holds the value.)
+                    let unchanged = (at + 1..index).all(|k| !block.instructions[k].defs(Class::General).contains(&s));
+                    if matches!(block.instructions[at].instruction, Instruction::Or { .. }) && unchanged {
+                        block.instructions[index].instruction = Instruction::CompareWordImmediate { a: s, immediate: 0 };
+                    }
+                    index += 1;
+                    continue;
+                }
                 block.instructions[at].instruction = Instruction::OrRecord { a: d, s, b: s };
                 block.instructions.remove(index);
                 continue;
