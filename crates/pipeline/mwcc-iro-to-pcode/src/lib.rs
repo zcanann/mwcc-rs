@@ -2470,7 +2470,8 @@ impl Lowerer<'_, '_> {
                 }
                 let (b, _) = self.expression(index)?;
                 let (a, _) = self.expression(base)?;
-                if self.absolute_base(base) {
+                // (GC/3.x indexes it: `lhax`.)
+                if self.absolute_base(base) && (!self.unit.signed_promoted_truth || toggle("MWCC_PCODE_O0_ABSOLUTE_ADD")) {
                     let address = self.temporary();
                     self.emit_plain(Instruction::Add { d: address, a, b });
                     return self.load(ty, address, 0, None, target);
@@ -4083,6 +4084,10 @@ impl Lowerer<'_, '_> {
         if self.absolute_base(b) {
             let (index, _) = self.expression(x)?;
             let (address, _) = self.expression(b)?;
+            // (GC/3.x indexes it.)
+            if offset == 0 && self.unit.signed_promoted_truth && !toggle("MWCC_PCODE_O0_ABSOLUTE_ADD") {
+                return Ok((address, Some(index)));
+            }
             let sum = self.temporary();
             self.emit_plain(Instruction::Add { d: sum, a: address, b: index });
             return Ok((sum, None));
@@ -4289,7 +4294,7 @@ impl Lowerer<'_, '_> {
             Place::Memory { base: base_expression, index: Some(index), .. } if self.unoptimized => {
                 let (b, _) = self.expression(index)?;
                 let (a, _) = self.expression(base_expression)?;
-                if self.absolute_base(base_expression) {
+                if self.absolute_base(base_expression) && (!self.unit.signed_promoted_truth || toggle("MWCC_PCODE_O0_ABSOLUTE_ADD")) {
                     let address = self.temporary();
                     self.emit_plain(Instruction::Add { d: address, a, b });
                     (address, 0, None, None)
