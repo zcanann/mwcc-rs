@@ -99,12 +99,20 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
     }
     let mut variables = Vec::new();
     for parameter in &function.parameters {
-        if !is_value_type(parameter.parameter_type) && !is_wide(parameter.parameter_type) {
+        // A struct passed by value arrives as the address of the caller's
+        // copy: the parameter is that pointer.
+        let ty = match parameter.parameter_type {
+            Type::Struct { size, .. } if std::env::var_os("MWCC_IRO_NO_STRUCT_PARAMETERS").is_none() => {
+                Type::StructPointer { element_size: size }
+            }
+            ty => ty,
+        };
+        if !is_value_type(ty) && !is_wide(ty) {
             return Err(unsupported(format!("parameter type {:?}", parameter.parameter_type)));
         }
         variables.push(Variable {
             name: parameter.name.clone(),
-            ty: parameter.parameter_type,
+            ty,
             kind: VariableKind::Parameter,
             frame: None,
             initialized: false,
@@ -252,6 +260,13 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         })
         .collect();
     let mut builder = Builder {
+        struct_parameters: function
+            .parameters
+            .iter()
+            .enumerate()
+            .filter(|(_, parameter)| matches!(parameter.parameter_type, Type::Struct { .. }))
+            .map(|(index, _)| index)
+            .collect(),
         arrays,
         rows,
         folded,
@@ -525,6 +540,8 @@ struct Builder<'a, 'u> {
     unit: &'a Unit<'u>,
     names: HashMap<String, VarId>,
     variables: &'a [Variable],
+    /// Parameters passed as structs by value (held as their address).
+    struct_parameters: Vec<VarId>,
     /// Assignments inside the expression being built, hoisted before the
     /// statement that contains it.
     pending: Vec<Stmt>,
@@ -1599,6 +1616,10 @@ impl Builder<'_, '_> {
             }
             Expression::Variable(name) => match self.names.get(name) {
                 Some(&id) if self.variables[id].frame.is_some() => Ok(self.local_address(id)),
+                // (A struct parameter is its address.)
+                Some(&id) if self.struct_parameters.contains(&id) => {
+                    Ok(Expr { kind: ExprKind::Var(id), ty: self.variables[id].ty })
+                }
                 _ => Err(unsupported("address of a register variable")),
             },
             Expression::Member { base, offset, member_type, index_stride } => {
