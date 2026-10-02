@@ -2166,6 +2166,22 @@ impl Lowerer<'_, '_> {
                     let (value, _) = self.expression_with_target(&truth, target)?;
                     return Ok((value, ty));
                 }
+                // (After the early builds, `x < 0 ? -1 : 0` is the sign mask.)
+                if !self.unoptimized && !self.unit.branch_preserving && ty == Type::Int && !toggle("MWCC_PCODE_NO_SIGN_SELECT") {
+                    let sign_of = match (&condition.kind, when_true.as_int(), when_false.as_int()) {
+                        (ExprKind::Binary(BinaryOp::Less, x, zero), Some(-1), Some(0))
+                        | (ExprKind::Binary(BinaryOp::GreaterEqual, x, zero), Some(0), Some(-1))
+                            if zero.as_int() == Some(0) && x.ty == Type::Int =>
+                        {
+                            Some(x)
+                        }
+                        _ => None,
+                    };
+                    if let Some(x) = sign_of {
+                        let mask = Expr::binary(BinaryOp::ShiftRight, (**x).clone(), Expr::typed_int(31, Type::Int), Type::Int);
+                        return self.expression_with_target(&mask, target);
+                    }
+                }
                 let d = self.result_for(ty, target);
                 // (An arm that is the destination itself: only the other
                 // arm, under the condition that selects it.)
@@ -2673,6 +2689,10 @@ impl Lowerer<'_, '_> {
 
     /// The high half of a constant address, as a memory base.
     fn address_high(&mut self, high: i16) -> Compilation<u32> {
+        // (An address within the low 32 KiB needs no base: `lwz r,d(0)`.)
+        if high == 0 && !self.unoptimized && !toggle("MWCC_PCODE_ZERO_ADDRESS_BASE") {
+            return Ok(0);
+        }
         let value = i64::from(high) << 16;
         if !self.address_bases.contains(&value) {
             self.address_bases.push(value);

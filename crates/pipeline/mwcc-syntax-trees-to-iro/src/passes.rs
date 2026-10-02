@@ -272,6 +272,14 @@ fn narrowing_in(body: &mut [Stmt], return_type: Type, variables: &[Type]) {
     /// `x & m` with `m` within the low N bytes (`char a & 0xf`): x's
     /// promotion from a narrow type at least N bytes wide is dropped.
     fn mask_narrowing(value: &mut Expr) {
+        // (Also the operands of a comparison that is the value.)
+        if let ExprKind::Binary(op, left, right) = &mut value.kind {
+            if op.is_comparison() {
+                mask_narrowing(left);
+                mask_narrowing(right);
+                return;
+            }
+        }
         let ExprKind::Binary(BinaryOp::BitAnd, left, right) = &mut value.kind else { return };
         let mask = right.as_int().filter(|&mask| mask > 0 && mask <= 0xffff);
         let Some(mask) = mask.filter(|_| std::env::var_os("MWCC_IRO_NO_MASK_NARROWING").is_none()) else { return };
@@ -1958,6 +1966,18 @@ fn select(
     if let ExprKind::Unary(UnaryOp::LogicalNot, operand) = &condition.kind {
         return select(function, operand, when_false, when_true, destination);
     }
+    // `x < 0 ? -1 : 0` (and `x >= 0 ? 0 : -1`) is the sign mask `x >> 31`.
+    if let ExprKind::Binary(op @ (BinaryOp::Less | BinaryOp::GreaterEqual), x, zero) = &condition.kind {
+        let arms = (when_true.as_int(), when_false.as_int());
+        let matches = match op {
+            BinaryOp::Less => arms == (Some(-1), Some(0)),
+            _ => arms == (Some(0), Some(-1)),
+        };
+        if matches && zero.as_int() == Some(0) && x.ty == Type::Int && std::env::var_os("MWCC_IRO_NO_SIGN_MASK_SELECT").is_none() {
+            let mask = Expr::binary(BinaryOp::ShiftRight, (**x).clone(), Expr::typed_int(31, Type::Int), Type::Int);
+            return Some(vec![destination.assign(mask)]);
+        }
+    }
     let variables: Vec<Type> = function.variables.iter().map(|variable| variable.ty).collect();
     if let Some(idiom) = sign_idiom(condition, when_true, when_false, &variables) {
         let ty = match &idiom {
@@ -2620,6 +2640,18 @@ fn word_identities(op: BinaryOp, left: &Expr, right: &Expr, ty: Type) -> Option<
             let k = right.as_int()?;
             Some(Expr::binary(BinaryOp::Subtract, Expr::typed_int(i64::from((k as i32).wrapping_neg()), ty), (**a).clone(), ty))
         }
+        // `(x | c) & m` with c covering m is m; `(x & c) | m` with m
+        // covering c is m.
+        (BinaryOp::BitAnd, ExprKind::Binary(BinaryOp::BitOr, x, c), _)
+            if right.as_int().is_some_and(|m| c.as_int().is_some_and(|c| c & m == m)) && speculable(x) =>
+        {
+            Some(Expr::typed_int(right.as_int()?, ty))
+        }
+        (BinaryOp::BitOr, ExprKind::Binary(BinaryOp::BitAnd, x, c), _)
+            if right.as_int().is_some_and(|m| c.as_int().is_some_and(|c| c & m == c)) && speculable(x) =>
+        {
+            Some(Expr::typed_int(right.as_int()?, ty))
+        }
         (BinaryOp::Equal | BinaryOp::NotEqual, ExprKind::Int(_), _) if right.as_int().is_none() => {
             Some(Expr::binary(op, right.clone(), left.clone(), ty))
         }
@@ -2636,7 +2668,8 @@ pub fn bit_tests(body: &mut [Stmt]) {
         let ExprKind::Binary(BinaryOp::BitAnd, x, mask) = &left.kind else { return };
         let (Some(m), Some(v)) = (mask.as_int(), right.as_int()) else { return };
         let m = m as u32;
-        if m != v as u32 || !m.is_power_of_two() || m < 2 || !mwcc_iro::is_general_word(x.ty) || is_narrow(x.ty) {
+        let fits = !is_narrow(x.ty) || m < 1u32 << (8 * width(x.ty));
+        if m != v as u32 || !m.is_power_of_two() || m < 2 || !mwcc_iro::is_general_word(x.ty) || !fits {
             return;
         }
         let k = Expr::typed_int(i64::from(m.trailing_zeros()), Type::Int);

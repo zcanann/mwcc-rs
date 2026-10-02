@@ -49,6 +49,7 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     passes::run(&mut built.function, unit.branch_preserving, unit.reassociates_sums, unit.unrolling);
     if !unit.branch_preserving && std::env::var_os("MWCC_IRO_NO_BIT_TESTS").is_none() {
         passes::bit_tests(&mut built.function.body);
+        passes::narrowing(&mut built.function);
     }
 
     if std::env::var_os("MWCC_IRO_NO_FRAME_BASES").is_none() {
@@ -95,6 +96,7 @@ pub fn build_unoptimized_compile(function: &ast::Function, unit: &Unit<'_>) -> C
     passes::run_unoptimized(&mut built.function);
     if !unit.branch_preserving && std::env::var_os("MWCC_IRO_NO_BIT_TESTS").is_none() {
         passes::bit_tests(&mut built.function.body);
+        passes::narrowing(&mut built.function);
     }
 
     built.returns_through_variable = false;
