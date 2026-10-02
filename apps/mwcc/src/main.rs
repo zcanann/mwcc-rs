@@ -1020,6 +1020,18 @@ fn compile(
             eprintln!("skipped-inline {function:#?}");
         }
     }
+    // A top-level definition the parser could not read leaves the unit
+    // incomplete: only parity keep-going measures the rest.
+    if let Some(reason) = unit.unparsed_declarations.first() {
+        if !parity_keep_going {
+            return Err(Diagnostic::error(reason.clone()));
+        }
+        for (name, reason) in &unit.unparsed_functions {
+            if !unit.functions.iter().any(|function| &function.name == name) {
+                eprintln!("mwcc: parity skipped function '{name}': {reason}");
+            }
+        }
+    }
     let mut machine_functions: Vec<mwcc_machine_code::MachineFunction> =
         Vec::with_capacity(unit.functions.len());
     for (function_index, function) in unit.functions.iter().enumerate() {

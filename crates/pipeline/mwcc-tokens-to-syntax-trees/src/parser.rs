@@ -877,6 +877,8 @@ pub(crate) struct Parser {
     /// Functions defined while `#pragma dont_inline on` was active.
     pub(crate) dont_inline_functions: std::collections::HashSet<String>,
     pub(crate) unparsed_functions: std::collections::HashMap<String, String>,
+    /// Top-level definitions the parser could not read (their errors).
+    pub(crate) unparsed_declarations: Vec<String>,
     /// While initializing a struct ending in a flexible array member: the
     /// image's initialized extent (the array takes any element count).
     pub(crate) flexible_extent: Option<usize>,

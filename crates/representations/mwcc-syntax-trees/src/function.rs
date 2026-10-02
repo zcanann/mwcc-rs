@@ -401,6 +401,9 @@ pub struct TranslationUnit {
     /// Functions whose bodies the parser could not read (name, reason): each
     /// is a placeholder, left uncompiled.
     pub unparsed_functions: std::collections::HashMap<String, String>,
+    /// Top-level definitions the parser could not read (their errors): the
+    /// unit is incomplete.
+    pub unparsed_declarations: Vec<String>,
     /// Locals (function, name) whose initializer substituted an inline call.
     pub function_inline_initialized_locals: std::collections::HashSet<(String, String)>,
     /// Parser-internal names of anonymous 12-byte records used by

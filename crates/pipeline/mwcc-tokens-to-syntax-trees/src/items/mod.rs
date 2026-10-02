@@ -867,20 +867,44 @@ impl Parser {
                         "an explicit C++ template specialization was not lowered: {error}"
                     )));
                 }
+                // (Recoverable: the driver refuses the unit unless parity
+                // keep-going measures the rest of it.)
+                let recover = std::env::var_os("MWCC_STRICT_TOP_LEVEL_PARSE").is_none();
                 if self.item_is_function_definition() {
-                    return Err(error);
+                    if !recover {
+                        return Err(error);
+                    }
+                    if let Some(name) = self.skipped_function_name() {
+                        self.unparsed_functions.insert(name, error.message.clone());
+                    }
+                    self.unparsed_declarations.push(error.message.clone());
+                    self.capture_skipped_typedef();
+                    self.skip_top_level_declaration();
+                    continue;
                 }
                 // An initialized data definition we cannot parse emits `.data` we
                 // would otherwise drop — defer the unit rather than leave a partial
                 // object (a silent DIFF).
                 if self.item_is_initialized_definition() {
-                    return Err(error);
+                    if !recover {
+                        return Err(error);
+                    }
+                    self.unparsed_declarations.push(error.message.clone());
+                    self.capture_skipped_typedef();
+                    self.skip_top_level_declaration();
+                    continue;
                 }
                 // An uninitialized tentative definition (`int **g;` — a multi-level pointer the
                 // scalar-only `Pointee` cannot represent) still emits a `.bss`/`.sbss` symbol in
                 // mwcc; skipping it would silently drop that symbol (a whole-object DIFF), so defer.
                 if self.item_is_uninitialized_definition() {
-                    return Err(error);
+                    if std::env::var_os("MWCC_STRICT_TOP_LEVEL_PARSE").is_some() {
+                        return Err(error);
+                    }
+                    self.unparsed_declarations.push(error.message.clone());
+                    self.capture_skipped_typedef();
+                    self.skip_top_level_declaration();
+                    continue;
                 }
                 if let Some((name, is_static)) = self.inline_asm_function_name() {
                     if is_static {
@@ -1392,6 +1416,7 @@ impl Parser {
         Ok(TranslationUnit {
             dont_inline_functions: std::mem::take(&mut self.dont_inline_functions),
             unparsed_functions: std::mem::take(&mut self.unparsed_functions),
+            unparsed_declarations: std::mem::take(&mut self.unparsed_declarations),
             function_inline_initialized_locals: std::mem::take(&mut self.function_inline_initialized_locals),
             globals,
             functions,
