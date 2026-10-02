@@ -4629,7 +4629,8 @@ impl Lowerer<'_, '_> {
             && !toggle("MWCC_PCODE_PRIVATE_STORES_FORGET");
         if !private {
             self.forget_loaded_globals(false);
-            self.common.retain(|key, _| !key.starts_with('*'));
+            let escaping = self.escaping.clone();
+            self.common.retain(|key, _| !key.starts_with('*') || private_frame_key(key, &escaping));
         } else if let Place::Memory { base, .. } = place {
             // (A private frame object's own known loads change.)
             if let ExprKind::LocalAddress(id) = base.kind {
@@ -4840,9 +4841,12 @@ impl Lowerer<'_, '_> {
         self.float_constants.clear();
         // (A section anchor stays live across the call.)
         let keep_anchors = !toggle("MWCC_PCODE_ANCHOR_AFTER_CALL");
+        let escaping = self.escaping.clone();
         self.common.retain(|key, _| {
             (keep_anchors && key.starts_with("&@..."))
                 || (!key.starts_with('&') && !key.contains('@') && !key.starts_with('*'))
+                // (A frame object no pointer reaches survives the call.)
+                || private_frame_key(key, &escaping)
         });
         let result = self.result_for(ty, target);
         // (A result wanted in the result register stays there.)
@@ -6002,4 +6006,14 @@ fn root_global(base: &Expr) -> Option<String> {
 fn load_key(pointer: VarId, offset: i32, ty: Type) -> String {
     let kind = if is_general_word(ty) && !is_narrow(ty) && !toggle("MWCC_PCODE_TYPED_LOAD_KEYS") { "word".to_owned() } else { format!("{ty:?}") };
     format!("*{pointer}:{offset}:{kind}")
+}
+
+/// A cached load of a frame object whose address never escapes.
+fn private_frame_key(key: &str, escaping: &[bool]) -> bool {
+    !toggle("MWCC_PCODE_FRAME_LOADS_FORGET")
+        && key
+            .strip_prefix("*F")
+            .and_then(|rest| rest.split(':').next())
+            .and_then(|id| id.parse::<usize>().ok())
+            .is_some_and(|id| !escaping[id])
 }

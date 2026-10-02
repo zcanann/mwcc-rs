@@ -128,7 +128,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
     if (function.parameters.len() - floats > ARGUMENT_REGISTERS && !words_on_stack) || floats > ARGUMENT_REGISTERS {
         return Err(unsupported("stack-passed parameters"));
     }
-    let taken = addresses_taken(function);
+    let taken = addresses_taken(function, unit.early_frame);
     // (A stack parameter's address is its incoming slot: not modeled.)
     if words_on_stack
         && function
@@ -1044,6 +1044,17 @@ impl Builder<'_, '_> {
                 let Some(&variable) = self.names.get(name) else {
                     return Err(unsupported(format!("assignment to non-local '{name}'")));
                 };
+                // (A register variable's address stored into a local nothing
+                // reads: the dead store goes with it.)
+                if let Expression::AddressOf { operand } = value {
+                    if let Expression::Variable(target) = operand.as_ref() {
+                        if self.names.get(target).is_some_and(|&id| self.variables[id].frame.is_none())
+                            && std::env::var_os("MWCC_IRO_DEAD_ADDRESSES_TAKEN").is_none()
+                        {
+                            return Ok(Vec::new());
+                        }
+                    }
+                }
                 let ty = self.variables[variable].ty;
                 Stmt::Assign { variable, value: assigned(self.expression(value)?, ty) }
             }
@@ -2372,7 +2383,7 @@ fn displaced(pointer: Expr, offset: i32, ty: Type) -> (Box<Expr>, Option<Box<Exp
 }
 
 /// Names whose address the function takes (`&name`).
-fn addresses_taken(function: &ast::Function) -> std::collections::HashSet<String> {
+fn addresses_taken(function: &ast::Function, early: bool) -> std::collections::HashSet<String> {
     fn expression(e: &Expression, out: &mut std::collections::HashSet<String>) {
         if let Expression::AddressOf { operand } = e {
             if let Expression::Variable(name) = operand.as_ref() {
@@ -2412,9 +2423,20 @@ fn addresses_taken(function: &ast::Function) -> std::collections::HashSet<String
             _ => {}
         }
     }
-    fn statements(body: &[Statement], out: &mut std::collections::HashSet<String>) {
+    // (An address stored only into a local nothing reads is dropped with
+    // it: `REF_track = &track;`.)
+    let listing = format!("{:?}", function.statements);
+    let unread = |name: &str| {
+        !early
+            && std::env::var_os("MWCC_IRO_DEAD_ADDRESSES_TAKEN").is_none()
+            && function.locals.iter().any(|local| local.name == name && local.initializer.is_none() && !local.is_static)
+            && !listing.contains(&format!("Variable({name:?})"))
+    };
+    fn statements(body: &[Statement], out: &mut std::collections::HashSet<String>, unread: &dyn Fn(&str) -> bool) {
         for statement in body {
             match statement {
+                Statement::Assign { name, value: Expression::AddressOf { operand } }
+                    if matches!(operand.as_ref(), Expression::Variable(_)) && unread(name) => {}
                 Statement::Assign { value, .. } => expression(value, out),
                 Statement::Store { target, value } => {
                     expression(target, out);
@@ -2423,22 +2445,22 @@ fn addresses_taken(function: &ast::Function) -> std::collections::HashSet<String
                 Statement::Expression(e) => expression(e, out),
                 Statement::If { condition, then_body, else_body } => {
                     expression(condition, out);
-                    statements(then_body, out);
-                    statements(else_body, out);
+                    statements(then_body, out, unread);
+                    statements(else_body, out, unread);
                 }
                 Statement::Return(Some(e)) => expression(e, out),
                 Statement::Loop { initializer, condition, step, body, .. } => {
                     for e in [initializer, condition, step].into_iter().flatten() {
                         expression(e, out);
                     }
-                    statements(body, out);
+                    statements(body, out, unread);
                 }
                 Statement::Switch { scrutinee, arms, default } => {
                     expression(scrutinee, out);
                     for body in arms.iter().map(|arm| &arm.body).chain(default.iter()) {
                         match body {
                             ast::ArmBody::Return(value) => expression(value, out),
-                            ast::ArmBody::Statements(body) => statements(body, out),
+                            ast::ArmBody::Statements(body) => statements(body, out, unread),
                         }
                     }
                 }
@@ -2447,7 +2469,7 @@ fn addresses_taken(function: &ast::Function) -> std::collections::HashSet<String
         }
     }
     let mut out = std::collections::HashSet::new();
-    statements(&function.statements, &mut out);
+    statements(&function.statements, &mut out, &unread);
     for guard in &function.guards {
         expression(&guard.condition, &mut out);
         expression(&guard.value, &mut out);
