@@ -1223,7 +1223,9 @@ impl Parser {
                                 // recovery active for the whole C++ translation
                                 // unit so a C-linkage function can call a prior
                                 // C++ helper by its mangled symbol.
-                                let name = if self.cplusplus || self.default_cplusplus {
+                                // (A C unit's function declared under
+                                // `#pragma cplusplus on` has C++ linkage.)
+                                let name = if self.cplusplus || self.default_cplusplus || self.cxx_free_functions.contains_key(&name) {
                                     match self.resolve_cxx_data_object(&name) {
                                         Some(data_object) => data_object,
                                         None => match self
