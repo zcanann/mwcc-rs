@@ -2795,8 +2795,24 @@ impl Lowerer<'_, '_> {
             {
                 true
             } else if self.unoptimized && !toggle("MWCC_PCODE_O0_FLOAT_REORDER") {
-                // (-O0 otherwise keeps source order.)
-                false
+                // (-O0 otherwise keeps source order, except that a declared
+                // variable goes before a computed operand.)
+                // (Not after one computed from a single variable and constants.)
+                let single = |e: &Expr| match &e.kind {
+                    ExprKind::Binary(_, x, y) => {
+                        let leafish = |v: &Expr| v.as_var().is_some() || matches!(v.kind, ExprKind::Float(_) | ExprKind::Int(_));
+                        leafish(x) && leafish(y) && (x.as_var().is_none() || y.as_var().is_none())
+                    }
+                    _ => false,
+                };
+                matches!(left.kind, ExprKind::Binary(..))
+                    && !single(left)
+                    && right.as_var().is_some_and(|id| {
+                        self.function.variables[id].kind != VariableKind::Temporary
+                            && !self.function.variables[id].name.starts_with('@')
+                            && self.homes[id].is_none()
+                    })
+                    && !toggle("MWCC_PCODE_O0_FLOAT_SOURCE_ORDER")
             } else if !toggle("MWCC_PCODE_FLOAT_OLD_ORDER") {
                 // Source order, except that a variable or loaded value goes
                 // before an arithmetic result.
@@ -3852,8 +3868,11 @@ impl Lowerer<'_, '_> {
             // (-O0 puts the leaf first after a product.)
             && (!one_register(left)
                 || (self.unoptimized
-                    && matches!(&unpromoted(left).kind, ExprKind::Binary(BinaryOp::Multiply, _, k)
-                        if !k.as_int().is_some_and(|k| k > 0 && (k as u64).is_power_of_two()))
+                    && matches!(unpromoted(left).kind, ExprKind::Binary(BinaryOp::Multiply, ..))
+                    // (A declared variable, not a compiler temporary.)
+                    && unpromoted(right).as_var().is_some_and(|id| {
+                        self.function.variables[id].kind != VariableKind::Temporary && !self.function.variables[id].name.starts_with('@')
+                    })
                     && !toggle("MWCC_PCODE_O0_ONE_REGISTER_ORDER"))
                 || std::env::var_os("MWCC_PCODE_LEAF_FIRST_ALWAYS").is_some());
         // (A call's result goes second in a commutative operation.)
