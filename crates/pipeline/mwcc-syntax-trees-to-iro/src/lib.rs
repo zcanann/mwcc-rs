@@ -237,7 +237,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
     // register itself becomes a hidden parameter.
     let mut parameter_homes: Vec<(VarId, VarId)> = Vec::new();
     if function.parameters.iter().any(|parameter| taken.contains(&parameter.name)) {
-        if unit.unoptimized || unit.early_frame {
+        if unit.unoptimized || (unit.early_frame && std::env::var_os("MWCC_IRO_NO_EARLY_PARAMETER_HOMES").is_some()) {
             return Err(unsupported("address of a parameter"));
         }
         for (index, parameter) in function.parameters.iter().enumerate().rev() {

@@ -594,6 +594,8 @@ impl Lowerer<'_, '_> {
         let early = self.unit.early_frame;
         // (Early frames: each register parameter's slot, in order, after
         // the outgoing argument area.)
+        // (A parameter whose address is taken: its home is that slot.)
+        let mut parameter_slots: HashMap<String, u32> = HashMap::new();
         if early {
             let mut words = 0;
             for id in 0..function.parameter_count {
@@ -607,7 +609,11 @@ impl Lowerer<'_, '_> {
                     let width = width(function.variables[id].ty);
                     (width, width)
                 });
-                self.frame_cursor = self.frame_cursor.div_ceil(align.max(1)) * align.max(1) + size;
+                let offset = self.frame_cursor.div_ceil(align.max(1)) * align.max(1);
+                if let Some(name) = function.variables[id].name.strip_suffix("$in") {
+                    parameter_slots.insert(name.to_owned(), offset);
+                }
+                self.frame_cursor = offset + size;
             }
         }
         // Frame objects take slots by size class (the size rounded up to a
@@ -635,6 +641,12 @@ impl Lowerer<'_, '_> {
                 }
                 // An unreferenced frame object takes no slot.
                 Some(_) if references(&function.body, id) == 0 => {}
+                Some((size, _)) if early && parameter_slots.contains_key(&function.variables[id].name) && !toggle("MWCC_PCODE_EARLY_NEW_HOMES") => {
+                    let start = parameter_slots[&function.variables[id].name] as i16;
+                    self.frame_offsets[id] = Some(start);
+                    self.pcode.frame_objects.push((start, start + size as i16));
+                    self.pcode.variable_frame_objects += 1;
+                }
                 // Frame objects take slots in reverse declaration order.
                 Some((size, align)) => {
                     let offset = self.frame_cursor.div_ceil(align.max(1)) * align.max(1);
@@ -961,6 +973,10 @@ impl Lowerer<'_, '_> {
             self.pcode.frame_local_bytes = self.pcode.frame_local_bytes.max(used);
         } else {
             self.pcode.frame_local_bytes = (self.frame_cursor - 8) as i16;
+            // (The local region rounds up to 8 bytes.)
+            if !toggle("MWCC_PCODE_UNROUNDED_LOCALS") {
+                self.pcode.frame_local_bytes = (self.pcode.frame_local_bytes + 7) / 8 * 8;
+            }
             // (A reservation alone needs no frame.)
             // (Unless arguments pass through the frame: the outgoing area,
             // or incoming stack arguments.)

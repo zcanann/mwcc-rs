@@ -356,6 +356,15 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
             }
             later_in_order = Some(index);
         }
+        // (Prescheduling: the parameters' entry copies precede the frame
+        // addresses.)
+        if virtual_registers && instruction.flags.entry_copy && std::env::var_os("MWCC_SCHED_FREE_ENTRY_COPIES").is_none() {
+            for &later in &later_all {
+                if matches!(instructions[later].instruction, Instruction::AddImmediate { a: 1, .. }) {
+                    edges.push((index, later, 0));
+                }
+            }
+        }
         let (uses, defs) = operand_keys(instruction);
         for key in &uses {
             for &later in later_defs.get(key).into_iter().flatten() {
