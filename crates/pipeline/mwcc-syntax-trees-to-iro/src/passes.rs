@@ -814,6 +814,91 @@ pub fn unindexed_absolute(body: &mut [Stmt], absolute: &dyn Fn(&str) -> bool) {
     for_each_expression(body, &mut |e| expression(e, &sum));
 }
 
+/// A pointer variable assigned only a frame object's address (`p = &v`,
+/// an inlined call's `&local` argument): loads and stores through it
+/// address the object directly. The variable keeps its other reads.
+pub fn fold_frame_bases(function: &mut Function) {
+    fn assignments(body: &[Stmt], out: &mut Vec<(VarId, Option<VarId>)>) {
+        for statement in body {
+            match statement {
+                Stmt::Assign { variable, value } => out.push((
+                    *variable,
+                    match value.kind {
+                        ExprKind::LocalAddress(object) => Some(object),
+                        _ => None,
+                    },
+                )),
+                Stmt::If { then_body, else_body, .. } => {
+                    assignments(then_body, out);
+                    assignments(else_body, out);
+                }
+                Stmt::Loop { body, step, effects, .. } => {
+                    assignments(body, out);
+                    assignments(step, out);
+                    assignments(effects, out);
+                }
+                Stmt::Counted { body, .. } => assignments(body, out),
+                Stmt::Switch { arms, .. } => arms.iter().for_each(|arm| assignments(arm, out)),
+                _ => {}
+            }
+        }
+    }
+    let mut assigned = Vec::new();
+    assignments(&function.body, &mut assigned);
+    let folds: Vec<(VarId, VarId)> = assigned
+        .iter()
+        .filter_map(|&(variable, object)| Some((variable, object?)))
+        .filter(|&(variable, _)| assigned.iter().filter(|&&(other, _)| other == variable).count() == 1)
+        .filter(|&(variable, _)| {
+            let local = &function.variables[variable];
+            local.kind != VariableKind::Parameter && local.frame.is_none() && !local.volatile
+        })
+        .collect();
+    if folds.is_empty() {
+        return;
+    }
+    fn rebase(base: &mut Expr, folds: &[(VarId, VarId)]) {
+        match &mut base.kind {
+            ExprKind::Var(id) => {
+                if let Some(&(_, object)) = folds.iter().find(|(variable, _)| variable == id) {
+                    base.kind = ExprKind::LocalAddress(object);
+                }
+            }
+            ExprKind::Binary(BinaryOp::Add | BinaryOp::Subtract, left, _) => rebase(left, folds),
+            _ => {}
+        }
+    }
+    fn expression(e: &mut Expr, folds: &[(VarId, VarId)]) {
+        if let ExprKind::Load { base, .. } = &mut e.kind {
+            rebase(base, folds);
+        }
+        children(e, &mut |child| expression(child, folds));
+    }
+    fn statements(body: &mut [Stmt], folds: &[(VarId, VarId)]) {
+        for statement in body.iter_mut() {
+            if let Stmt::Store { place: mwcc_iro::Place::Memory { base, .. }, .. } = statement {
+                rebase(base, folds);
+            }
+            match statement {
+                Stmt::If { then_body, else_body, .. } => {
+                    statements(then_body, folds);
+                    statements(else_body, folds);
+                }
+                Stmt::Loop { body, step, effects, .. } => {
+                    statements(body, folds);
+                    statements(step, folds);
+                    statements(effects, folds);
+                }
+                Stmt::Counted { body, .. } => statements(body, folds),
+                Stmt::Switch { arms, .. } => arms.iter_mut().for_each(|arm| statements(arm, folds)),
+                _ => {}
+            }
+        }
+    }
+    statements(&mut function.body, &folds);
+    for_each_expression(&mut function.body, &mut |e| expression(e, &folds));
+}
+
 /// Replace every read of `variable` with `value` (a constant argument of
 /// an inlined call).
 pub fn substitute(body: &mut [Stmt], variable: VarId, value: &Expr) {

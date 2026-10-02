@@ -44,6 +44,9 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
         passes::scalarize(&mut built.function, unit.keeps_struct_stores);
     }
     passes::run(&mut built.function, unit.branch_preserving, unit.reassociates_sums, unit.unrolling);
+    if std::env::var_os("MWCC_IRO_NO_FRAME_BASES").is_none() {
+        passes::fold_frame_bases(&mut built.function);
+    }
     // (Without an explicit speed goal, -O3/-O4 count in CTR unrolled.)
     if unit.strength_reduction && !unit.branch_preserving && std::env::var_os("MWCC_IRO_NO_PARTIAL_UNROLL").is_none() {
         unroll::unroll_partially(&mut built.function, unit.unrolling);

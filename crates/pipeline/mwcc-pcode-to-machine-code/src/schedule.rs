@@ -60,6 +60,10 @@ enum Memory {
 enum ObjectKey {
     Symbol(String),
     Frame(i16),
+    /// A direct `r1`-based access inside a frame object: (object start,
+    /// access offset, access bytes). Accesses to disjoint bytes of one
+    /// object are independent.
+    FrameBytes(i16, i16, i16),
 }
 
 type ObjectKeyRef = ObjectKey;
@@ -210,7 +214,15 @@ fn memory_of(instruction: &PInstr) -> Memory {
             let start = FRAME_OBJECTS.with(|objects| {
                 objects.borrow().iter().find(|&&(start, end)| start <= offset && offset < end).map(|&(start, _)| start)
             });
-            ObjectKey::Frame(start.unwrap_or(offset))
+            match start {
+                Some(start)
+                    if std::env::var_os("MWCC_SCHED_FRAME_OBJECT_WHOLE").is_none()
+                        && STRUCT_FRAME_OBJECTS.with(|objects| objects.borrow().contains(&start)) =>
+                {
+                    ObjectKey::FrameBytes(start, offset, access_bytes(&name))
+                }
+                _ => ObjectKey::Frame(start.unwrap_or(offset)),
+            }
         }),
         _ => None,
     };
@@ -224,6 +236,17 @@ fn memory_of(instruction: &PInstr) -> Memory {
 /// Whether two accesses may touch the same memory: a named object only
 /// itself; a pointer access anything but a private frame object.
 fn may_alias(object: &Option<ObjectKey>, other: &Option<ObjectKey>) -> bool {
+    // (Byte ranges of one frame object: overlapping ones alias.)
+    if let (Some(ObjectKey::FrameBytes(start, offset, bytes)), Some(ObjectKey::FrameBytes(other_start, other_offset, other_bytes))) =
+        (object, other)
+    {
+        if alias_all() {
+            return true;
+        }
+        return start == other_start && offset < &(other_offset + other_bytes) && other_offset < &(offset + bytes);
+    }
+    let object = &object.clone().map(ObjectKey::whole);
+    let other = &other.clone().map(ObjectKey::whole);
     if alias_all() || object == other {
         return true;
     }
@@ -238,6 +261,32 @@ fn may_alias(object: &Option<ObjectKey>, other: &Option<ObjectKey>) -> bool {
         return false;
     }
     object.is_none() || other.is_none()
+}
+
+impl ObjectKey {
+    /// The object an access belongs to.
+    fn whole(self) -> ObjectKey {
+        match self {
+            ObjectKey::FrameBytes(start, ..) => ObjectKey::Frame(start),
+            other => other,
+        }
+    }
+}
+
+/// The bytes a load or store touches, from its debug form.
+fn access_bytes(debug: &str) -> i16 {
+    let head = debug.split([' ', '{', '(']).next().unwrap_or("");
+    if head.contains("Multiple") {
+        i16::MAX / 2
+    } else if head.contains("Byte") {
+        1
+    } else if head.contains("Halfword") {
+        2
+    } else if head.contains("Double") || head.contains("PairedSingle") {
+        8
+    } else {
+        4
+    }
 }
 
 /// The displacement of an `r1`-based D-form access, from its debug form.
@@ -547,6 +596,8 @@ thread_local! {
     static FINAL_PASS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// The machine model has a second integer unit (post-1.2.5 builds).
     pub(crate) static TWO_INTEGER_UNITS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Frame objects that are structs: their fields are independent.
+    pub(crate) static STRUCT_FRAME_OBJECTS: std::cell::RefCell<Vec<i16>> = const { std::cell::RefCell::new(Vec::new()) };
     /// Frame objects no pointer can reach.
     pub(crate) static PRIVATE_FRAME_OBJECTS: std::cell::RefCell<Vec<i16>> = const { std::cell::RefCell::new(Vec::new()) };
     /// The function's frame objects, `[start, end)` from r1.

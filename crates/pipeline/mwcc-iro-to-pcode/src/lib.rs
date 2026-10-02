@@ -99,6 +99,7 @@ pub fn lower(
         frame_cursor: 8,
         reserved_end: 0,
         escaped_frame_objects: Vec::new(),
+        escaping: escaping_frame_objects(&function.body, function.variables.len()),
         source_labels: HashMap::new(),
     };
     lowerer.lower_function(returns_through_variable)?;
@@ -201,6 +202,9 @@ struct Lowerer<'a, 'u> {
     reserved_end: u32,
     /// Frame objects whose address the code computes.
     escaped_frame_objects: Vec<i16>,
+    /// Variables whose address is used other than to load or store
+    /// directly (by variable).
+    escaping: Vec<bool>,
     /// Source labels (`goto` targets) by name.
     source_labels: HashMap<String, Label>,
 }
@@ -524,6 +528,10 @@ impl Lowerer<'_, '_> {
                     self.frame_offsets[id] = Some(start);
                     self.pcode.frame_objects.push((start, start + size as i16));
                     self.pcode.variable_frame_objects += 1;
+                    // (A struct, not an array of them.)
+                    if matches!(function.variables[id].ty, Type::Struct { size: struct_size, .. } if struct_size == size) {
+                        self.pcode.struct_frame_objects.push(start);
+                    }
                 }
                 None => self.registers[id] = Some(self.fresh(function.variables[id].ty)),
             }
@@ -2463,6 +2471,11 @@ impl Lowerer<'_, '_> {
             } else if self.unoptimized && !toggle("MWCC_PCODE_O0_FLOAT_REORDER") {
                 // (-O0 otherwise keeps source order.)
                 false
+            } else if !toggle("MWCC_PCODE_FLOAT_OLD_ORDER") {
+                // Source order, except that a variable or loaded value goes
+                // before an arithmetic result.
+                let simple = |e: &Expr| e.as_var().is_some() || matches!(e.kind, ExprKind::Load { .. } | ExprKind::Global(_));
+                matches!(left.kind, ExprKind::Binary(..)) && simple(right)
             } else if refined && right.as_var().is_some() && matches!(left.kind, ExprKind::Binary(..)) {
                 true
             } else if refined && left.as_var().is_some() && !toggle("MWCC_PCODE_FLOAT_COMPUTED_FIRST") {
@@ -4197,8 +4210,14 @@ impl Lowerer<'_, '_> {
         instruction.relocation = relocation;
         instruction.displacement_symbol = self.store_displacement.take();
         self.emit(instruction);
-        self.forget_loaded_globals(false);
-        self.common.retain(|key, _| !key.starts_with('*'));
+        // (A store to a frame object no pointer reaches keeps the loads.)
+        let private = matches!(place, Place::Memory { base, .. }
+            if matches!(base.kind, ExprKind::LocalAddress(id) if !self.escaping[id]))
+            && !toggle("MWCC_PCODE_PRIVATE_STORES_FORGET");
+        if !private {
+            self.forget_loaded_globals(false);
+            self.common.retain(|key, _| !key.starts_with('*'));
+        }
         // A stored word-sized global's value is still in `source`.
         if let Place::Global(name) = place {
             let global = self.unit.globals[name];
@@ -5242,4 +5261,95 @@ fn load_destination(instruction: &Instruction) -> Option<u32> {
         | LoadFloatDoubleIndexed { d, .. } => Some(d),
         _ => None,
     }
+}
+
+/// Which variables' addresses escape: used other than as the base of a load
+/// or store.
+fn escaping_frame_objects(body: &[Stmt], count: usize) -> Vec<bool> {
+    fn expression(e: &Expr, out: &mut [bool]) {
+        match &e.kind {
+            ExprKind::LocalAddress(id) => out[*id] = true,
+            ExprKind::Load { base, index, .. } => {
+                if !matches!(base.kind, ExprKind::LocalAddress(_)) {
+                    expression(base, out);
+                }
+                if let Some(index) = index {
+                    expression(index, out);
+                }
+            }
+            ExprKind::Unary(_, operand) | ExprKind::Convert(operand) => expression(operand, out),
+            ExprKind::Binary(_, left, right) => {
+                expression(left, out);
+                expression(right, out);
+            }
+            ExprKind::Select { condition, when_true, when_false } => {
+                expression(condition, out);
+                expression(when_true, out);
+                expression(when_false, out);
+            }
+            ExprKind::Call { arguments, .. } => arguments.iter().for_each(|argument| expression(argument, out)),
+            ExprKind::Idiom(Idiom::Absolute(value) | Idiom::Unary(_, value)) => expression(value, out),
+            ExprKind::Idiom(Idiom::Insert { base, value, .. }) => {
+                expression(base, out);
+                expression(value, out);
+            }
+            ExprKind::Idiom(Idiom::Masked { tested, value, .. }) => {
+                expression(tested, out);
+                expression(value, out);
+            }
+            _ => {}
+        }
+    }
+    fn statements(body: &[Stmt], out: &mut [bool]) {
+        for statement in body {
+            match statement {
+                Stmt::Assign { value, .. } | Stmt::Eval(value) | Stmt::SetReturn(value) => expression(value, out),
+                Stmt::Return(value) => {
+                    if let Some(value) = value {
+                        expression(value, out);
+                    }
+                }
+                Stmt::Store { place, value, .. } => {
+                    if let Place::Memory { base, index, .. } = place {
+                        if !matches!(base.kind, ExprKind::LocalAddress(_)) {
+                            expression(base, out);
+                        }
+                        if let Some(index) = index {
+                            expression(index, out);
+                        }
+                    }
+                    expression(value, out);
+                }
+                Stmt::If { condition, then_body, else_body } => {
+                    expression(condition, out);
+                    statements(then_body, out);
+                    statements(else_body, out);
+                }
+                Stmt::Loop { condition, body, step, effects, .. } => {
+                    if let Some(condition) = condition {
+                        expression(condition, out);
+                    }
+                    statements(body, out);
+                    statements(step, out);
+                    statements(effects, out);
+                }
+                Stmt::Counted { count, guard, body } => {
+                    expression(count, out);
+                    if let Some(guard) = guard {
+                        expression(guard, out);
+                    }
+                    statements(body, out);
+                }
+                Stmt::Switch { value, arms, .. } => {
+                    expression(value, out);
+                    arms.iter().for_each(|arm| statements(arm, out));
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = vec![true; count];
+    out.iter_mut().for_each(|escaped| *escaped = false);
+    statements(body, &mut out);
+    out
 }

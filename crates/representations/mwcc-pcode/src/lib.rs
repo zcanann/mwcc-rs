@@ -255,6 +255,9 @@ pub struct PCodeFunction {
     /// Starts of frame objects whose address never escapes: pointer-based
     /// accesses cannot reach them.
     pub private_frame_objects: Vec<i16>,
+    /// Frame objects that are structs (by start): their fields are
+    /// independent memory.
+    pub struct_frame_objects: Vec<i16>,
     /// Frame objects that are variables (not conversion slots).
     pub variable_frame_objects: usize,
     /// General-register parameters the body refers to.
@@ -292,6 +295,7 @@ impl PCodeFunction {
             reserved_local_bytes: 0,
             frame_objects: Vec::new(),
             private_frame_objects: Vec::new(),
+            struct_frame_objects: Vec::new(),
             variable_frame_objects: 0,
             referenced_general_parameters: 0,
             jump_tables: Vec::new(),

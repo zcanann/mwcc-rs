@@ -55,6 +55,7 @@ pub fn finish(
     schedule::TWO_INTEGER_UNITS.with(|flag| flag.set(options.two_integer_units));
     schedule::FRAME_OBJECTS.with(|objects| *objects.borrow_mut() = pcode.frame_objects.clone());
     schedule::PRIVATE_FRAME_OBJECTS.with(|objects| *objects.borrow_mut() = pcode.private_frame_objects.clone());
+    schedule::STRUCT_FRAME_OBJECTS.with(|objects| *objects.borrow_mut() = pcode.struct_frame_objects.clone());
     dump(&pcode, "INITIAL CODE");
     if !options.unoptimized && !toggle("MWCC_PCODE_NO_WEBS") {
         split_webs(&mut pcode);
