@@ -2820,9 +2820,14 @@ impl Lowerer<'_, '_> {
                     && !toggle("MWCC_PCODE_O0_FLOAT_SOURCE_ORDER")
             } else if !toggle("MWCC_PCODE_FLOAT_OLD_ORDER") {
                 // Source order, except that a variable or loaded value goes
-                // before an arithmetic result.
+                // before an arithmetic result, and of two results the one
+                // needing fewer registers goes first.
                 let simple = |e: &Expr| e.as_var().is_some() || matches!(e.kind, ExprKind::Load { .. } | ExprKind::Global(_));
-                matches!(left.kind, ExprKind::Binary(..)) && simple(right)
+                (matches!(left.kind, ExprKind::Binary(..)) && simple(right))
+                    || (matches!(left.kind, ExprKind::Binary(..))
+                        && matches!(right.kind, ExprKind::Binary(..))
+                        && register_need(left) > register_need(right)
+                        && !toggle("MWCC_PCODE_NO_FLOAT_NEED_ORDER"))
             } else if refined && right.as_var().is_some() && matches!(left.kind, ExprKind::Binary(..)) {
                 true
             } else if refined && left.as_var().is_some() && !toggle("MWCC_PCODE_FLOAT_COMPUTED_FIRST") {
@@ -6107,4 +6112,16 @@ fn private_frame_key(key: &str, escaping: &[bool]) -> bool {
             .and_then(|rest| rest.split(':').next())
             .and_then(|id| id.parse::<usize>().ok())
             .is_some_and(|id| !escaping[id])
+}
+
+/// Registers an expression tree needs (Ershov number; leaves need none).
+fn register_need(e: &Expr) -> u32 {
+    match &e.kind {
+        ExprKind::Binary(_, left, right) => {
+            let (a, b) = (register_need(left), register_need(right));
+            if a == b { a + 1 } else { a.max(b) }
+        }
+        ExprKind::Unary(_, operand) | ExprKind::Convert(operand) => register_need(operand).max(1),
+        _ => 0,
+    }
 }
