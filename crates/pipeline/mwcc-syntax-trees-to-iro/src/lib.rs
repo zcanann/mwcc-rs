@@ -83,6 +83,11 @@ pub fn build_unoptimized_compile(function: &ast::Function, unit: &Unit<'_>) -> C
 /// Build the IR without running the IRO passes.
 pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     if std::env::var("MWCC_SYNTAX_DUMP").is_ok_and(|name| name == function.name) {
+        for local in &function.locals {
+            if let Some(initializer) = &local.initializer {
+                eprintln!("local {} = {:#?}", local.name, initializer);
+            }
+        }
         eprintln!("{:#?}", function.statements);
         eprintln!("return {:#?}", function.return_expression);
     }

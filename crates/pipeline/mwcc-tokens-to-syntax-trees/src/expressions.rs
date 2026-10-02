@@ -2192,6 +2192,27 @@ impl Parser {
                                 index_stride: array_stride,
                             }
                         }
+                        // An array of structs used as a value decays to its
+                        // address (a subscript or member access reads it).
+                        None if array_bytes.is_some()
+                            && matches!(member_type, Type::Struct { .. })
+                            && !matches!(self.peek(), Token::BracketOpen | Token::Dot | Token::Arrow)
+                            && std::env::var_os("MWCC_PARSE_NO_STRUCT_ARRAY_DECAY").is_none() =>
+                        {
+                            let decayed = Expression::AddressOf {
+                                operand: Box::new(Expression::Member {
+                                    base: Box::new(expression),
+                                    offset,
+                                    member_type,
+                                    index_stride,
+                                }),
+                            };
+                            // (`sizeof` of it is the whole array.)
+                            if let Some(bytes) = array_bytes {
+                                self.last_global_array_extent = Some((decayed.clone(), u32::from(bytes)));
+                            }
+                            decayed
+                        }
                         None => Expression::Member {
                             base: Box::new(expression),
                             offset,
@@ -2853,6 +2874,13 @@ fn same_array_extent_expression(left: &Expression, right: &Expression) -> bool {
                 right: br,
             },
         ) => a == b && same_array_extent_expression(al, bl) && same_array_extent_expression(ar, br),
+        (
+            Expression::Member { base: a, offset: i, .. },
+            Expression::Member { base: b, offset: j, .. },
+        ) => i == j && same_array_extent_expression(a, b),
+        (Expression::Dereference { pointer: a }, Expression::Dereference { pointer: b }) => {
+            same_array_extent_expression(a, b)
+        }
         _ => false,
     }
 }
