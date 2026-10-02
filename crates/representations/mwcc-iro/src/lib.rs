@@ -212,7 +212,8 @@ pub enum Place {
 pub enum Stmt {
     Assign { variable: VarId, value: Expr },
     /// Store `value`, of type `ty` (the stored width).
-    Store { place: Place, ty: Type, value: Expr },
+    /// `compound`: from `x op= v` (not an explicitly spelled `x = x op v`).
+    Store { place: Place, ty: Type, value: Expr, compound: bool },
     /// An expression evaluated for its effect (a call).
     Eval(Expr),
     If { condition: Expr, then_body: Vec<Stmt>, else_body: Vec<Stmt> },
@@ -598,7 +599,7 @@ impl Function {
             for statement in body {
                 match statement {
                     Stmt::Assign { variable, value } => out.push_str(&format!("{pad}v{variable} = {value}\n")),
-                    Stmt::Store { place, ty, value } => {
+                    Stmt::Store { place, ty, value, .. } => {
                         out.push_str(&format!("{pad}store.{ty:?} {place:?} = {value}\n"))
                     }
                     Stmt::Eval(value) => out.push_str(&format!("{pad}{value}\n")),

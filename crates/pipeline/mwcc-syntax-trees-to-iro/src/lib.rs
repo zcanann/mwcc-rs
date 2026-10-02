@@ -307,6 +307,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
             place: Place::Memory { base: Box::new(builder.local_address(home)), index: None, offset: 0 },
             ty,
             value: Expr { kind: ExprKind::Var(incoming), ty },
+            compound: false,
         });
     }
     let mut images: Vec<Vec<u8>> = Vec::new();
@@ -333,6 +334,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
                 place: Place::Memory { base: Box::new(builder.local_address(variable)), index: None, offset: 0 },
                 ty,
                 value: Expr { kind: ExprKind::Load { base: Box::new(source), index: None, offset: 0 }, ty },
+                compound: false,
             });
             continue;
         }
@@ -380,6 +382,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
                     place: Place::Memory { base: Box::new(builder.local_address(variable)), index: None, offset: 0 },
                     ty: local.declared_type,
                     value,
+                    compound: false,
                 },
                 Some(_) => return Err(unsupported("an initialized frame aggregate")),
                 None => Stmt::Assign { variable, value },
@@ -777,7 +780,7 @@ impl Builder<'_, '_> {
             return Err(unsupported("bit-field store of this value"));
         }
         if shift == 0 && width == bits {
-            return Ok(vec![Stmt::Store { place, ty, value: assigned(value, ty) }]);
+            return Ok(vec![Stmt::Store { place, ty, value: assigned(value, ty), compound: false }]);
         }
         let old = self.expression(storage)?;
         let begin = 31 - (shift + width - 1);
@@ -786,7 +789,7 @@ impl Builder<'_, '_> {
             kind: ExprKind::Idiom(mwcc_iro::Idiom::Insert { base: Box::new(old), value: Box::new(value), shift, begin, end }),
             ty: Type::Int,
         };
-        Ok(vec![Stmt::Store { place, ty, value: inserted }])
+        Ok(vec![Stmt::Store { place, ty, value: inserted, compound: false }])
     }
 
     /// `target = value` as a statement.
@@ -805,9 +808,9 @@ impl Builder<'_, '_> {
         if matches!(ty, Type::Struct { .. }) && std::env::var_os("MWCC_IRO_NO_STRUCT_COPY").is_none() {
             let source = self.address_of(value)?;
             let value = Expr { kind: ExprKind::Load { base: Box::new(source), index: None, offset: 0 }, ty };
-            return Ok(vec![Stmt::Store { place, ty, value }]);
+            return Ok(vec![Stmt::Store { place, ty, value, compound: false }]);
         }
-        Ok(vec![Stmt::Store { place, ty, value: assigned(self.expression(value)?, ty) }])
+        Ok(vec![Stmt::Store { place, ty, value: assigned(self.expression(value)?, ty), compound: matches!(value, Expression::IndexedUpdateValue { .. }) }])
     }
 
     /// A statement, preceded by the assignments hoisted out of its
@@ -878,7 +881,7 @@ impl Builder<'_, '_> {
         let pointer_type = Type::StructPointer { element_size: size };
         let copy = Expr { kind: ExprKind::LocalAddress(id), ty: pointer_type };
         let value = Expr { kind: ExprKind::Load { base: Box::new(source), index: None, offset: 0 }, ty };
-        let store = Stmt::Store { place: Place::Memory { base: Box::new(copy.clone()), index: None, offset: 0 }, ty, value };
+        let store = Stmt::Store { place: Place::Memory { base: Box::new(copy.clone()), index: None, offset: 0 }, ty, value, compound: false };
         self.pending.push(store);
         if !self.unit.unoptimized {
             return Ok(copy);
@@ -932,13 +935,13 @@ impl Builder<'_, '_> {
             let temporary = self.temporary(raw);
             self.pending.push(Stmt::Assign { variable: temporary, value });
             let read = Expr { kind: ExprKind::Var(temporary), ty: raw };
-            self.pending.push(Stmt::Store { place, ty, value: read.clone() });
+            self.pending.push(Stmt::Store { place, ty, value: read.clone(), compound: false });
             return Ok(Expr { kind: ExprKind::Convert(Box::new(read)), ty });
         }
         let value = assigned(value, ty);
         let temporary = self.temporary(ty);
         self.pending.push(Stmt::Assign { variable: temporary, value });
-        self.pending.push(Stmt::Store { place, ty, value: Expr { kind: ExprKind::Var(temporary), ty } });
+        self.pending.push(Stmt::Store { place, ty, value: Expr { kind: ExprKind::Var(temporary), ty }, compound: false });
         Ok(Expr { kind: ExprKind::Var(temporary), ty })
     }
 
@@ -1609,7 +1612,7 @@ impl Builder<'_, '_> {
                 } else {
                     Expr::binary(op, promoted(current.clone()), Expr::int(1), promote(ty))
                 };
-                self.pending.push(Stmt::Store { place, ty: stored, value: assigned(stepped, stored) });
+                self.pending.push(Stmt::Store { place, ty: stored, value: assigned(stepped, stored), compound: true });
                 current
             }
             Expression::PostStep { target, operator, pointer_link: None }

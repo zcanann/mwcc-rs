@@ -90,6 +90,7 @@ pub fn lower(
         contract,
         float_constants: HashMap::new(),
         loop_constants: Vec::new(),
+        compound_store: false,
         address_bases: Vec::new(),
         frame_offsets: vec![None; function.variables.len()],
         anchored: anchored_objects(function, unit),
@@ -191,6 +192,8 @@ struct Lowerer<'a, 'u> {
     /// Constants loaded before the enclosing loops (integer and floating),
     /// available throughout them.
     loop_constants: Vec<(Vec<(i64, u32)>, Vec<((u64, u8), u32)>)>,
+    /// Lowering the store of a compound update.
+    compound_store: bool,
     /// Constants loaded as the high half of a constant memory address.
     address_bases: Vec<i64>,
     /// r1 offset of each frame variable.
@@ -1424,8 +1427,13 @@ impl Lowerer<'_, '_> {
                 ExprKind::Int(_) | ExprKind::Var(_) => Ok(()),
                 _ => Err(unsupported("expression statement")),
             },
-            Stmt::Store { place, ty, value } if is_wide(*ty) => self.store_wide(place, value),
-            Stmt::Store { place, ty, value } => self.store(place, *ty, value),
+            Stmt::Store { place, ty, value, .. } if is_wide(*ty) => self.store_wide(place, value),
+            Stmt::Store { place, ty, value, compound } => {
+                self.compound_store = *compound;
+                let stored = self.store(place, *ty, value);
+                self.compound_store = false;
+                stored
+            }
             // `if (c) break;` / `if (c) continue;`: one branch on `c`.
             Stmt::If { condition, then_body, else_body }
                 if else_body.is_empty()
@@ -3701,7 +3709,13 @@ impl Lowerer<'_, '_> {
         let right_var = unpromoted(right).as_var();
         let one_register = |e: &Expr| {
             let e = unpromoted(e);
-            let other = |v: &Expr| unpromoted(v).as_var().is_some_and(|id| Some(id) != right_var);
+            // (Or a value loaded through one: `(p->b & ~0x10) | x`.)
+            let other = |v: &Expr| {
+                unpromoted(v).as_var().is_some_and(|id| Some(id) != right_var)
+                    || (matches!(&unpromoted(v).kind, ExprKind::Load { base, index: None, .. }
+                        if base.as_var().is_some_and(|id| Some(id) != right_var) || matches!(base.kind, ExprKind::Global(_)))
+                        && !toggle("MWCC_PCODE_NO_LOADED_ONE_REGISTER"))
+            };
             match &e.kind {
                 ExprKind::Binary(_, x, y) => (other(x) && y.as_int().is_some()) || (x.as_int().is_some() && other(y)),
                 ExprKind::Unary(UnaryOp::Negate, x) => other(x),
@@ -3715,6 +3729,8 @@ impl Lowerer<'_, '_> {
             ExprKind::Load { .. } if self.unoptimized && !toggle("MWCC_PCODE_O0_LOAD_SWAP") => true,
             ExprKind::Load { base, index: None, .. } => {
                 matches!(base.kind, ExprKind::Var(_) | ExprKind::GlobalAddress(_) | ExprKind::LocalAddress(_))
+                    // (Through a global pointer: `gp->c | x`.)
+                    || (matches!(base.kind, ExprKind::Global(_)) && !toggle("MWCC_PCODE_GLOBAL_BASE_LOAD_SWAP"))
             }
             _ => false,
         }
@@ -4514,6 +4530,7 @@ impl Lowerer<'_, '_> {
         if base != 0 {
             instruction.not_r0.push(base);
         }
+        instruction.flags.compound = self.compound_store;
         instruction.relocation = relocation;
         instruction.displacement_symbol = self.store_displacement.take();
         self.emit(instruction);

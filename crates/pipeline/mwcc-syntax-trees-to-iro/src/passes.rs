@@ -79,11 +79,11 @@ fn scan_fields(body: &mut [Stmt], id: VarId, fields: &mut Vec<(i32, Type)>, esca
     }
     for statement in body {
         match statement {
-            Stmt::Store { place: Place::Memory { base, .. }, ty: Type::Struct { .. }, value } if base.mentions(id) => {
+            Stmt::Store { place: Place::Memory { base, .. }, ty: Type::Struct { .. }, value, .. } if base.mentions(id) => {
                 *escapes = true;
                 expression(value, id, fields, escapes);
             }
-            Stmt::Store { place: Place::Memory { base, index: None, offset }, ty, value } if is_address_of(base, id) => {
+            Stmt::Store { place: Place::Memory { base, index: None, offset }, ty, value, .. } if is_address_of(base, id) => {
                 fields.push((*offset, *ty));
                 expression(value, id, fields, escapes);
             }
@@ -124,7 +124,7 @@ fn replace_fields(body: Vec<Stmt>, id: VarId, map: &HashMap<i32, VarId>, keep: b
     let mut out = Vec::with_capacity(body.len());
     for mut statement in body {
         match statement {
-            Stmt::Store { place: Place::Memory { base, index: None, offset }, ty, mut value } if is_address_of(&base, id) => {
+            Stmt::Store { place: Place::Memory { base, index: None, offset }, ty, mut value, .. } if is_address_of(&base, id) => {
                 expression(&mut value, id, map);
                 let variable = map[&offset];
                 out.push(Stmt::Assign { variable, value });
@@ -133,6 +133,7 @@ fn replace_fields(body: Vec<Stmt>, id: VarId, map: &HashMap<i32, VarId>, keep: b
                         place: Place::Memory { base, index: None, offset },
                         ty,
                         value: Expr { kind: ExprKind::Var(variable), ty },
+                        compound: false,
                     });
                 }
             }

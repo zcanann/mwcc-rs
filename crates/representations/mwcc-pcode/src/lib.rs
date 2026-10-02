@@ -73,6 +73,8 @@ pub struct InstructionFlags {
     pub in_order: bool,
     /// A parameter's copy out of its argument register on entry.
     pub entry_copy: bool,
+    /// The store of a compound update (`x op= v`).
+    pub compound: bool,
     /// The definition stays in the web of the register's reaching
     /// definition without reading it (a carry-only `subfc` into the
     /// register the result later takes).

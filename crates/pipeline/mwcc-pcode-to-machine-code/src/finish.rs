@@ -64,6 +64,9 @@ pub fn finish(
         // Eliminating one copy can expose another (`x = a` of a parameter).
         while propagate_physical_copies(&mut pcode) {}
     }
+    if options.early_frame && !options.unoptimized && !toggle("MWCC_PCODE_NO_UPDATE_LOADS") {
+        update_loads(&mut pcode);
+    }
     if options.schedule && !toggle("MWCC_PCODE_NO_PRESCHEDULE") {
         for block in &mut pcode.blocks {
             schedule::schedule_block(&mut block.instructions, true);
@@ -1518,5 +1521,81 @@ impl FloatFrame {
         instructions.push(Instruction::AddImmediate { d: 1, a: 1, immediate: self.frame_size });
         instructions.push(Instruction::BranchToLinkRegister);
         instructions
+    }
+}
+
+/// GC/1.0-1.2.5n: a pointer loaded from memory and used only to read and
+/// then rewrite one field (`gp->b = gp->b | x`) reads it with the update
+/// form, and the store follows at 0: `lhzu r3,2(r4); ...; sth r0,0(r4)`.
+fn update_loads(pcode: &mut PCodeFunction) {
+    use mwcc_pcode::Class;
+    let mut uses: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    let mut defs: std::collections::HashMap<u32, Vec<bool>> = std::collections::HashMap::new();
+    for block in &pcode.blocks {
+        for instruction in &block.instructions {
+            for register in instruction.uses(Class::General) {
+                *uses.entry(register).or_default() += 1;
+            }
+            for register in instruction.defs(Class::General) {
+                // (A pointer read from a global: `lwz B,gp`.)
+                defs.entry(register).or_default().push(
+                    matches!(instruction.instruction, Instruction::LoadWord { .. })
+                        && (instruction.relocation.is_some() || instruction.displacement_symbol.is_some()),
+                );
+            }
+        }
+    }
+    let first_virtual = 32;
+    for block in &mut pcode.blocks {
+        let count = block.instructions.len();
+        for x in 0..count {
+            let (d, base, offset) = match block.instructions[x].instruction {
+                Instruction::LoadWord { d, a, offset }
+                | Instruction::LoadHalfwordZero { d, a, offset }
+                | Instruction::LoadByteZero { d, a, offset } => (d, a, offset),
+                _ => continue,
+            };
+            if base < first_virtual
+                || d == base
+                || uses.get(&base) != Some(&2)
+                || defs.get(&base).map(Vec::as_slice) != Some(&[true][..])
+                || pcode.exit_uses.contains(&base)
+            {
+                continue;
+            }
+            let width = |instruction: &Instruction| match instruction {
+                Instruction::LoadWord { .. } | Instruction::StoreWord { .. } => 4,
+                Instruction::LoadHalfwordZero { .. } | Instruction::StoreHalfword { .. } => 2,
+                _ => 1,
+            };
+            let Some(y) = (x + 1..count).find(|&y| block.instructions[y].uses(Class::General).contains(&base)) else { continue };
+            let same = match block.instructions[y].instruction {
+                Instruction::StoreWord { a, offset: o, .. }
+                | Instruction::StoreHalfword { a, offset: o, .. }
+                | Instruction::StoreByte { a, offset: o, .. } => a == base && o == offset,
+                _ => false,
+            };
+            if !same
+                || block.instructions[y].flags.compound
+                || width(&block.instructions[x].instruction) != width(&block.instructions[y].instruction)
+                || block.instructions[x].relocation.is_some()
+                || block.instructions[x].displacement_symbol.is_some()
+                || block.instructions[y].displacement_symbol.is_some()
+                || block.instructions[y].uses(Class::General).iter().filter(|&&r| r == base).count() != 1
+            {
+                continue;
+            }
+            let updated = match &block.instructions[x].instruction {
+                Instruction::LoadWord { d, a, offset } => Instruction::LoadWordWithUpdate { d: *d, a: *a, offset: *offset },
+                Instruction::LoadHalfwordZero { d, a, offset } => Instruction::LoadHalfZeroWithUpdate { d: *d, a: *a, offset: *offset },
+                Instruction::LoadByteZero { d, a, offset } => Instruction::LoadByteZeroWithUpdate { d: *d, a: *a, offset: *offset },
+                _ => continue,
+            };
+            block.instructions[x].instruction = updated;
+            match &mut block.instructions[y].instruction {
+                Instruction::StoreWord { offset, .. } | Instruction::StoreHalfword { offset, .. } | Instruction::StoreByte { offset, .. } => *offset = 0,
+                _ => {}
+            }
+        }
     }
 }
