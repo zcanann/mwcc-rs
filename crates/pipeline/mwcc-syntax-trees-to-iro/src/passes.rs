@@ -1119,6 +1119,22 @@ fn fold_once(expression: &Expr) -> Option<Expr> {
     if let Some(folded) = fold_float(expression) {
         return Some(folded);
     }
+    // A word operation's literal beyond 32 bits (a 64-bit parse-time fold
+    // of `~(0xff << 24)`) contributes only its low word.
+    if let ExprKind::Binary(op @ (BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor), left, right) = &expression.kind {
+        let word = |e: &Expr| e.as_int().is_some_and(|value| i32::try_from(value).is_err() && u32::try_from(value).is_err());
+        if mwcc_iro::is_general_word(expression.ty)
+            && !mwcc_iro::is_wide(expression.ty)
+            && (word(left) || word(right))
+            && std::env::var_os("MWCC_IRO_NO_WORD_LITERALS").is_none()
+        {
+            let wrap = |e: &Expr| match e.as_int() {
+                Some(value) if word(e) => Expr { kind: ExprKind::Int(i64::from(value as i32)), ty: e.ty },
+                _ => e.clone(),
+            };
+            return Some(Expr { kind: ExprKind::Binary(*op, Box::new(wrap(left)), Box::new(wrap(right))), ty: expression.ty });
+        }
+    }
     match &expression.kind {
         // A literal widened to `long long` (by its own signedness), or a
         // wide literal narrowed to a word.
