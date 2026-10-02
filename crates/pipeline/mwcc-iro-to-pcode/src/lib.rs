@@ -907,7 +907,7 @@ impl Lowerer<'_, '_> {
     fn sibling_call(&mut self) -> Compilation<bool> {
         let function = self.function;
         let call = match function.body.as_slice() {
-            [Stmt::Eval(call)] if function.return_type == Type::Void => call,
+            [Stmt::Eval(call)] if function.return_type == Type::Void || !toggle("MWCC_PCODE_NO_FALLOFF_TAIL_CALLS") => call,
             [Stmt::SetReturn(call)] if call.ty == function.return_type => call,
             _ => return Ok(false),
         };
@@ -5028,8 +5028,9 @@ fn only_tail_calls(body: &[Stmt], at_end: bool, return_type: Type) -> bool {
     body.iter().enumerate().all(|(index, statement)| {
         let ends = index + 1 == body.len() && at_end || matches!(body.get(index + 1), Some(Stmt::Return(None)));
         match statement {
+            // (A function that falls off its end returns nothing either.)
             Stmt::Eval(call) if matches!(call.kind, ExprKind::Call { .. }) => {
-                ends && return_type == Type::Void && terminal_call(call)
+                ends && (return_type == Type::Void || !toggle("MWCC_PCODE_NO_FALLOFF_TAIL_CALLS")) && terminal_call(call)
             }
             Stmt::SetReturn(call) if matches!(call.kind, ExprKind::Call { .. }) => {
                 ends && call.ty == return_type && terminal_call(call)
