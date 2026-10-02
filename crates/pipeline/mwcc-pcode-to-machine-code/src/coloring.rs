@@ -166,6 +166,11 @@ fn color_class(
     let available = 32 - policy.used.len() as i32;
     let stack = simplify(function, class, &mut nodes, available);
     let saved = select(&mut nodes, &stack, policy)?;
+    if std::env::var_os("MWCC_COLOR_TRACE").is_some() {
+        for &register in stack.iter().rev() {
+            eprintln!("  pop v{register} -> r{} cost {} degree {}", nodes[register].physical, nodes[register].spill_cost, nodes[register].neighbors.len());
+        }
+    }
     commit(function, class, &nodes);
     Ok(saved)
 }

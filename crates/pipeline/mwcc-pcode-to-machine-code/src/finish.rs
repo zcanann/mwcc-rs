@@ -850,6 +850,8 @@ fn interferes_with_physical(pcode: &PCodeFunction, class: mwcc_pcode::Class, v: 
 fn split_webs(pcode: &mut PCodeFunction) {
     use mwcc_pcode::Class;
     use mwcc_vreg::RegisterRole;
+    let calls = pcode.blocks.iter().any(|block| block.instructions.iter().any(|instruction| instruction.instruction.is_call()))
+        && !toggle("MWCC_PCODE_WEBS_SPLIT_INCOMING_UPDATES");
     for class in [Class::General, Class::Float] {
         // Definition sites (register, block, index) of registers defined more than once.
         let mut sites: Vec<(u32, usize, usize)> = Vec::new();
@@ -965,11 +967,13 @@ fn split_webs(pcode: &mut PCodeFunction) {
                         {
                             for other in 0..count {
                                 let (_, other_block, other_index) = sites[other];
-                                // A parameter's incoming value is its own web.
+                                // A parameter's incoming value is its own web
+                                // (but, where calls keep it in a saved
+                                // register, a register update continues it).
                                 let incoming = pcode.blocks[other_block].instructions[other_index]
                                     .copy(class)
                                     .is_some_and(|(_, source)| source < 32);
-                                if state[other] && sites[other].0 == defined && (tied || !incoming) {
+                                if state[other] && sites[other].0 == defined && (tied || !incoming || (calls && register_update)) {
                                     let (a, b) = (find(&mut parent, site), find(&mut parent, other));
                                     parent[b] = a;
                                 }
