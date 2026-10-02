@@ -3307,7 +3307,12 @@ impl Lowerer<'_, '_> {
             };
             if let Some(((source, shift, begin, end), right)) = insertion {
                 // (A clean value inserted unshifted is an `or`.)
-                if refined && shift == 0 && narrow_variable(source).is_none() && matches!(&source.kind, ExprKind::Convert(inner) if matches!(inner.kind, ExprKind::Load { .. })) {
+                if refined
+                    && shift == 0
+                    && narrow_variable(source).is_none()
+                    && matches!(&source.kind, ExprKind::Convert(inner) if matches!(inner.kind, ExprKind::Load { .. }))
+                    && possible_bits(source) & !field_bits(begin, end) == 0
+                {
                     let (base, _) = self.expression(right)?;
                     let (x, _) = self.expression(source)?;
                     let d = self.result(target);
