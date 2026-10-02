@@ -2314,7 +2314,10 @@ impl Lowerer<'_, '_> {
                     && is_general_word(ty)
                     && !is_narrow(ty)
                     && ((is_general_word(operand.ty) && !is_narrow(operand.ty))
-                        || (is_narrow(operand.ty) && !raw && matches!(operand.kind, ExprKind::Load { .. } | ExprKind::Global(_))))
+                        || (is_narrow(operand.ty) && !raw && matches!(operand.kind, ExprKind::Load { .. } | ExprKind::Global(_)))
+                        // (A narrowing conversion leaves its value extended.)
+                        || (is_narrow(operand.ty) && !raw && matches!(&operand.kind, ExprKind::Convert(inner) if !is_float(inner.ty))
+                            && !toggle("MWCC_PCODE_NO_NARROWED_TARGET")))
                     && !toggle("MWCC_PCODE_NO_CONVERT_TARGET")
                 {
                     let (source, _) = self.expression_with_target(operand, target)?;
