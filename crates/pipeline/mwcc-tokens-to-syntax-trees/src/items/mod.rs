@@ -5975,7 +5975,29 @@ impl Parser {
                                 }
                                 _ => None,
                             };
-                            if let Some(tag) = small_struct_tag {
+                            // (Any other size: an image when the values are
+                            // constants, else the aggregate-literal parse.)
+                            let other_struct_image = match (declared_type, struct_tag.as_ref()) {
+                                (Type::Struct { .. }, Some(tag))
+                                    if small_struct_tag.is_none()
+                                        && std::env::var_os("MWCC_SMALL_STRUCT_IMAGES_ONLY").is_none() =>
+                                {
+                                    let start = self.position;
+                                    let mut relocations = Vec::new();
+                                    match self.parse_one_struct_relocated(&tag.clone(), 0, &mut relocations) {
+                                        Ok(image) if relocations.is_empty() => Some(image),
+                                        _ => {
+                                            self.position = start;
+                                            None
+                                        }
+                                    }
+                                }
+                                _ => None,
+                            };
+                            if let Some(image) = other_struct_image {
+                                data_bytes = Some(image);
+                                None
+                            } else if let Some(tag) = small_struct_tag {
                                 let tag = &tag;
                                 let mut relocations = Vec::new();
                                 let image =

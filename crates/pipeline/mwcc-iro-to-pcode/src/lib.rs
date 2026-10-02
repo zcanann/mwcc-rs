@@ -4354,7 +4354,9 @@ impl Lowerer<'_, '_> {
             _ => return Err(unsupported("struct copy to this place")),
         };
         let unit: u32 = if self.unoptimized { u32::from(align.clamp(1, 4)) } else { 4 };
-        let limit = if self.unoptimized { 16 } else { 64 };
+        // (-O0 still unrolls an initializer image like -O4.)
+        let image_source = matches!(source.kind, ExprKind::Image(_)) && !toggle("MWCC_PCODE_O0_IMAGE_LOOPS");
+        let limit = if self.unoptimized && !image_source { 16 } else { 64 };
         // A small constant image is read unit by unit through the pool
         // (`lwz r,@N+k@sda21`).
         if let ExprKind::Image(index) = source.kind {

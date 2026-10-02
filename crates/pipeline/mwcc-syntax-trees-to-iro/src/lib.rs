@@ -296,6 +296,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         pending: Vec::new(),
         post: Vec::new(),
         strings: Vec::new(),
+        images: Vec::new(),
         guarded: 0,
         argument_guards: 0,
         calling_arguments: 0,
@@ -312,7 +313,6 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
             compound: false,
         });
     }
-    let mut images: Vec<Vec<u8>> = Vec::new();
     // (Early frames: locals whose initializer is a constant, an inline
     // expansion's value or a floating-to-integer conversion.)
     let mut slotted: Vec<VarId> = Vec::new();
@@ -329,9 +329,9 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
             let variable = builder.names[&local.name];
             let mut image = bytes.clone();
             image.resize(size as usize, 0);
-            images.push(image);
+            builder.images.push(image);
             let ty = Type::Struct { size, align: u8::try_from(align).unwrap_or(4) };
-            let source = Expr { kind: ExprKind::Image(images.len() - 1), ty: Type::StructPointer { element_size: size } };
+            let source = Expr { kind: ExprKind::Image(builder.images.len() - 1), ty: Type::StructPointer { element_size: size } };
             body.push(Stmt::Store {
                 place: Place::Memory { base: Box::new(builder.local_address(variable)), index: None, offset: 0 },
                 ty,
@@ -419,6 +419,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
     }
     let temporaries = std::mem::take(&mut builder.temporaries);
     let mut builder_strings = std::mem::take(&mut builder.strings);
+    let builder_images = std::mem::take(&mut builder.images);
     let mut variables = variables;
     for (id, variable) in variables.iter_mut().enumerate() {
         variable.initialized = slotted.contains(&id) || (variable.initialized && std::env::var_os("MWCC_IRO_ALL_INITIALIZED_SLOTTED").is_some());
@@ -431,7 +432,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
     Ok(Built {
         function: Function {
             strings: std::mem::take(&mut builder_strings),
-            images,
+            images: builder_images,
             name: function.name.clone(),
             return_type: function.return_type,
             parameter_count: function.parameters.len(),
@@ -624,6 +625,8 @@ struct Builder<'a, 'u> {
     temporaries: Vec<Variable>,
     /// String literals by bytes, in first-use order.
     strings: Vec<Vec<u8>>,
+    /// Constant images of initialized frame objects (with inline callees').
+    images: Vec<Vec<u8>>,
     /// The call being built is the returned value itself.
     direct_return: bool,
 }
@@ -1858,9 +1861,16 @@ impl Builder<'_, '_> {
             passes::map_strings(&mut inlined.body, &|index| indices[index]);
         }
         if inlined.variables.iter().any(|variable| variable.frame.is_some())
-            && (!inlined.images.is_empty() || std::env::var_os("MWCC_IRO_NO_INLINE_FRAME_OBJECTS").is_some())
+            && ((!inlined.images.is_empty() && std::env::var_os("MWCC_IRO_NO_INLINE_IMAGES").is_some())
+                || std::env::var_os("MWCC_IRO_NO_INLINE_FRAME_OBJECTS").is_some())
         {
             return Err(unsupported("inline expansion with frame objects"));
+        }
+        // (So do its initializer images.)
+        if !inlined.images.is_empty() {
+            let base = self.images.len();
+            self.images.extend(std::mem::take(&mut inlined.images));
+            passes::map_images(&mut inlined.body, &|index| index + base);
         }
         // Only a final return value: an early return would need a jump.
         let result = match inlined.body.last() {
@@ -1952,6 +1962,18 @@ impl Builder<'_, '_> {
                 };
                 passes::substitute(&mut inlined.body, base + index, &substituted);
                 continue;
+            }
+            // (A function's address: calls through the parameter call it.)
+            if let ExprKind::GlobalAddress(callee_name) = &value.kind {
+                if !body_assigns(&inlined.body, base + index) && std::env::var_os("MWCC_IRO_NO_INLINE_DIRECT_CALLS").is_none() {
+                    let parameter = base + index;
+                    let name = callee_name.clone();
+                    passes::for_each_expression(&mut inlined.body, &mut |e| direct_calls(e, parameter, &name));
+                    if references_variable(&inlined.body, parameter) {
+                        self.pending.push(Stmt::Assign { variable: parameter, value });
+                    }
+                    continue;
+                }
             }
             self.pending.push(Stmt::Assign { variable: base + index, value });
         }
@@ -2485,4 +2507,23 @@ fn addresses_taken(function: &ast::Function, early: bool) -> std::collections::H
         }
     }
     out
+}
+
+/// Calls through `parameter` (bound to `name`'s address) call `name`.
+fn direct_calls(e: &mut Expr, parameter: VarId, name: &str) {
+    passes::children(e, &mut |child| direct_calls(child, parameter, name));
+    if let ExprKind::Call { name: called, arguments } = &mut e.kind {
+        if called == mwcc_iro::INDIRECT_CALL && arguments.first().and_then(Expr::as_var) == Some(parameter) {
+            arguments.remove(0);
+            *called = name.to_owned();
+        }
+    }
+}
+
+/// Whether any expression of `body` reads `variable`.
+fn references_variable(body: &[Stmt], variable: VarId) -> bool {
+    let mut found = false;
+    let mut body = body.to_vec();
+    passes::for_each_expression(&mut body, &mut |e| found |= e.mentions(variable));
+    found
 }

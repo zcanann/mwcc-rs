@@ -1083,6 +1083,16 @@ pub fn map_strings(body: &mut [Stmt], map: &dyn Fn(usize) -> usize) {
     for_each_expression(body, &mut |e| expression(e, map));
 }
 
+pub fn map_images(body: &mut [Stmt], map: &dyn Fn(usize) -> usize) {
+    fn expression(e: &mut Expr, map: &dyn Fn(usize) -> usize) {
+        match &mut e.kind {
+            ExprKind::Image(index) => *index = map(*index),
+            _ => children(e, &mut |child| expression(child, map)),
+        }
+    }
+    for_each_expression(body, &mut |e| expression(e, map));
+}
+
 pub(crate) fn children(expression: &mut Expr, rewrite: &mut dyn FnMut(&mut Expr)) {
     match &mut expression.kind {
         ExprKind::Int(_)
@@ -1135,6 +1145,18 @@ pub fn fold(expression: &mut Expr) {
 fn fold_once(expression: &Expr) -> Option<Expr> {
     if let Some(folded) = fold_float(expression) {
         return Some(folded);
+    }
+    // A call through a known function's address calls it directly (an
+    // inline expansion's function-pointer parameter).
+    if let ExprKind::Call { name, arguments } = &expression.kind {
+        if name == mwcc_iro::INDIRECT_CALL && std::env::var_os("MWCC_IRO_NO_DIRECT_KNOWN_CALLS").is_none() {
+            if let Some(ExprKind::GlobalAddress(callee)) = arguments.first().map(|target| &target.kind) {
+                return Some(Expr {
+                    kind: ExprKind::Call { name: callee.clone(), arguments: arguments[1..].to_vec() },
+                    ty: expression.ty,
+                });
+            }
+        }
     }
     // A word operation's literal beyond 32 bits (a 64-bit parse-time fold
     // of `~(0xff << 24)`) contributes only its low word.
