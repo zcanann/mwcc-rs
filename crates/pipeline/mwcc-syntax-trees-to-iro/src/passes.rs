@@ -1214,6 +1214,17 @@ fn fold_once(expression: &Expr) -> Option<Expr> {
             value.ty = expression.ty;
             Some(value)
         }
+        // `-(-x)` and `~~x` are `x` (integers: GC/3.x negates a float twice).
+        ExprKind::Unary(op @ (UnaryOp::Negate | UnaryOp::BitNot), operand)
+            if matches!(&operand.kind, ExprKind::Unary(inner, _) if inner == op)
+                && operand.ty == expression.ty
+                && mwcc_iro::is_general_word(expression.ty) =>
+        {
+            let ExprKind::Unary(_, inner) = &operand.kind else { return None };
+            let mut value = (**inner).clone();
+            value.ty = expression.ty;
+            Some(value)
+        }
         ExprKind::Binary(op, left, right) => {
             // `(x & 1) == 1` and `(x & 1) != 0` are `x & 1`.
             if let ExprKind::Binary(BinaryOp::BitAnd, _, mask) = &left.kind {
@@ -1251,6 +1262,21 @@ fn fold_once(expression: &Expr) -> Option<Expr> {
             // `x * 0` is 0 when `x` has no effects.
             if *op == BinaryOp::Multiply && right.as_int() == Some(0) && speculable(left) {
                 return Some(Expr::typed_int(0, expression.ty));
+            }
+            // `x & ~0` is `x`.
+            if *op == BinaryOp::BitAnd
+                && matches!(expression.ty, Type::Int | Type::UnsignedInt)
+                && right.as_int().is_some_and(|value| value as u32 == u32::MAX)
+            {
+                let mut value = (**left).clone();
+                value.ty = expression.ty;
+                return Some(value);
+            }
+            // Absorption: `(a & b) | a`, `a | (a & b)`, `(a | b) & a`, ... are `a`.
+            if let Some(survivor) = absorbed(*op, left, right).or_else(|| absorbed(*op, right, left)) {
+                let mut value = survivor.clone();
+                value.ty = expression.ty;
+                return Some(value);
             }
             if let Some(chain) = fold_chain(*op, left, right, expression.ty) {
                 return Some(chain);
@@ -1431,6 +1457,10 @@ fn fold_chain(op: BinaryOp, left: &Expr, right: &Expr, ty: Type) -> Option<Expr>
 /// `(x + y) - y` / `(x - y) + y` -> `x` (matching leaf operands only).
 fn cancel<'a>(op: BinaryOp, left: &'a Expr, right: &Expr) -> Option<&'a Expr> {
     let ExprKind::Binary(inner, x, y) = &left.kind else { return None };
+    // (`(b + a) - b` is `a`.)
+    if *inner == BinaryOp::Add && op == BinaryOp::Subtract && same_leaf(x, right) {
+        return Some(y.as_ref());
+    }
     let inverse = matches!((inner, op), (BinaryOp::Add, BinaryOp::Subtract) | (BinaryOp::Subtract, BinaryOp::Add));
     let same = match (&y.kind, &right.kind) {
         (ExprKind::Var(a), ExprKind::Var(b)) => a == b,
@@ -2389,4 +2419,29 @@ pub fn forward_updates(function: &mut Function) {
         }
         function.body.remove(index);
     }
+}
+
+/// The same variable or literal.
+fn same_leaf(first: &Expr, second: &Expr) -> bool {
+    match (&first.kind, &second.kind) {
+        (ExprKind::Var(a), ExprKind::Var(b)) => a == b,
+        (ExprKind::Int(a), ExprKind::Int(b)) => a == b,
+        _ => false,
+    }
+}
+
+/// `outer op (… inner …)` that absorbs to `outer`: `a | (a & b)`,
+/// `a & (a | b)` (either inner order), with `a` a variable and `b` free
+/// of effects.
+fn absorbed<'a>(op: BinaryOp, outer: &'a Expr, inner: &Expr) -> Option<&'a Expr> {
+    let inner_op = match op {
+        BinaryOp::BitOr => BinaryOp::BitAnd,
+        BinaryOp::BitAnd => BinaryOp::BitOr,
+        _ => return None,
+    };
+    let ExprKind::Binary(found, x, y) = &inner.kind else { return None };
+    if *found != inner_op || !matches!(outer.kind, ExprKind::Var(_)) {
+        return None;
+    }
+    ((same_leaf(x, outer) && speculable(y)) || (same_leaf(y, outer) && speculable(x))).then_some(outer)
 }
