@@ -54,14 +54,12 @@ impl Lowerer<'_, '_> {
             }
             ExprKind::Var(id) if self.homes[*id].is_none() => Ok(self.wide_registers(*id)),
             ExprKind::Int(value) => {
-                let low = self.temporary();
-                self.load_constant(low, i64::from(*value as i32))?;
+                let low = self.wide_word(*value as i32);
                 // (Equal halves share their register.)
                 if i64::from(*value as i32) == value >> 32 {
                     return Ok((low, low));
                 }
-                let high = self.temporary();
-                self.load_constant(high, value >> 32)?;
+                let high = self.wide_word((value >> 32) as i32);
                 Ok((high, low))
             }
             ExprKind::Convert(operand) if is_wide(operand.ty) => self.wide(operand),
@@ -143,45 +141,55 @@ impl Lowerer<'_, '_> {
                 Ok((d_high, d_low))
             }
             ExprKind::Binary(BinaryOp::Multiply, left, right) => {
-                let (a_high, a_low) = self.wide(left)?;
-                // `hi = mulhwu(al, bl) + ah*bl + al*bh`, `lo = al*bl`.
-                if let Some(constant) = right.as_int() {
-                    let low_word = i64::from(constant as i32);
-                    let b_low = self.temporary();
-                    self.load_constant(b_low, low_word)?;
-                    let carry = self.temporary();
-                    self.emit_plain(Instruction::MultiplyHighWordUnsigned { d: carry, a: a_low, b: b_low });
-                    let cross = self.temporary();
-                    self.emit_plain(Instruction::MultiplyLow { d: cross, a: a_high, b: b_low });
-                    let d_low = self.temporary();
-                    match i16::try_from(low_word) {
-                        Ok(immediate) => self.emit_plain(Instruction::MultiplyImmediate { d: d_low, a: a_low, immediate }),
-                        Err(_) => self.emit_plain(Instruction::MultiplyLow { d: d_low, a: a_low, b: b_low }),
+                // (By one, minus one or (after the early builds) a power of
+                // two: the value, its negation, a shift.)
+                match right.as_int() {
+                    Some(1) => return self.wide(left),
+                    Some(-1) => {
+                        let negation = Expr { kind: ExprKind::Unary(UnaryOp::Negate, left.clone()), ty: expression.ty };
+                        return self.wide(&negation);
                     }
-                    let mut d_high = self.temporary();
-                    self.emit_plain(Instruction::Add { d: d_high, a: carry, b: cross });
-                    if constant >> 32 != 0 {
-                        let b_high = self.temporary();
-                        self.load_constant(b_high, constant >> 32)?;
-                        let other = self.temporary();
-                        self.emit_plain(Instruction::MultiplyLow { d: other, a: a_low, b: b_high });
-                        let sum = self.temporary();
-                        self.emit_plain(Instruction::Add { d: sum, a: d_high, b: other });
-                        d_high = sum;
+                    _ if self.unit.early_frame => return self.early_wide_multiply(left, right),
+                    Some(k) if k > 1 && k.count_ones() == 1 => {
+                        let count = Expr { kind: ExprKind::Int(i64::from(k.trailing_zeros())), ty: Type::Int };
+                        let shift = Expr { kind: ExprKind::Binary(BinaryOp::ShiftLeft, left.clone(), Box::new(count)), ty: expression.ty };
+                        return self.wide(&shift);
                     }
-                    return Ok((d_high, d_low));
+                    _ => {}
                 }
-                let (b_high, b_low) = self.wide(right)?;
+                let (a_high, a_low) = self.wide(left)?;
+                // `hi = mulhwu(al, bl) + ah*bl + al*bh`, `lo = al*bl`. Only
+                // a constant in 0..32768 skips the `al*bh` term (`mulli`); any
+                // other has its high word, zero or not, in a register.
+                let short = right.as_int().and_then(|k| i16::try_from(k).ok()).filter(|&k| k >= 0);
+                let (b_high, b_low) = match short {
+                    Some(k) => {
+                        let b_low = self.temporary();
+                        self.load_constant(b_low, i64::from(k))?;
+                        (None, b_low)
+                    }
+                    None => {
+                        let (b_high, b_low) = self.wide(right)?;
+                        (Some(b_high), b_low)
+                    }
+                };
                 let carry = self.temporary();
                 self.emit_plain(Instruction::MultiplyHighWordUnsigned { d: carry, a: a_low, b: b_low });
                 let cross = self.temporary();
                 self.emit_plain(Instruction::MultiplyLow { d: cross, a: a_high, b: b_low });
-                let other = self.temporary();
-                self.emit_plain(Instruction::MultiplyLow { d: other, a: a_low, b: b_high });
+                let d_low = self.temporary();
+                match short {
+                    Some(immediate) => self.emit_plain(Instruction::MultiplyImmediate { d: d_low, a: a_low, immediate }),
+                    None => self.emit_plain(Instruction::MultiplyLow { d: d_low, a: a_low, b: b_low }),
+                }
                 let partial = self.temporary();
                 self.emit_plain(Instruction::Add { d: partial, a: carry, b: cross });
-                let d_low = self.temporary();
-                self.emit_plain(Instruction::MultiplyLow { d: d_low, a: a_low, b: b_low });
+                if short.is_some() {
+                    return Ok((partial, d_low));
+                }
+                let b_high = b_high.expect("a full multiplier has its high word");
+                let other = self.temporary();
+                self.emit_plain(Instruction::MultiplyLow { d: other, a: a_low, b: b_high });
                 let d_high = self.temporary();
                 self.emit_plain(Instruction::Add { d: d_high, a: partial, b: other });
                 Ok((d_high, d_low))
@@ -519,5 +527,53 @@ impl Lowerer<'_, '_> {
         self.emit_plain(Instruction::Or { a: high, s: 3, b: 3 });
         self.emit_plain(Instruction::Or { a: low, s: 4, b: 4 });
         Ok((high, low))
+    }
+
+    /// One word of a wide constant; `lis` and `addi` write separate registers.
+    fn wide_word(&mut self, value: i32) -> u32 {
+        let low = value as i16;
+        if i16::try_from(value).is_ok() || low == 0 {
+            let d = self.temporary();
+            self.load_constant(d, i64::from(value)).expect("a word constant");
+            return d;
+        }
+        let upper = self.temporary();
+        let high = ((value - i32::from(low)) >> 16) as i16;
+        self.emit_plain(Instruction::AddImmediateShifted { d: upper, a: 0, immediate: high });
+        let d = self.temporary();
+        let mut addi = PInstr::new(Instruction::AddImmediate { d, a: upper, immediate: low });
+        addi.not_r0.push(upper);
+        self.emit(addi);
+        d
+    }
+
+    /// Early builds' `a * b`: every term, `ah*bl` first.
+    fn early_wide_multiply(&mut self, left: &Expr, right: &Expr) -> Compilation<(u32, u32)> {
+        let (a_high, a_low) = self.wide(left)?;
+        let constant = right.as_int();
+        let (variable_high, b_low) = match constant {
+            Some(k) => (None, self.wide_word(k as i32)),
+            None => {
+                let (high, low) = self.wide(right)?;
+                (Some(high), low)
+            }
+        };
+        let cross = self.temporary();
+        self.emit_plain(Instruction::MultiplyLow { d: cross, a: a_high, b: b_low });
+        let carry = self.temporary();
+        self.emit_plain(Instruction::MultiplyHighWordUnsigned { d: carry, a: a_low, b: b_low });
+        let b_high = match (variable_high, constant) {
+            (Some(high), _) => high,
+            (None, k) => self.wide_word((k.unwrap_or(0) >> 32) as i32),
+        };
+        let partial = self.temporary();
+        self.emit_plain(Instruction::Add { d: partial, a: cross, b: carry });
+        let other = self.temporary();
+        self.emit_plain(Instruction::MultiplyLow { d: other, a: a_low, b: b_high });
+        let d_low = self.temporary();
+        self.emit_plain(Instruction::MultiplyLow { d: d_low, a: a_low, b: b_low });
+        let d_high = self.temporary();
+        self.emit_plain(Instruction::Add { d: d_high, a: partial, b: other });
+        Ok((d_high, d_low))
     }
 }
