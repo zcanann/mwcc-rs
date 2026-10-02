@@ -3713,7 +3713,7 @@ impl Lowerer<'_, '_> {
             let other = |v: &Expr| {
                 unpromoted(v).as_var().is_some_and(|id| Some(id) != right_var)
                     || (matches!(&unpromoted(v).kind, ExprKind::Load { base, index: None, .. }
-                        if base.as_var().is_some_and(|id| Some(id) != right_var) || matches!(base.kind, ExprKind::Global(_)))
+                        if base.as_var().is_some_and(|id| Some(id) != right_var) || matches!(base.kind, ExprKind::Global(_) | ExprKind::Int(_)))
                         && !toggle("MWCC_PCODE_NO_LOADED_ONE_REGISTER"))
             };
             match &e.kind {
@@ -3729,8 +3729,8 @@ impl Lowerer<'_, '_> {
             ExprKind::Load { .. } if self.unoptimized && !toggle("MWCC_PCODE_O0_LOAD_SWAP") => true,
             ExprKind::Load { base, index: None, .. } => {
                 matches!(base.kind, ExprKind::Var(_) | ExprKind::GlobalAddress(_) | ExprKind::LocalAddress(_))
-                    // (Through a global pointer: `gp->c | x`.)
-                    || (matches!(base.kind, ExprKind::Global(_)) && !toggle("MWCC_PCODE_GLOBAL_BASE_LOAD_SWAP"))
+                    // (Through a global pointer: `gp->c | x`; or a fixed address.)
+                    || (matches!(base.kind, ExprKind::Global(_) | ExprKind::Int(_)) && !toggle("MWCC_PCODE_GLOBAL_BASE_LOAD_SWAP"))
             }
             _ => false,
         }
