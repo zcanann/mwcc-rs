@@ -179,6 +179,11 @@ fn memory_of(instruction: &PInstr) -> Memory {
     if is_load && instruction.flags.read_only {
         return Memory::None;
     }
+    // An access at a computed address inside a known global.
+    if let Some(symbol) = &instruction.object {
+        let object = Some(ObjectKey::Symbol(symbol.clone()));
+        return if is_load { Memory::Load(object) } else { Memory::Store(object) };
+    }
     // An access through a section anchor touches its named object.
     if let Some(symbol) = &instruction.displacement_symbol {
         let object = (std::env::var_os("MWCC_SCHED_ANCHOR_WILDCARD").is_none()).then(|| ObjectKey::Symbol(symbol.clone()));
@@ -411,7 +416,11 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
                         Memory::Load(other) | Memory::Store(other) => other,
                         Memory::None => continue,
                     };
-                    if may_alias(object, other) {
+                    // (Stores keep their order when one is at a computed
+                    // address inside a known global.)
+                    let tagged_stores = matches!(later_memory_kind, Memory::Store(_))
+                        && (instructions[index].object.is_some() || instructions[*later].object.is_some());
+                    if may_alias(object, other) || tagged_stores {
                         edges.push((index, *later, latency));
                     }
                 }

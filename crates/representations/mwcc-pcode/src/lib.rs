@@ -100,6 +100,8 @@ pub struct PInstr {
     /// A displacement the object writer completes with this data symbol's
     /// section offset (an access through a section anchor).
     pub displacement_symbol: Option<String>,
+    /// The global object a computed-address access lies inside.
+    pub object: Option<String>,
 }
 
 impl PInstr {
@@ -113,6 +115,7 @@ impl PInstr {
             flags: InstructionFlags::default(),
             source_line: None,
             displacement_symbol: None,
+            object: None,
         }
     }
 

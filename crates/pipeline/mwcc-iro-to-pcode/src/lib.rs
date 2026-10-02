@@ -2216,51 +2216,12 @@ impl Lowerer<'_, '_> {
                 }
             }
             ExprKind::Load { base, index, offset } => {
-                if let (Some(index), true) = (index, self.unoptimized) {
-                    // -O0: the index first; an absolute array's address is
-                    // completed with add, then accessed at 0.
-                    // (A loaded or variable base comes first; an absolute
-                    // array's index first.)
-                    if !matches!(base.kind, ExprKind::GlobalAddress(_) | ExprKind::Binary(..)) && !toggle("MWCC_PCODE_O0_INDEX_FIRST") {
-                        let (a, _) = self.expression(base)?;
-                        let (b, _) = self.expression(index)?;
-                        return self.indexed_load(ty, a, b, target);
-                    }
-                    if let Some((pointer, addend)) = self.member_array(base) {
-                        let (b, _) = self.expression(index)?;
-                        let displaced = self.temporary();
-                        self.emit_based(Instruction::AddImmediate { d: displaced, a: b, immediate: addend }, b);
-                        let (a, _) = self.expression(pointer)?;
-                        return self.indexed_load(ty, a, displaced, target);
-                    }
-                    let (b, _) = self.expression(index)?;
-                    let (a, _) = self.expression(base)?;
-                    if self.absolute_base(base) {
-                        let address = self.temporary();
-                        self.emit_plain(Instruction::Add { d: address, a, b });
-                        return self.load(ty, address, 0, None, target);
-                    }
-                    return self.indexed_load(ty, a, b, target);
+                let result = self.memory_load(base, index.as_deref(), *offset, ty, target)?;
+                // (An access inside a known global names that object.)
+                if let Some(object) = root_global(base).filter(|_| !self.unit.early_frame && !toggle("MWCC_PCODE_NO_GLOBAL_OBJECTS")) {
+                    self.tag_access(result.0, object);
                 }
-                // (-O1/-O2: an absolute array's index first.)
-                if let Some(index) = index.as_deref().filter(|_| {
-                    !self.unit.strength_reduction && self.absolute_base(base) && !toggle("MWCC_PCODE_O2_ADDRESS_FIRST")
-                }) {
-                    let (b, _) = self.expression(index)?;
-                    let (a, _) = self.base_expression(base)?;
-                    return self.indexed_load(ty, a, b, target);
-                }
-                let (a, _) = self.base_expression(base)?;
-                match index {
-                    Some(index) => {
-                        let (b, _) = self.expression(index)?;
-                        self.indexed_load(ty, a, b, target)
-                    }
-                    None => {
-                        let (a, offset) = self.displacement(a, *offset)?;
-                        self.load(ty, a, offset, None, target)
-                    }
-                }
+                Ok(result)
             }
             ExprKind::Convert(operand) if is_unsigned_narrow(ty) && max_value(operand).is_some_and(|max| max < 1u64 << (8 * width(ty))) => {
                 let (source, _) = self.expression_with_target(operand, target)?;
@@ -2443,6 +2404,68 @@ impl Lowerer<'_, '_> {
             return Ok((extended, ty));
         }
         Ok((d, ty))
+    }
+
+    /// A load from memory at `base` (+ `index`) + `offset`.
+    fn memory_load(&mut self, base: &Expr, index: Option<&Expr>, offset: i32, ty: Type, target: Option<u32>) -> Compilation<(u32, Type)> {
+            if let (Some(index), true) = (index, self.unoptimized) {
+                // -O0: the index first; an absolute array's address is
+                // completed with add, then accessed at 0.
+                // (A loaded or variable base comes first; an absolute
+                // array's index first.)
+                if !matches!(base.kind, ExprKind::GlobalAddress(_) | ExprKind::Binary(..)) && !toggle("MWCC_PCODE_O0_INDEX_FIRST") {
+                    let (a, _) = self.expression(base)?;
+                    let (b, _) = self.expression(index)?;
+                    return self.indexed_load(ty, a, b, target);
+                }
+                if let Some((pointer, addend)) = self.member_array(base) {
+                    let (b, _) = self.expression(index)?;
+                    let displaced = self.temporary();
+                    self.emit_based(Instruction::AddImmediate { d: displaced, a: b, immediate: addend }, b);
+                    let (a, _) = self.expression(pointer)?;
+                    return self.indexed_load(ty, a, displaced, target);
+                }
+                let (b, _) = self.expression(index)?;
+                let (a, _) = self.expression(base)?;
+                if self.absolute_base(base) {
+                    let address = self.temporary();
+                    self.emit_plain(Instruction::Add { d: address, a, b });
+                    return self.load(ty, address, 0, None, target);
+                }
+                return self.indexed_load(ty, a, b, target);
+            }
+            // (-O1/-O2: an absolute array's index first.)
+            if let Some(index) = index.filter(|_| {
+                !self.unit.strength_reduction && self.absolute_base(base) && !toggle("MWCC_PCODE_O2_ADDRESS_FIRST")
+            }) {
+                let (b, _) = self.expression(index)?;
+                let (a, _) = self.base_expression(base)?;
+                return self.indexed_load(ty, a, b, target);
+            }
+            let (a, _) = self.base_expression(base)?;
+            match index {
+                Some(index) => {
+                    let (b, _) = self.expression(index)?;
+                    self.indexed_load(ty, a, b, target)
+                }
+                None => {
+                    let (a, offset) = self.displacement(a, offset)?;
+                    self.load(ty, a, offset, None, target)
+                }
+            }
+            }
+
+    /// Name the object the last access (loading `d`) touches.
+    fn tag_access(&mut self, d: u32, object: String) {
+        let block = self.current_block();
+        if let Some(last) = self.pcode.blocks[block].instructions.last_mut() {
+            let name = format!("{:?}", last.instruction);
+            if name.starts_with("Load") && last.relocation.is_none() && last.displacement_symbol.is_none() && last.object.is_none()
+                && last.defs(mwcc_pcode::Class::General).contains(&d) | last.defs(mwcc_pcode::Class::Float).contains(&d)
+            {
+                last.object = Some(object);
+            }
+        }
     }
 
     fn load(
@@ -4541,6 +4564,11 @@ impl Lowerer<'_, '_> {
         instruction.flags.compound = self.compound_store;
         instruction.relocation = relocation;
         instruction.displacement_symbol = self.store_displacement.take();
+        if instruction.relocation.is_none() && instruction.displacement_symbol.is_none() && !self.unit.early_frame && !toggle("MWCC_PCODE_NO_GLOBAL_OBJECTS") {
+            if let Place::Memory { base, .. } = place {
+                instruction.object = root_global(base);
+            }
+        }
         self.emit(instruction);
         // (A store to a frame object no pointer reaches keeps the loads.)
         let private = matches!(place, Place::Memory { base, .. }
@@ -5874,4 +5902,19 @@ fn outgoing_argument_bytes(body: &[Stmt]) -> u32 {
     };
     for_each_statement_expression(body, &mut visit);
     most
+}
+
+/// The global an address expression points into (`&g`, `&g + i*k`).
+fn root_global(base: &Expr) -> Option<String> {
+    match &base.kind {
+        ExprKind::GlobalAddress(name) => Some(name.clone()),
+        ExprKind::Binary(BinaryOp::Add | BinaryOp::Subtract, left, right) => {
+            if matches!(left.ty, Type::Pointer(_) | Type::StructPointer { .. }) {
+                root_global(left)
+            } else {
+                root_global(right)
+            }
+        }
+        _ => None,
+    }
 }
