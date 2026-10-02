@@ -2729,8 +2729,13 @@ impl Lowerer<'_, '_> {
         // (A constant right operand of a commutative operation, which goes
         // first, is loaded first too: it enters the pool before the other
         // operand's constants.)
+        // (-O0 too, unless the other operand is loaded: it then goes first.)
+        let o0_constant_first = self.unoptimized
+            && !matches!(left.kind, ExprKind::Load { .. })
+            && !left.as_var().is_some_and(|id| self.homes[id].is_some())
+            && !toggle("MWCC_PCODE_O0_CONSTANT_LATE");
         let constant_first = matches!(op, BinaryOp::Add | BinaryOp::Multiply)
-            && !self.unoptimized
+            && (!self.unoptimized || o0_constant_first)
             && !contains_call(left)
             && matches!(right.kind, ExprKind::Float(_))
             && !matches!(left.kind, ExprKind::Float(_))
