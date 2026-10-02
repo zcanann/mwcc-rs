@@ -3231,6 +3231,20 @@ impl Lowerer<'_, '_> {
             }
             _ => None,
         };
+        // A narrow unsigned variable shifted left rotates and masks its
+        // bits as they are (`rlwinm d,x,n,24-n,31-n` for a byte).
+        if let (Some(n), Some(inner), false) = (left_shift, narrow_variable(left), self.unoptimized) {
+            if matches!(inner.ty, Type::UnsignedChar | Type::UnsignedShort)
+                && u32::from(n) + 8 * width(inner.ty) <= 32
+                && !toggle("MWCC_PCODE_NO_NARROW_SHIFT_MASK")
+            {
+                let bits = 8 * width(inner.ty) as u8;
+                let (x, _) = self.expression(inner)?;
+                let d = self.result(target);
+                self.emit_plain(Instruction::RotateAndMask { a: d, s: x, shift: n, begin: 32 - bits - n, end: 31 - n });
+                return Ok((d, ty));
+            }
+        }
         if let (Some(n), ExprKind::Binary(BinaryOp::BitAnd, inner, mask), false) = (left_shift, &left.kind, self.unoptimized) {
             if let Some((begin, end)) = mask_bounds(mask) {
                 if begin >= n {
@@ -3264,10 +3278,43 @@ impl Lowerer<'_, '_> {
             }
         }
         // `field | base` where the base is known zero under the field's mask
-        // inserts the field: `rlwimi base,x,shift,mb,me`.
+        // inserts the field: `rlwimi base,x,shift,mb,me` (the left operand
+        // when it is a field, else the right one).
         if op == BinaryOp::BitOr && !self.unoptimized {
-            if let Some((source, shift, begin, end)) = insert_field(left) {
-                if field_bits(begin, end) & !known_zero(right) == 0 {
+            let refined = !toggle("MWCC_PCODE_OLD_INSERTS");
+            let insertion = match insert_field(left, refined) {
+                // (A constant base is `ori`/`oris`d instead.)
+                Some(field)
+                    if field_bits(field.2, field.3) & !known_zero(right, refined) == 0
+                        && !(refined && right.as_int().is_some()) =>
+                {
+                    Some((field, right))
+                }
+                // (Only a narrow value, into a computed base.)
+                _ if refined
+                    && left.as_int().is_none()
+                    && match &right.kind {
+                        ExprKind::Convert(_) => true,
+                        ExprKind::Binary(BinaryOp::ShiftLeft, inner, _) => narrow_variable(inner).is_some() || matches!(inner.kind, ExprKind::Convert(_)),
+                        _ => false,
+                    } =>
+                {
+                    insert_field(right, true)
+                        .filter(|field| field_bits(field.2, field.3) & !known_zero(left, true) == 0)
+                        .map(|field| (field, left))
+                }
+                _ => None,
+            };
+            if let Some(((source, shift, begin, end), right)) = insertion {
+                // (A clean value inserted unshifted is an `or`.)
+                if refined && shift == 0 && narrow_variable(source).is_none() && matches!(&source.kind, ExprKind::Convert(inner) if matches!(inner.kind, ExprKind::Load { .. })) {
+                    let (base, _) = self.expression(right)?;
+                    let (x, _) = self.expression(source)?;
+                    let d = self.result(target);
+                    self.emit_plain(Instruction::Or { a: d, s: x, b: base });
+                    return Ok((d, ty));
+                }
+                {
                     // A narrow variable inserted within its width, or the
                     // unsigned narrow base, is used as it is (unextended).
                     let unextended = !toggle("MWCC_PCODE_NO_UNEXTENDED_INSERT");
@@ -3280,8 +3327,15 @@ impl Lowerer<'_, '_> {
                         }
                         _ => source,
                     };
+                    // (An unextended base only when the field covers its upper bits.)
                     let right = match narrow_variable(right) {
-                        Some(inner) if unextended && matches!(inner.ty, Type::UnsignedChar | Type::UnsignedShort) => inner,
+                        Some(inner)
+                            if unextended
+                                && matches!(inner.ty, Type::UnsignedChar | Type::UnsignedShort)
+                                && (!refined || (field_bits(begin, end) | narrow_mask(inner.ty)) == u32::MAX) =>
+                        {
+                            inner
+                        }
                         _ => right,
                     };
                     let (x, _) = self.expression(source)?;
@@ -3291,7 +3345,11 @@ impl Lowerer<'_, '_> {
                         target => target,
                     };
                     let target = target.filter(|&d| d != x);
-                    let (base, _) = if toggle("MWCC_PCODE_NO_INSERT_BASE_TARGET") {
+                    // (A base that is itself an insert is built in its own
+                    // register.)
+                    let (base, _) = if toggle("MWCC_PCODE_NO_INSERT_BASE_TARGET")
+                        || refined && matches!(right.kind, ExprKind::Binary(BinaryOp::BitOr, ..))
+                    {
                         self.expression(right)?
                     } else {
                         self.expression_with_target(right, target)?
@@ -4782,9 +4840,26 @@ fn shift_mask<'a>(left: &'a Expr, right: &Expr) -> Option<(&'a Expr, u8, u8, u8)
 
 /// `x` rotated and masked, as `rlwimi`'s inserted field: `x << n`, unsigned
 /// `x >> n`, `x & mask`, `(x >> n) & mask`.
-fn insert_field(expression: &Expr) -> Option<(&Expr, u8, u8, u8)> {
+fn insert_field(expression: &Expr, refined: bool) -> Option<(&Expr, u8, u8, u8)> {
+    // (A narrow unsigned value, unshifted.)
+    if refined {
+        if let ExprKind::Convert(operand) = &expression.kind {
+            if matches!(operand.ty, Type::UnsignedChar | Type::UnsignedShort) {
+                let width = 8 * width(operand.ty) as u8;
+                return Some((expression, 0, 32 - width, 31));
+            }
+        }
+    }
     let ExprKind::Binary(op, left, right) = &expression.kind else { return None };
     match (op, right.as_int()) {
+        // (Only the bits the shifted value can hold.)
+        (BinaryOp::ShiftLeft, Some(n)) if refined && (1..32).contains(&n) && possible_bits(left) != u32::MAX => {
+            let bits = possible_bits(left).checked_shl(n as u32).unwrap_or(0);
+            if bits == 0 || !(bits >> bits.trailing_zeros()).wrapping_add(1).is_power_of_two() {
+                return Some((left, n as u8, 0, 31 - n as u8));
+            }
+            Some((left, n as u8, bits.leading_zeros() as u8, (31 - bits.trailing_zeros()) as u8))
+        }
         (BinaryOp::ShiftLeft, Some(n)) if (1..32).contains(&n) => Some((left, n as u8, 0, 31 - n as u8)),
         (BinaryOp::ShiftRight, Some(n)) if (1..32).contains(&n) && is_unsigned(promote(left.ty)) => {
             Some((left, (32 - n) as u8, n as u8, 31))
@@ -4800,8 +4875,31 @@ fn insert_field(expression: &Expr) -> Option<(&Expr, u8, u8, u8)> {
     }
 }
 
+/// The bits an integer value can have set.
+fn possible_bits(expression: &Expr) -> u32 {
+    match &expression.kind {
+        ExprKind::Convert(operand) => match operand.ty {
+            Type::UnsignedChar => 0xff,
+            Type::UnsignedShort => 0xffff,
+            _ => u32::MAX,
+        },
+        ExprKind::Int(value) => *value as u32,
+        ExprKind::Binary(op, left, right) => match (op, right.as_int()) {
+            (BinaryOp::ShiftLeft, Some(n)) if (0..32).contains(&n) => possible_bits(left) << n,
+            (BinaryOp::ShiftRight, Some(n)) if (0..32).contains(&n) && is_unsigned(promote(left.ty)) => possible_bits(left) >> n,
+            (BinaryOp::BitAnd, _) => possible_bits(left) & possible_bits(right),
+            (BinaryOp::BitOr, _) => possible_bits(left) | possible_bits(right),
+            _ => u32::MAX,
+        },
+        _ => u32::MAX,
+    }
+}
+
 /// Bits of `expression`'s value known to be zero.
-fn known_zero(expression: &Expr) -> u32 {
+fn known_zero(expression: &Expr, refined: bool) -> u32 {
+    if refined {
+        return !possible_bits(expression) | known_zero(expression, false);
+    }
     if let ExprKind::Convert(operand) = &expression.kind {
         return match operand.ty {
             Type::UnsignedChar if !toggle("MWCC_PCODE_NO_NARROW_KNOWN_ZERO") => 0xffff_ff00,
