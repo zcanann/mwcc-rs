@@ -283,6 +283,11 @@ impl Lowerer<'_, '_> {
         self.loaded_globals.retain(|name, _| keep_const && globals.get(name).is_some_and(|global| global.is_const));
     }
 
+    /// Known frame-object loads (after a store the key cannot place).
+    fn forget_frame_loads(&mut self) {
+        self.common.retain(|key, _| !key.starts_with("*F"));
+    }
+
     fn clear_block_caches(&mut self) {
         // Loaded globals too: at a join a value loaded on one path only is
         // not available.
@@ -1427,7 +1432,10 @@ impl Lowerer<'_, '_> {
                 ExprKind::Int(_) | ExprKind::Var(_) => Ok(()),
                 _ => Err(unsupported("expression statement")),
             },
-            Stmt::Store { place, ty, value, .. } if is_wide(*ty) => self.store_wide(place, value),
+            Stmt::Store { place, ty, value, .. } if is_wide(*ty) => {
+                self.forget_frame_loads();
+                self.store_wide(place, value)
+            }
             Stmt::Store { place, ty, value, compound } => {
                 self.compound_store = *compound;
                 let stored = self.store(place, *ty, value);
@@ -1586,6 +1594,7 @@ impl Lowerer<'_, '_> {
 
     fn assign(&mut self, variable: VarId, value: &Expr) -> Compilation<()> {
         if let Some(offset) = self.homes[variable] {
+            self.forget_frame_loads();
             let (source, _) = self.expression(value)?;
             self.emit_plain(store_instruction(self.function.variables[variable].ty, source, 1, offset));
             return Ok(());
@@ -1989,9 +1998,24 @@ impl Lowerer<'_, '_> {
             }
             ExprKind::Load { base, index: None, offset } if matches!(base.kind, ExprKind::LocalAddress(_)) => {
                 let ExprKind::LocalAddress(id) = base.kind else { unreachable!() };
+                // (Reused until the object is stored, or a call or store
+                // could reach it.)
+                let cached = !self.unoptimized && !toggle("MWCC_PCODE_NO_FRAME_LOAD_CSE") && target.is_none_or(|t| t >= 32);
+                let kind = if is_general_word(ty) && !is_narrow(ty) { "word".to_owned() } else { format!("{ty:?}") };
+                let key = format!("*F{id}:{offset}:{kind}");
+                if cached && self.target_variable(target).is_none() {
+                    if let Some(&(register, _, _)) = self.common.get(&key) {
+                        return Ok((register, ty));
+                    }
+                }
                 let slot = self.frame_offsets[id].ok_or_else(|| unsupported("frame slot"))?;
                 let offset = i16::try_from(i32::from(slot) + *offset).map_err(|_| unsupported("a large frame"))?;
-                self.load(ty, 1, offset, None, target)
+                let result = self.load(ty, 1, offset, None, target)?;
+                if cached && result.0 >= 32 {
+                    let read: Vec<VarId> = self.target_variable(target).into_iter().collect();
+                    self.common.insert(key, (result.0, result.1, read));
+                }
+                Ok(result)
             }
             ExprKind::Binary(op, left, right) if op.is_comparison() && (is_float(left.ty) || is_float(right.ty)) => {
                 self.float_comparison_value(*op, left, right, target)
@@ -4300,6 +4324,7 @@ impl Lowerer<'_, '_> {
     /// through pre-decremented pointers with update forms. -O0 moves units
     /// of the struct's alignment the same way, looping above 16 bytes.
     fn block_copy(&mut self, place: &Place, size: u32, align: u8, value: &Expr) -> Compilation<()> {
+        self.forget_frame_loads();
         let ExprKind::Load { base: source, index: None, offset: source_offset } = &value.kind else {
             return Err(unsupported("struct copy from this value"));
         };
@@ -4605,6 +4630,12 @@ impl Lowerer<'_, '_> {
         if !private {
             self.forget_loaded_globals(false);
             self.common.retain(|key, _| !key.starts_with('*'));
+        } else if let Place::Memory { base, .. } = place {
+            // (A private frame object's own known loads change.)
+            if let ExprKind::LocalAddress(id) = base.kind {
+                let prefix = format!("*F{id}:");
+                self.common.retain(|key, _| !key.starts_with(&prefix));
+            }
         }
         // A stored word-sized global's value is still in `source`.
         if let Place::Global(name) = place {
