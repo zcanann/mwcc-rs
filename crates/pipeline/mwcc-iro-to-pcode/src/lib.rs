@@ -90,6 +90,7 @@ pub fn lower(
         contract,
         float_constants: HashMap::new(),
         loop_constants: Vec::new(),
+        address_bases: Vec::new(),
         frame_offsets: vec![None; function.variables.len()],
         anchored: anchored_objects(function, unit),
         constants_anchored: !unit.pool_small_data
@@ -190,6 +191,8 @@ struct Lowerer<'a, 'u> {
     /// Constants loaded before the enclosing loops (integer and floating),
     /// available throughout them.
     loop_constants: Vec<(Vec<(i64, u32)>, Vec<((u64, u8), u32)>)>,
+    /// Constants loaded as the high half of a constant memory address.
+    address_bases: Vec<i64>,
     /// r1 offset of each frame variable.
     frame_offsets: Vec<Option<i16>>,
     /// Objects addressed through their section anchor in this function.
@@ -2100,7 +2103,7 @@ impl Lowerer<'_, '_> {
             }
             ExprKind::Load { base, index: None, offset } if base.as_int().is_some() => {
                 let (high, low) = split_address(base.as_int().expect("checked") + i64::from(*offset))?;
-                let (a, _) = self.expression(&Expr::int(i64::from(high) << 16))?;
+                let a = self.address_high(high)?;
                 self.load(ty, a, low, None, target)
             }
             // A load through a pointer to non-volatile storage is reused
@@ -2411,6 +2414,15 @@ impl Lowerer<'_, '_> {
         }
         let address = self.global_address(name);
         self.load(global.ty, address, 0, None, target)
+    }
+
+    /// The high half of a constant address, as a memory base.
+    fn address_high(&mut self, high: i16) -> Compilation<u32> {
+        let value = i64::from(high) << 16;
+        if !self.address_bases.contains(&value) {
+            self.address_bases.push(value);
+        }
+        Ok(self.expression(&Expr::int(value))?.0)
     }
 
     /// A global's absolute address (`lis; addi`), reused within a block
@@ -3988,7 +4000,7 @@ impl Lowerer<'_, '_> {
             }
             Place::Memory { base, index: None, offset } if base.as_int().is_some() => {
                 let (high, low) = split_address(base.as_int().expect("checked") + i64::from(*offset))?;
-                let (a, _) = self.expression(&Expr::int(i64::from(high) << 16))?;
+                let a = self.address_high(high)?;
                 (a, low, None, None)
             }
             Place::Memory { base, index: None, offset: 0 } if self.anchored_object(base).is_some() => {
@@ -4552,8 +4564,14 @@ impl Lowerer<'_, '_> {
         self.emit(call);
         self.makes_calls = true;
         self.forget_loaded_globals(true);
-        // Constants are rematerialized rather than kept across a call.
-        self.constants.clear();
+        // Constants are rematerialized rather than kept across a call
+        // (but for a constant address's base on some builds).
+        if self.unit.address_bases_across_calls && !toggle("MWCC_PCODE_NO_BASES_ACROSS_CALLS") {
+            let bases = &self.address_bases;
+            self.constants.retain(|value, _| bases.contains(value));
+        } else {
+            self.constants.clear();
+        }
         self.float_constants.clear();
         // (A section anchor stays live across the call.)
         let keep_anchors = !toggle("MWCC_PCODE_ANCHOR_AFTER_CALL");

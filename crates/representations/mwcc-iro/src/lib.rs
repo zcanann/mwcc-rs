@@ -96,6 +96,9 @@ pub struct Unit<'a> {
     /// access (sharing only its `lis`); earlier builds reuse the whole
     /// address within a block.
     pub absolute_low_folds: bool,
+    /// GC/1.0-1.2.5n, GC/3.x and Wii keep a constant address's high half
+    /// (`lis` of a memory base) across calls, in a saved register.
+    pub address_bases_across_calls: bool,
     /// GC/1.0-1.2.5n comparison values (carry forms; no zero shortcuts).
     pub branch_preserving: bool,
     /// GC/1.x-2.x reassociate integer sums (`a + b + c` = `a + (b + c)`).
