@@ -554,6 +554,9 @@ impl Lowerer<'_, '_> {
         }
         let (mut general_argument, mut float_argument) = (FIRST_GENERAL_ARGUMENT, 1);
         let mut wide_incoming = Vec::new();
+        let mut stack_incoming: Vec<(u32, Type, i16)> = Vec::new();
+        // (The outgoing argument area comes first.)
+        self.frame_cursor += outgoing_argument_bytes(&function.body);
         for id in 0..function.parameter_count {
             let ty = function.variables[id].ty;
             if is_wide(ty) {
@@ -578,15 +581,28 @@ impl Lowerer<'_, '_> {
                 general_argument += 1;
                 general_argument - 1
             };
+            // (Past r10, the caller's argument area.)
+            if !is_float(ty) && physical > LAST_GENERAL_ARGUMENT {
+                stack_incoming.push((register, ty, 8 + 4 * (physical - LAST_GENERAL_ARGUMENT - 1) as i16));
+                continue;
+            }
             incoming.push((id, register, physical));
         }
         let locals: Vec<VarId> = (function.parameter_count..function.variables.len())
             .filter(|&id| function.variables[id].kind == VariableKind::Local)
             .collect();
         let early = self.unit.early_frame;
-        // (Early frames: each parameter's slot, in order, from r1+8.)
+        // (Early frames: each register parameter's slot, in order, after
+        // the outgoing argument area.)
         if early {
+            let mut words = 0;
             for id in 0..function.parameter_count {
+                if !is_float(function.variables[id].ty) {
+                    words += 1;
+                    if words > 8 {
+                        continue;
+                    }
+                }
                 let (size, align) = function.variables[id].frame.unwrap_or_else(|| {
                     let width = width(function.variables[id].ty);
                     (width, width)
@@ -683,6 +699,17 @@ impl Lowerer<'_, '_> {
             copy.flags.entry_copy = true;
             self.emit(copy);
         }
+        for (register, ty, offset) in stack_incoming {
+            // (The displacement grows by the frame's size once it is known.)
+            let mut load = PInstr::new(match ty {
+                Type::Char | Type::UnsignedChar => Instruction::LoadByteZero { d: register, a: 1, offset: offset + 3 },
+                Type::Short => Instruction::LoadHalfwordAlgebraic { d: register, a: 1, offset: offset + 2 },
+                Type::UnsignedShort => Instruction::LoadHalfwordZero { d: register, a: 1, offset: offset + 2 },
+                _ => Instruction::LoadWord { d: register, a: 1, offset },
+            });
+            load.displacement_symbol = Some("@@incoming".to_owned());
+            self.emit(load);
+        }
         self.body_and_exit()
     }
 
@@ -692,6 +719,10 @@ impl Lowerer<'_, '_> {
     /// frame and the others are register variables, like declared locals
     /// (callee-saved, r31 down). Temporaries are colored around them.
     fn lower_unoptimized(&mut self, calls: bool) -> Compilation<()> {
+        let words = (0..self.function.parameter_count).filter(|&id| !is_float(self.function.variables[id].ty)).count();
+        if words > 8 || outgoing_argument_bytes(&self.function.body) > 0 {
+            return Err(unsupported("-O0 stack-passed arguments"));
+        }
         if self.function.variables.iter().any(|variable| is_wide(variable.ty)) || is_wide(self.function.return_type) {
             return Err(unsupported("-O0 wide values"));
         }
@@ -881,6 +912,9 @@ impl Lowerer<'_, '_> {
     /// `b callee` after marshaling the arguments of a call in tail position.
     fn tail_call(&mut self, call: &Expr) -> Compilation<()> {
         let ExprKind::Call { name, arguments } = &call.kind else { return Err(unsupported("tail call")) };
+        if arguments.iter().filter(|argument| !is_float(argument.ty)).count() > 8 {
+            return Err(unsupported("a tail call with stack arguments"));
+        }
         if arguments.iter().any(|argument| is_float(argument.ty)) || is_float(call.ty) {
             return Err(unsupported("floating sibling call"));
         }
@@ -928,7 +962,14 @@ impl Lowerer<'_, '_> {
         } else {
             self.pcode.frame_local_bytes = (self.frame_cursor - 8) as i16;
             // (A reservation alone needs no frame.)
-            if self.unit.early_frame && self.frame_cursor == self.reserved_end {
+            // (Unless arguments pass through the frame: the outgoing area,
+            // or incoming stack arguments.)
+            let words = (0..self.function.parameter_count).filter(|&id| !is_float(self.function.variables[id].ty)).count();
+            if self.unit.early_frame
+                && self.frame_cursor == self.reserved_end
+                && outgoing_argument_bytes(&self.function.body) == 0
+                && words <= 8
+            {
                 self.pcode.reserved_local_bytes = self.pcode.frame_local_bytes;
                 self.pcode.frame_local_bytes = 0;
             }
@@ -1154,11 +1195,13 @@ impl Lowerer<'_, '_> {
     fn body_and_exit_inner(&mut self) -> Compilation<()> {
         let function = self.function;
         // (A function with frame objects keeps its frame: no sibling call.)
-        if self.tail_calls && !self.unoptimized && self.pcode.frame_objects.is_empty() && self.sibling_call()? {
+        let outgoing = outgoing_argument_bytes(&function.body) > 0;
+        if self.tail_calls && !self.unoptimized && !outgoing && self.pcode.frame_objects.is_empty() && self.sibling_call()? {
             return Ok(());
         }
         self.all_tail_calls = self.tail_calls
             && !self.unoptimized
+            && !outgoing
             && makes_calls(&function.body)
             && !format!("{:?}", function.body).contains("LocalAddress")
             && only_tail_calls(&function.body, true, function.return_type);
@@ -4521,6 +4564,11 @@ impl Lowerer<'_, '_> {
                     }
                     continue;
                 }
+                // (An argument past r10 is computed, then stored.)
+                if !is_float(argument.ty) && registers[index] > LAST_GENERAL_ARGUMENT {
+                    values[index] = Some(self.expression(argument)?.0);
+                    continue;
+                }
                 // A constant argument is loaded straight into its register.
                 values[index] = match argument.as_int() {
                     Some(_) if !self.unoptimized => None,
@@ -4577,6 +4625,15 @@ impl Lowerer<'_, '_> {
             }
             let register = general;
             general += 1;
+            // Past r10: the outgoing argument area at r1+8.
+            if register > LAST_GENERAL_ARGUMENT {
+                let value = value.expect("stack arguments are evaluated");
+                let offset = 8 + 4 * (register - LAST_GENERAL_ARGUMENT - 1) as i16;
+                let mut store = PInstr::new(Instruction::StoreWord { s: value, a: 1, offset });
+                store.not_r0.push(1);
+                self.emit(store);
+                continue;
+            }
             match value {
                 Some(value) if value == register => {}
                 Some(value) => self.emit_plain(Instruction::Or { a: register, s: value, b: value }),
@@ -5734,4 +5791,29 @@ fn equality_variable_first(op: BinaryOp, left: &Expr, right: &Expr) -> bool {
             _ => false,
         }
         && !toggle("MWCC_PCODE_EQUALITY_IN_ORDER")
+}
+
+/// The last general argument register.
+const LAST_GENERAL_ARGUMENT: u32 = 10;
+
+/// Bytes of the outgoing argument area the body's calls need.
+fn outgoing_argument_bytes(body: &[Stmt]) -> u32 {
+    let mut most = 0u32;
+    let mut visit = |e: &Expr| {
+        fn walk(e: &Expr, most: &mut u32) {
+            if let ExprKind::Call { name, arguments } = &e.kind {
+                let skip = usize::from(name == mwcc_iro::INDIRECT_CALL);
+                let words = arguments.iter().skip(skip).filter(|a| !is_float(a.ty)).count() as u32;
+                if words > 8 {
+                    *most = (*most).max(4 * (words - 8));
+                }
+            }
+            for child in expression_children(e) {
+                walk(child, most);
+            }
+        }
+        walk(e, &mut most);
+    };
+    for_each_statement_expression(body, &mut visit);
+    most
 }

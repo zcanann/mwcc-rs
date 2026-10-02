@@ -121,10 +121,25 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         });
     }
     let floats = function.parameters.iter().filter(|p| is_float(p.parameter_type)).count();
-    if function.parameters.len() - floats > ARGUMENT_REGISTERS || floats > ARGUMENT_REGISTERS {
+    // (Words past r10 arrive in the caller's frame; not wide or floating ones.)
+    let words_on_stack = function.parameters.len() - floats > ARGUMENT_REGISTERS
+        && !function.parameters.iter().any(|p| is_wide(p.parameter_type))
+        && std::env::var_os("MWCC_IRO_NO_STACK_PARAMETERS").is_none();
+    if (function.parameters.len() - floats > ARGUMENT_REGISTERS && !words_on_stack) || floats > ARGUMENT_REGISTERS {
         return Err(unsupported("stack-passed parameters"));
     }
     let taken = addresses_taken(function);
+    // (A stack parameter's address is its incoming slot: not modeled.)
+    if words_on_stack
+        && function
+            .parameters
+            .iter()
+            .filter(|p| !is_float(p.parameter_type))
+            .skip(ARGUMENT_REGISTERS)
+            .any(|p| taken.contains(&p.name))
+    {
+        return Err(unsupported("address of a stack parameter"));
+    }
     // -O0: a local only initialized at its declaration or assigned (never
     // read) is no register variable: it lives in the frame.
     let mentioned = if unit.unoptimized && std::env::var_os("MWCC_IRO_O0_NO_INIT_ONLY_FRAME").is_none() {
@@ -1972,7 +1987,7 @@ impl Builder<'_, '_> {
                         _ => Err(unsupported("call to a function this unit defines (inlining not modeled)")),
                     };
                 }
-                if arguments.len() > ARGUMENT_REGISTERS {
+                if arguments.len() > 2 * ARGUMENT_REGISTERS {
                     return Err(unsupported("stack-passed arguments"));
                 }
                 // An expanded call among arguments that are otherwise literals
@@ -2053,7 +2068,11 @@ impl Builder<'_, '_> {
                 let generals = arguments.iter().filter(|argument| !is_float(argument.ty)).fold(0usize, |used, argument| {
                     if is_wide(argument.ty) { used + used % 2 + 2 } else { used + 1 }
                 });
-                if floats > ARGUMENT_REGISTERS || generals > ARGUMENT_REGISTERS {
+                // (Words past r10 go to the outgoing argument area.)
+                let words_on_stack = generals > ARGUMENT_REGISTERS
+                    && !arguments.iter().any(|argument| is_wide(argument.ty))
+                    && std::env::var_os("MWCC_IRO_NO_STACK_ARGUMENTS").is_none();
+                if floats > ARGUMENT_REGISTERS || (generals > ARGUMENT_REGISTERS && !words_on_stack) {
                     return Err(unsupported("stack-passed arguments"));
                 }
                 Ok(Expr { kind: ExprKind::Call { name: name.to_owned(), arguments }, ty })

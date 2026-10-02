@@ -399,6 +399,32 @@ pub fn finish(
     }
     starts.push(position);
 
+    // Incoming stack arguments sit past this function's frame.
+    let frame_size: i16 = if framed {
+        prologue()
+            .iter()
+            .find_map(|instruction| match instruction {
+                Instruction::StoreWordWithUpdate { s: 1, a: 1, offset } => Some(-offset),
+                _ => None,
+            })
+            .unwrap_or(0)
+    } else {
+        0
+    };
+    for block in &mut pcode.blocks {
+        for instruction in &mut block.instructions {
+            if instruction.displacement_symbol.as_deref() == Some("@@incoming") {
+                instruction.displacement_symbol = None;
+                match &mut instruction.instruction {
+                    Instruction::LoadWord { offset, .. }
+                    | Instruction::LoadByteZero { offset, .. }
+                    | Instruction::LoadHalfwordAlgebraic { offset, .. }
+                    | Instruction::LoadHalfwordZero { offset, .. } => *offset += frame_size,
+                    _ => {}
+                }
+            }
+        }
+    }
     let mut instructions: Vec<Instruction> = Vec::new();
     let mut relocations: Vec<Relocation> = Vec::new();
     let mut deferred_displacements = Vec::new();
