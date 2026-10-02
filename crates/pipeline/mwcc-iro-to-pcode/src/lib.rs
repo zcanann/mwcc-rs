@@ -2252,10 +2252,10 @@ impl Lowerer<'_, '_> {
                 self.load(ty, 0, 0, Some(relocation), target)
             }
             ExprKind::Load { base, index: None, offset } if self.unoptimized && self.unoptimized_indexed(base).is_some() => {
-                let (a, b) = self.unoptimized_address(base, *offset)?;
+                let (a, b, displacement) = self.unoptimized_address(base, *offset)?;
                 match b {
                     Some(b) => self.indexed_load(ty, a, b, target),
-                    None => self.load(ty, a, i16::try_from(*offset).map_err(|_| unsupported("large member offset"))?, None, target),
+                    None => self.load(ty, a, i16::try_from(displacement).map_err(|_| unsupported("large member offset"))?, None, target),
                 }
             }
             ExprKind::Load { base, index, offset } => {
@@ -2463,6 +2463,14 @@ impl Lowerer<'_, '_> {
                 }
                 if let Some((pointer, addend)) = self.member_array(base) {
                     let (b, _) = self.expression(index)?;
+                    // (GC/3.x adds the index to the pointer, the member
+                    // offset staying the displacement.)
+                    if self.unit.signed_promoted_truth && !toggle("MWCC_PCODE_O0_DISPLACED_INDEX") {
+                        let (a, _) = self.expression(pointer)?;
+                        let sum = self.temporary();
+                        self.emit_plain(Instruction::Add { d: sum, a, b });
+                        return self.load(ty, sum, addend, None, target);
+                    }
                     let displaced = self.temporary();
                     self.emit_based(Instruction::AddImmediate { d: displaced, a: b, immediate: addend }, b);
                     let (a, _) = self.expression(pointer)?;
@@ -3606,7 +3614,10 @@ impl Lowerer<'_, '_> {
         // A raw unsigned narrow parameter shifted right folds its extension.
         let shifted = unpromoted(left);
         let raw_unsigned = match (&shifted.kind, op, immediate) {
-            (ExprKind::Var(id), BinaryOp::ShiftRight, Some(shift)) if self.raw_narrow[*id] => {
+            // (Not -O0: it extends, then shifts the int.)
+            (ExprKind::Var(id), BinaryOp::ShiftRight, Some(shift))
+                if self.raw_narrow[*id] && (!self.unoptimized || toggle("MWCC_PCODE_O0_FOLDED_NARROW_SHIFT")) =>
+            {
                 let bits = match shifted.ty {
                     Type::UnsignedChar => Some(8u8),
                     Type::UnsignedShort => Some(16u8),
@@ -4073,7 +4084,7 @@ impl Lowerer<'_, '_> {
     /// index first, adds its address and keeps the displacement (`None`
     /// index); otherwise the base, then the index with the displacement
     /// added (`lwzx`).
-    fn unoptimized_address(&mut self, base: &Expr, offset: i32) -> Compilation<(u32, Option<u32>)> {
+    fn unoptimized_address(&mut self, base: &Expr, offset: i32) -> Compilation<(u32, Option<u32>, i32)> {
         let (mut b, x) = self.unoptimized_indexed(base).expect("checked");
         // An embedded array's constant member offset joins the displacement
         // (`p->array[i]`: `(p + 12) + i*4` as `p + (i*4 + 12)`).
@@ -4091,21 +4102,27 @@ impl Lowerer<'_, '_> {
             let (address, _) = self.expression(b)?;
             // (GC/3.x indexes it.)
             if offset == 0 && self.unit.signed_promoted_truth && !toggle("MWCC_PCODE_O0_ABSOLUTE_ADD") {
-                return Ok((address, Some(index)));
+                return Ok((address, Some(index), 0));
             }
             let sum = self.temporary();
             self.emit_plain(Instruction::Add { d: sum, a: address, b: index });
-            return Ok((sum, None));
+            return Ok((sum, None, offset));
         }
         let (address, _) = self.expression(b)?;
         let (index, _) = self.expression(x)?;
         if offset == 0 {
-            return Ok((address, Some(index)));
+            return Ok((address, Some(index), 0));
+        }
+        // (GC/3.x adds the index to the base and keeps the displacement.)
+        if self.unit.signed_promoted_truth && !toggle("MWCC_PCODE_O0_DISPLACED_INDEX") {
+            let sum = self.temporary();
+            self.emit_plain(Instruction::Add { d: sum, a: address, b: index });
+            return Ok((sum, None, offset));
         }
         let immediate = i16::try_from(offset).map_err(|_| unsupported("large member offset"))?;
         let displaced = self.temporary();
         self.emit_based(Instruction::AddImmediate { d: displaced, a: index, immediate }, index);
-        Ok((address, Some(displaced)))
+        Ok((address, Some(displaced), 0))
     }
 
     /// The small-data object a base addresses (`&g`).
@@ -4280,10 +4297,10 @@ impl Lowerer<'_, '_> {
                 (0, 0, None, Some(AttachedRelocation { kind: RelocationKind::EmbSda21, target: RelocationTarget::External(name) }))
             }
             Place::Memory { base, index: None, offset } if self.unoptimized && self.unoptimized_indexed(base).is_some() => {
-                let (a, b) = self.unoptimized_address(base, *offset)?;
+                let (a, b, displacement) = self.unoptimized_address(base, *offset)?;
                 match b {
                     Some(b) => (a, 0, Some(b), None),
-                    None => (a, i16::try_from(*offset).map_err(|_| unsupported("large member offset"))?, None, None),
+                    None => (a, i16::try_from(displacement).map_err(|_| unsupported("large member offset"))?, None, None),
                 }
             }
             Place::Memory { base: base_expression, index: Some(index), .. }
@@ -4291,10 +4308,17 @@ impl Lowerer<'_, '_> {
             {
                 let (pointer, addend) = self.member_array(base_expression).expect("checked");
                 let (b, _) = self.expression(index)?;
-                let displaced = self.temporary();
-                self.emit_based(Instruction::AddImmediate { d: displaced, a: b, immediate: addend }, b);
-                let (a, _) = self.expression(pointer)?;
-                (a, 0, Some(displaced), None)
+                if self.unit.signed_promoted_truth && !toggle("MWCC_PCODE_O0_DISPLACED_INDEX") {
+                    let (a, _) = self.expression(pointer)?;
+                    let sum = self.temporary();
+                    self.emit_plain(Instruction::Add { d: sum, a, b });
+                    (sum, addend, None, None)
+                } else {
+                    let displaced = self.temporary();
+                    self.emit_based(Instruction::AddImmediate { d: displaced, a: b, immediate: addend }, b);
+                    let (a, _) = self.expression(pointer)?;
+                    (a, 0, Some(displaced), None)
+                }
             }
             Place::Memory { base: base_expression, index: Some(index), .. } if self.unoptimized => {
                 let (b, _) = self.expression(index)?;
