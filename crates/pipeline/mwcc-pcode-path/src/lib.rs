@@ -252,6 +252,7 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
                 && request.config.flags.optimization_goal != mwcc_versions::OptimizationGoal::Size)
             || (behavior.optimization == mwcc_versions::Optimization::O4 && std::env::var_os("MWCC_PCODE_O4_MAGIC_DIVISION").is_some()),
         signed_promoted_truth: request.config.build.label.starts_with("GC/3.") || request.config.build.label.starts_with("Wii/"),
+        variadic: request.variadic,
         nonvolatile_pointers: request.nonvolatile_pointers,
         inline_initialized_locals: request.inline_initialized_locals,
         // (GC/1.x orders them like any load.)

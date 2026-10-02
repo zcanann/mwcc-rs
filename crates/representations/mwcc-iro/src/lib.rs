@@ -116,6 +116,8 @@ pub struct Unit<'a> {
     /// GC/3.x and Wii test a promoted unsigned narrow value signed (`cmpwi`)
     /// unless it needed extending; earlier builds test it logically.
     pub signed_promoted_truth: bool,
+    /// A variadic definition: r3-r10 and f1-f8 saved at r1+8 on entry.
+    pub variadic: bool,
     /// Scalar-replaced struct locals still store their fields (GC/3.x, Wii).
     pub keeps_struct_stores: bool,
     /// Loaded `const` globals stay valid across calls (GC/3.x, Wii).

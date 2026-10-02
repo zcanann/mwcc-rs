@@ -3645,7 +3645,13 @@ impl Lowerer<'_, '_> {
             // subtraction.)
             && (!contains_call(left) || (op != BinaryOp::Subtract && !toggle("MWCC_PCODE_BOTH_CALLS_IN_ORDER")))
             && !toggle("MWCC_PCODE_CALL_OPERAND_IN_ORDER");
-        let early = if index_first || calls_first { Some(self.expression(right)?.0) } else { None };
+        // (-O0 computes a subtraction's right operand first.)
+        let subtrahend_first = self.unoptimized
+            && op == BinaryOp::Subtract
+            && immediate.is_none()
+            && right.as_int().is_none()
+            && !toggle("MWCC_PCODE_O0_MINUEND_FIRST");
+        let early = if index_first || calls_first || subtrahend_first { Some(self.expression(right)?.0) } else { None };
         let (a, _) = self.expression(left)?;
         // GC/3.x: `x * (2^n ± 1)` = `(x << n) ± x`; `x * (1 - 2^n)` = `x - (x << n)`.
         let shift_add = (op == BinaryOp::Multiply && self.unit.shift_add_multiply)

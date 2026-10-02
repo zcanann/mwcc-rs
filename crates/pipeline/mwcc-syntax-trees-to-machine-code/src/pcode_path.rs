@@ -16,6 +16,8 @@ use mwcc_versions::CompilerConfig;
 /// Everything the PCode pipeline needs about one function and its unit.
 pub struct PcodeRequest<'a> {
     pub function: &'a Function,
+    /// A variadic definition (`f(int n, ...)`): its register save area.
+    pub variadic: bool,
     pub globals: &'a [GlobalDeclaration],
     /// Arrays declared at fixed addresses: name -> (address, element type).
     pub fixed_address_arrays: &'a HashMap<String, (i64, Type)>,

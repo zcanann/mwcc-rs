@@ -263,6 +263,7 @@ fn lower_function_body(
     }
     let mut output = pcode_path::lower(&pcode_path::PcodeRequest {
         function: pcode_function,
+        variadic: variadic_definitions.contains(&function.name),
         static_locals: &static_locals,
         globals,
         fixed_address_arrays,
