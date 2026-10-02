@@ -312,6 +312,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         dont_inline: false,
         dont_inline_functions: std::collections::HashSet::new(),
         unparsed_functions: std::collections::HashMap::new(),
+        flexible_extent: None,
         function_inline_initialized_locals: std::collections::HashSet::new(),
         structs: crate::shared::Shared::from(HashMap::new()),
         asserted_aggregate_sizes: crate::shared::Shared::from(asserted_aggregate_sizes),

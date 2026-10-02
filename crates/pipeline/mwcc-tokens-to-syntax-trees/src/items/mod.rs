@@ -3145,6 +3145,13 @@ impl Parser {
                         } else {
                             self.parse_struct_array_initializer(&tag, &mut relocations)?
                         });
+                        // (A flexible array member's elements extend the object.)
+                        if let (Some(bytes), Type::Struct { size, align }) = (&data_bytes, return_type) {
+                            if dimensions.is_empty() && bytes.len() > size as usize {
+                                let end = bytes.len() as u32;
+                                return_type = Type::Struct { size: end, align };
+                            }
+                        }
                         data_relocations = relocations;
                     } else if self.eat_keyword(Token::Equals) {
                         // `= <constant>` or `= { <constant>, ... }` (nested braces flatten).

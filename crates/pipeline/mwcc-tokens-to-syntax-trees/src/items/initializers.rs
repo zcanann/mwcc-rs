@@ -394,8 +394,24 @@ impl Parser {
         relocations: &mut Vec<(u32, String, i32)>,
     ) -> Compilation<Vec<u8>> {
         let mut bytes = self.empty_struct_image(tag)?;
+        // (A trailing flexible array member's elements extend the object.)
+        let flexible = base_offset == 0
+            && self.flexible_extent.is_none()
+            && self.ordered_struct_fields(tag)?.last().is_some_and(|field| field.4 == Some(0))
+            && std::env::var_os("MWCC_NO_FLEXIBLE_INITIALIZERS").is_none();
+        if flexible {
+            self.flexible_extent = Some(bytes.len());
+            bytes.resize(bytes.len() + 0x10000, 0);
+        }
         self.expect(Token::BraceOpen)?;
-        self.fill_struct_fields(tag, &mut bytes, 0, base_offset, relocations)?;
+        let filled = self.fill_struct_fields(tag, &mut bytes, 0, base_offset, relocations);
+        if flexible {
+            let extent = self.flexible_extent.take().unwrap_or(0);
+            filled?;
+            bytes.truncate(extent);
+        } else {
+            filled?;
+        }
         self.eat_keyword(Token::Comma);
         self.expect(Token::BraceClose)?;
         Ok(bytes)
@@ -489,9 +505,18 @@ impl Parser {
             ) = (nested_tag.as_ref(), member_type, array_bytes)
             {
                 let nested = nested.clone();
-                let count = (total / element_size.max(1)).max(1);
+                let flexible = total == 0 && self.flexible_extent.is_some();
+                let count = if flexible { u32::MAX } else { (total / element_size.max(1)).max(1) };
                 let array_braced = self.eat_keyword(Token::BraceOpen);
                 for index in 0..count {
+                    if flexible {
+                        let end = field_base + ((index + 1) * element_size) as usize;
+                        if end > image.len() {
+                            return Err(Diagnostic::error("a flexible array member initializer is too large"));
+                        }
+                        let extent = self.flexible_extent.unwrap_or(0).max(end);
+                        self.flexible_extent = Some(extent);
+                    }
                     if *self.peek() == Token::BraceClose {
                         break;
                     }
@@ -549,7 +574,8 @@ impl Parser {
                 let element_width = array_element
                     .map_or(4, |element| element.size() as usize)
                     .max(1);
-                let count = (total as usize / element_width).max(1);
+                let flexible = total == 0 && self.flexible_extent.is_some();
+                let count = if flexible { usize::MAX } else { (total as usize / element_width).max(1) };
                 let element_type =
                     array_element.map_or(Type::UnsignedInt, |element| element.element());
                 let braced = self.eat_keyword(Token::BraceOpen);
@@ -573,6 +599,10 @@ impl Parser {
                     }
                     let value = self.parse_scalar_constant(element_type)?;
                     let at = field_base + index * element_width;
+                    if flexible {
+                        let extent = self.flexible_extent.unwrap_or(0).max(at + element_width);
+                        self.flexible_extent = Some(extent);
+                    }
                     let encoded = (value as u64).to_be_bytes();
                     // (A flexible array member has no storage in the image.)
                     let Some(slot) = image.get_mut(at..at + element_width) else {
