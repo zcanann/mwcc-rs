@@ -1214,6 +1214,16 @@ fn fold_once(expression: &Expr) -> Option<Expr> {
             value.ty = expression.ty;
             Some(value)
         }
+        // `-(x < 0)` is the sign mask `x >> 31`.
+        ExprKind::Unary(UnaryOp::Negate, operand)
+            if expression.ty == Type::Int
+                && matches!(&operand.kind, ExprKind::Binary(BinaryOp::Less, x, zero)
+                    if x.ty == Type::Int && zero.as_int() == Some(0))
+                && std::env::var_os("MWCC_IRO_NO_SIGN_MASK_FOLD").is_none() =>
+        {
+            let ExprKind::Binary(_, x, _) = &operand.kind else { return None };
+            Some(Expr::binary(BinaryOp::ShiftRight, (**x).clone(), Expr::typed_int(31, Type::Int), Type::Int))
+        }
         // `-(-x)` and `~~x` are `x` (integers: GC/3.x negates a float twice).
         ExprKind::Unary(op @ (UnaryOp::Negate | UnaryOp::BitNot), operand)
             if matches!(&operand.kind, ExprKind::Unary(inner, _) if inner == op)
@@ -1292,6 +1302,9 @@ fn fold_once(expression: &Expr) -> Option<Expr> {
                         }
                     }
                 }
+            }
+            if let Some(rewritten) = word_identities(*op, left, right, expression.ty) {
+                return Some(rewritten);
             }
             // `x & ~0` is `x`.
             if *op == BinaryOp::BitAnd
@@ -2521,4 +2534,46 @@ pub fn float_negations(body: &mut [Stmt]) {
         }
     }
     for_each_expression(body, &mut |expression| rewrite(expression));
+}
+
+/// Word identities MWCC's IRO applies: De Morgan (`~a & ~b` is `~(a | b)`),
+/// a shift pair as a mask (`x << k >> k`), distributed constant products
+/// (`a*3 + a*5`), merged masks (`(x & m) | (x & n)`), `-a - k` as `-k - a`,
+/// and `2^k == (x & 2^k)` with the constant right.
+fn word_identities(op: BinaryOp, left: &Expr, right: &Expr, ty: Type) -> Option<Expr> {
+    if !matches!(ty, Type::Int | Type::UnsignedInt) || std::env::var_os("MWCC_IRO_NO_WORD_IDENTITIES").is_some() {
+        return None;
+    }
+    let var = |e: &Expr| matches!(e.kind, ExprKind::Var(_));
+    match (op, &left.kind, &right.kind) {
+        (BinaryOp::BitAnd | BinaryOp::BitOr, ExprKind::Unary(UnaryOp::BitNot, a), ExprKind::Unary(UnaryOp::BitNot, b)) => {
+            let inner = if op == BinaryOp::BitAnd { BinaryOp::BitOr } else { BinaryOp::BitAnd };
+            Some(Expr::unary(UnaryOp::BitNot, Expr::binary(inner, (**a).clone(), (**b).clone(), ty), ty))
+        }
+        (BinaryOp::ShiftRight, ExprKind::Binary(BinaryOp::ShiftLeft, x, k), _)
+            if ty == Type::UnsignedInt && x.ty == Type::UnsignedInt && k.as_int().is_some_and(|k| (1..32).contains(&k)) && k.as_int() == right.as_int() =>
+        {
+            let mask = u32::MAX >> k.as_int()?;
+            Some(Expr::binary(BinaryOp::BitAnd, (**x).clone(), Expr::typed_int(i64::from(mask), ty), ty))
+        }
+        (BinaryOp::Add | BinaryOp::Subtract, ExprKind::Binary(BinaryOp::Multiply, a, k1), ExprKind::Binary(BinaryOp::Multiply, b, k2))
+            if var(a) && same_leaf(a, b) =>
+        {
+            let (k1, k2) = (k1.as_int()?, k2.as_int()?);
+            let k = if op == BinaryOp::Add { k1 + k2 } else { k1 - k2 };
+            Some(Expr::binary(BinaryOp::Multiply, (**a).clone(), Expr::typed_int(i64::from(k as i32), ty), ty))
+        }
+        (BinaryOp::BitOr, ExprKind::Binary(BinaryOp::BitAnd, a, m), ExprKind::Binary(BinaryOp::BitAnd, b, n)) if var(a) && same_leaf(a, b) => {
+            let (m, n) = (m.as_int()?, n.as_int()?);
+            Some(Expr::binary(BinaryOp::BitAnd, (**a).clone(), Expr::typed_int(m | n, ty), ty))
+        }
+        (BinaryOp::Subtract, ExprKind::Unary(UnaryOp::Negate, a), _) if right.as_int().is_some() => {
+            let k = right.as_int()?;
+            Some(Expr::binary(BinaryOp::Subtract, Expr::typed_int(i64::from((k as i32).wrapping_neg()), ty), (**a).clone(), ty))
+        }
+        (BinaryOp::Equal | BinaryOp::NotEqual, ExprKind::Int(_), _) if right.as_int().is_none() => {
+            Some(Expr::binary(op, right.clone(), left.clone(), ty))
+        }
+        _ => None,
+    }
 }

@@ -2211,6 +2211,23 @@ impl Lowerer<'_, '_> {
                 };
                 self.expression_with_target(&inverted, target)
             }
+            // `~(a | b)`, `~(a & b)`, `~(a ^ b)`: `nor`, `nand`, `eqv`.
+            ExprKind::Unary(UnaryOp::BitNot, operand)
+                if matches!(&operand.kind, ExprKind::Binary(BinaryOp::BitOr | BinaryOp::BitAnd | BinaryOp::BitXor, left, right)
+                    if right.as_int().is_none() && left.as_int().is_none())
+                    && !toggle("MWCC_PCODE_NO_NOR") =>
+            {
+                let ExprKind::Binary(op, left, right) = &operand.kind else { unreachable!() };
+                let (a, _) = self.expression(left)?;
+                let (b, _) = self.expression(right)?;
+                let destination = self.result(target);
+                self.emit_plain(match op {
+                    BinaryOp::BitOr => Instruction::Nor { a: destination, s: a, b },
+                    BinaryOp::BitAnd => Instruction::Nand { a: destination, s: a, b },
+                    _ => Instruction::Eqv { a: destination, s: a, b },
+                });
+                Ok((destination, ty))
+            }
             ExprKind::Unary(op, operand) => {
                 let (source, _) = self.expression(operand)?;
                 let destination = self.result(target);
@@ -3678,7 +3695,13 @@ impl Lowerer<'_, '_> {
         let raw_unsigned = match (&shifted.kind, op, immediate) {
             // (Not -O0: it extends, then shifts the int.)
             (ExprKind::Var(id), BinaryOp::ShiftRight, Some(shift))
-                if self.raw_narrow[*id] && (!self.unoptimized || toggle("MWCC_PCODE_O0_FOLDED_NARROW_SHIFT")) =>
+                if (self.raw_narrow[*id]
+                    // (A trusted extended unsigned parameter folds the same.)
+                    || (self.unit.narrow_parameters_extended
+                        && *id < self.function.parameter_count
+                        && matches!(self.function.variables[*id].ty, Type::UnsignedChar | Type::UnsignedShort)
+                        && !assigns(&self.function.body, *id)))
+                    && (!self.unoptimized || toggle("MWCC_PCODE_O0_FOLDED_NARROW_SHIFT")) =>
             {
                 let bits = match shifted.ty {
                     Type::UnsignedChar => Some(8u8),
@@ -4040,6 +4063,24 @@ impl Lowerer<'_, '_> {
                 self.emit_plain(Instruction::RotateAndMask { a: rotated, s: adjusted, shift: k, begin: 0, end: 31 });
                 let d = self.result(target);
                 self.emit_plain(Instruction::Add { d, a: rotated, b: sign });
+                return Ok((d, ty));
+            }
+            // (After the early builds, a zero-extended narrow dividend is
+            // never negative: a logical shift.)
+            if divisor > 1
+                && !self.unit.branch_preserving
+                && matches!(&left.kind, ExprKind::Convert(inner) if matches!(inner.ty, Type::UnsignedChar | Type::UnsignedShort))
+                && !toggle("MWCC_PCODE_NARROW_DIVIDE_SIGNED")
+            {
+                // (A variable through its narrow-shift fold; anything else as
+                // an unsigned word.)
+                let operand = if matches!(unpromoted(left).kind, ExprKind::Var(_)) {
+                    left.clone()
+                } else {
+                    Expr { kind: left.kind.clone(), ty: Type::UnsignedInt }
+                };
+                let shifted = Expr::binary(BinaryOp::ShiftRight, operand.clone(), Expr::typed_int(i64::from(k), Type::Int), operand.ty);
+                let (d, _) = self.expression_with_target(&shifted, target)?;
                 return Ok((d, ty));
             }
             let (x, _) = self.expression(left)?;
