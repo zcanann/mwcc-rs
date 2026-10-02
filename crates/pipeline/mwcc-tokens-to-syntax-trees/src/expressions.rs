@@ -359,13 +359,17 @@ impl Parser {
             self.advance();
             self.advance();
             let rhs = self.expression()?;
+            // (A floating variable's update is marked, as in a statement.)
+            let floating = matches!(&first, Expression::Variable(name)
+                if matches!(self.variable_types.get(name), Some(Type::Float | Type::Double)));
+            let value = Expression::Binary {
+                operator,
+                left: Box::new(first.clone()),
+                right: Box::new(rhs),
+            };
             return Ok(Expression::Assign {
-                target: Box::new(crate::lvalues::canonical_assignment_target(first.clone())),
-                value: Box::new(Expression::Binary {
-                    operator,
-                    left: Box::new(first),
-                    right: Box::new(rhs),
-                }),
+                target: Box::new(crate::lvalues::canonical_assignment_target(first)),
+                value: Box::new(if floating { Expression::IndexedUpdateValue { value: Box::new(value) } } else { value }),
             });
         }
         let condition = self.binary_expression_from(first, 1)?;
@@ -443,13 +447,17 @@ impl Parser {
             self.advance();
             self.advance();
             let rhs = self.expression()?;
+            // (A floating variable's update is marked, as in a statement.)
+            let floating = matches!(&first, Expression::Variable(name)
+                if matches!(self.variable_types.get(name), Some(Type::Float | Type::Double)));
+            let value = Expression::Binary {
+                operator,
+                left: Box::new(first.clone()),
+                right: Box::new(rhs),
+            };
             return Ok(Expression::Assign {
-                target: Box::new(crate::lvalues::canonical_assignment_target(first.clone())),
-                value: Box::new(Expression::Binary {
-                    operator,
-                    left: Box::new(first),
-                    right: Box::new(rhs),
-                }),
+                target: Box::new(crate::lvalues::canonical_assignment_target(first)),
+                value: Box::new(if floating { Expression::IndexedUpdateValue { value: Box::new(value) } } else { value }),
             });
         }
         if *self.peek() == Token::Equals {

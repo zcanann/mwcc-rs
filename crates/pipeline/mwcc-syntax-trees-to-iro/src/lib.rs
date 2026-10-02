@@ -1548,7 +1548,9 @@ impl Builder<'_, '_> {
                 match built.kind {
                     ExprKind::Binary(op @ (BinaryOp::Add | BinaryOp::Multiply), left, right)
                         if is_float(built.ty)
-                            && !self.unit.unoptimized
+                            // (-O0: a variable's update; a memory one keeps
+                            // its compound address reuse.)
+                            && (!self.unit.unoptimized || matches!(left.kind, ExprKind::Var(_)))
                             && left.ty == built.ty
                             && constant(&right)
                             && std::env::var_os("MWCC_IRO_NO_FLOAT_UPDATES").is_none() =>

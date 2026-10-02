@@ -2738,9 +2738,12 @@ impl Lowerer<'_, '_> {
         // first, is loaded first too: it enters the pool before the other
         // operand's constants.)
         // (-O0 too, unless the other operand is loaded: it then goes first.)
+        // (-O0 keeps a compound update's loaded value first: `s->f += k`.)
+        let compound_update = self.unoptimized && self.compound_store && matches!(left.kind, ExprKind::Load { .. });
         let o0_constant_first = self.unoptimized
-            && !matches!(left.kind, ExprKind::Load { .. })
-            && !left.as_var().is_some_and(|id| self.homes[id].is_some())
+            && !compound_update
+            && !(toggle("MWCC_PCODE_O0_LOADED_CONSTANT_LATE")
+                && (matches!(left.kind, ExprKind::Load { .. }) || left.as_var().is_some_and(|id| self.homes[id].is_some())))
             && !toggle("MWCC_PCODE_O0_CONSTANT_LATE");
         let constant_first = matches!(op, BinaryOp::Add | BinaryOp::Multiply)
             && (!self.unoptimized || o0_constant_first)
@@ -2790,8 +2793,10 @@ impl Lowerer<'_, '_> {
             } else if refined
                 && constant(right)
                 && !(self.unoptimized
-                    && (matches!(left.kind, ExprKind::Load { .. })
-                        || left.as_var().is_some_and(|id| self.homes[id].is_some() || target.is_some() && self.registers[id] == target)))
+                    && (compound_update
+                        || (toggle("MWCC_PCODE_O0_LOADED_CONSTANT_LATE")
+                            && (matches!(left.kind, ExprKind::Load { .. })
+                                || left.as_var().is_some_and(|id| self.homes[id].is_some() || target.is_some() && self.registers[id] == target)))))
             {
                 true
             } else if self.unoptimized && !toggle("MWCC_PCODE_O0_FLOAT_REORDER") {
