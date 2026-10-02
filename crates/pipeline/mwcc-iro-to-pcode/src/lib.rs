@@ -2880,6 +2880,22 @@ impl Lowerer<'_, '_> {
 
     fn idiom(&mut self, idiom: &Idiom, target: Option<u32>) -> Compilation<(u32, Type)> {
         match idiom {
+            // `x op= k`: the operands load and combine in source order.
+            Idiom::Update(op, left, right) => {
+                let ty = left.ty;
+                let single = ty == Type::Float;
+                let (a, _) = self.expression(left)?;
+                let (b, _) = self.expression(right)?;
+                let d = self.result_for(ty, target);
+                self.emit_plain(match (op, single) {
+                    (BinaryOp::Add, true) => Instruction::FloatAddSingle { d, a, b },
+                    (BinaryOp::Add, false) => Instruction::FloatAddDouble { d, a, b },
+                    (BinaryOp::Multiply, true) => Instruction::FloatMultiplySingle { d, a, c: b },
+                    (BinaryOp::Multiply, false) => Instruction::FloatMultiplyDouble { d, a, c: b },
+                    (other, _) => return Err(unsupported(format!("floating update {other:?}"))),
+                });
+                Ok((d, ty))
+            }
             Idiom::Insert { base, value, shift, begin, end } => {
                 // The inserted value is computed before the old unit loads.
                 // -O0 inserts a promoted narrow value as it is (no
@@ -5067,7 +5083,7 @@ fn makes_calls(body: &[Stmt]) -> bool {
             }
             ExprKind::Idiom(Idiom::Absolute(value) | Idiom::Unary(_, value)) => expression(value),
             ExprKind::Idiom(Idiom::Masked { tested, value, .. }) => expression(tested) || expression(value),
-            ExprKind::Idiom(Idiom::Insert { base, value, .. }) => expression(base) || expression(value),
+            ExprKind::Idiom(Idiom::Insert { base, value, .. } | Idiom::Update(_, base, value)) => expression(base) || expression(value),
         }
     }
     body.iter().any(|statement| match statement {
@@ -5119,7 +5135,7 @@ fn references_weighted(body: &[Stmt], variable: VarId, base: usize) -> usize {
             }
             ExprKind::Call { arguments, .. } => arguments.iter().map(|a| expression(a, variable)).sum(),
             ExprKind::Idiom(Idiom::Absolute(value) | Idiom::Unary(_, value)) => expression(value, variable),
-            ExprKind::Idiom(Idiom::Insert { base, value, .. }) => expression(base, variable) + expression(value, variable),
+            ExprKind::Idiom(Idiom::Insert { base, value, .. } | Idiom::Update(_, base, value)) => expression(base, variable) + expression(value, variable),
             ExprKind::Idiom(Idiom::Masked { tested, value, .. }) => {
                 expression(tested, variable) + expression(value, variable)
             }
@@ -5641,7 +5657,7 @@ fn escaping_frame_objects(body: &[Stmt], count: usize) -> Vec<bool> {
             }
             ExprKind::Call { arguments, .. } => arguments.iter().for_each(|argument| expression(argument, out)),
             ExprKind::Idiom(Idiom::Absolute(value) | Idiom::Unary(_, value)) => expression(value, out),
-            ExprKind::Idiom(Idiom::Insert { base, value, .. }) => {
+            ExprKind::Idiom(Idiom::Insert { base, value, .. } | Idiom::Update(_, base, value)) => {
                 expression(base, out);
                 expression(value, out);
             }
@@ -5721,7 +5737,7 @@ fn expression_children(e: &Expr) -> Vec<&Expr> {
         ExprKind::Select { condition, when_true, when_false } => vec![condition, when_true, when_false],
         ExprKind::Call { arguments, .. } => arguments.iter().collect(),
         ExprKind::Idiom(Idiom::Absolute(value) | Idiom::Unary(_, value)) => vec![value],
-        ExprKind::Idiom(Idiom::Insert { base, value, .. }) => vec![base, value],
+        ExprKind::Idiom(Idiom::Insert { base, value, .. } | Idiom::Update(_, base, value)) => vec![base, value],
         ExprKind::Idiom(Idiom::Masked { tested, value, .. }) => vec![tested, value],
         _ => Vec::new(),
     }

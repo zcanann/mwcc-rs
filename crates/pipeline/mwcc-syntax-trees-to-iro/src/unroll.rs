@@ -366,7 +366,7 @@ fn displaced(statement: &mut Stmt) {
                 expression(when_false);
             }
             ExprKind::Call { arguments, .. } => arguments.iter_mut().for_each(expression),
-            _ => {}
+            _ => crate::passes::children(e, &mut |child| expression(child)),
         }
     }
     if let Stmt::Store { place: mwcc_iro::Place::Memory { base, index: None, offset }, .. } = statement {

@@ -84,6 +84,7 @@ fn uses(body: &[Stmt], variable: VarId) -> usize {
                 expression(condition, variable) + expression(when_true, variable) + expression(when_false, variable)
             }
             ExprKind::Call { arguments, .. } => arguments.iter().map(|argument| expression(argument, variable)).sum(),
+            ExprKind::Idiom(mwcc_iro::Idiom::Update(_, left, right)) => expression(left, variable) + expression(right, variable),
             // (Conservatively, an idiom reads everything.)
             ExprKind::Idiom(_) => 1,
             _ => 0,
@@ -569,6 +570,10 @@ fn rewrite(expression: &mut Expr, induction: VarId, assigned: &[VarId], cursors:
                     children.push(when_false);
                 }
                 ExprKind::Call { arguments, .. } => children.extend(arguments.iter_mut()),
+                ExprKind::Idiom(mwcc_iro::Idiom::Update(_, left, right)) => {
+                    children.push(left);
+                    children.push(right);
+                }
                 _ => {}
             }
             for child in children {
@@ -638,6 +643,7 @@ fn based(body: &[Stmt], variable: VarId) -> bool {
                 expression(condition, variable) || expression(when_true, variable) || expression(when_false, variable)
             }
             ExprKind::Call { arguments, .. } => arguments.iter().any(|argument| expression(argument, variable)),
+            ExprKind::Idiom(mwcc_iro::Idiom::Update(_, left, right)) => expression(left, variable) || expression(right, variable),
             ExprKind::Idiom(_) => true,
             _ => false,
         }

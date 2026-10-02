@@ -324,6 +324,9 @@ pub enum Idiom {
     Insert { base: Box<Expr>, value: Box<Expr>, shift: u8, begin: u8, end: u8 },
     /// A one-operand compiler intrinsic (`__cntlzw`, `__fabs`).
     Unary(IntrinsicOp, Box<Expr>),
+    /// A compound floating update's `x op k` (`x += k`): MWCC keeps its
+    /// operands in source order, where `x + k` puts the constant first.
+    Update(BinaryOp, Box<Expr>, Box<Expr>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -422,7 +425,9 @@ impl Expr {
             ExprKind::Idiom(Idiom::Masked { tested, value, .. }) => {
                 tested.mentions(variable) || value.mentions(variable)
             }
-            ExprKind::Idiom(Idiom::Insert { base, value, .. }) => base.mentions(variable) || value.mentions(variable),
+            ExprKind::Idiom(Idiom::Insert { base, value, .. } | Idiom::Update(_, base, value)) => {
+                base.mentions(variable) || value.mentions(variable)
+            }
         }
     }
 }

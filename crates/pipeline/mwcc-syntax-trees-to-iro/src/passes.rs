@@ -1093,7 +1093,7 @@ pub(crate) fn children(expression: &mut Expr, rewrite: &mut dyn FnMut(&mut Expr)
         }
         ExprKind::Call { arguments, .. } => arguments.iter_mut().for_each(|argument| rewrite(argument)),
         ExprKind::Idiom(Idiom::Absolute(value) | Idiom::Unary(_, value)) => rewrite(value),
-        ExprKind::Idiom(Idiom::Insert { base, value, .. }) => {
+        ExprKind::Idiom(Idiom::Insert { base, value, .. } | Idiom::Update(_, base, value)) => {
             rewrite(base);
             rewrite(value);
         }
@@ -1531,7 +1531,7 @@ pub fn idioms(expression: &mut Expr, variables: &[Type]) {
     if let ExprKind::Select { condition, when_true, when_false } = &expression.kind {
         if let Some(idiom) = sign_idiom(condition, when_true, when_false, variables) {
             let ty = match &idiom {
-                Idiom::Absolute(_) | Idiom::Insert { .. } | Idiom::Unary(..) => Type::Int,
+                Idiom::Absolute(_) | Idiom::Insert { .. } | Idiom::Unary(..) | Idiom::Update(..) => Type::Int,
                 Idiom::Masked { value, .. } => mwcc_iro::promote(value.ty),
             };
             *expression = Expr { kind: ExprKind::Idiom(idiom), ty };
@@ -1545,7 +1545,7 @@ pub fn sign_idiom(condition: &Expr, when_true: &Expr, when_false: &Expr, variabl
     let idiom = recognize(condition, when_true, when_false)?;
     let tested = match &idiom {
         Idiom::Absolute(tested) | Idiom::Masked { tested, .. } => tested,
-        Idiom::Insert { .. } | Idiom::Unary(..) => return None,
+        Idiom::Insert { .. } | Idiom::Unary(..) | Idiom::Update(..) => return None,
     };
     let equality = matches!(idiom, Idiom::Masked { relation: BinaryOp::Equal | BinaryOp::NotEqual, .. });
     let ty = variables[tested.as_var()?];
@@ -1755,7 +1755,7 @@ fn select(
     let variables: Vec<Type> = function.variables.iter().map(|variable| variable.ty).collect();
     if let Some(idiom) = sign_idiom(condition, when_true, when_false, &variables) {
         let ty = match &idiom {
-            Idiom::Absolute(_) | Idiom::Insert { .. } | Idiom::Unary(..) => Type::Int,
+            Idiom::Absolute(_) | Idiom::Insert { .. } | Idiom::Unary(..) | Idiom::Update(..) => Type::Int,
             Idiom::Masked { value, .. } => mwcc_iro::promote(value.ty),
         };
         return Some(vec![destination.assign(Expr { kind: ExprKind::Idiom(idiom), ty })]);

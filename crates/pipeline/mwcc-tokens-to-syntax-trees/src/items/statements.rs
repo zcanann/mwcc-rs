@@ -118,7 +118,16 @@ impl Parser {
                 left: Box::new(first.clone()),
                 right: Box::new(rhs),
             };
-            let value = super::update_value(&first, value);
+            // (A floating variable's update is marked too: its operands
+            // keep source order.)
+            let value = match &first {
+                Expression::Variable(name)
+                    if matches!(self.variable_types.get(name), Some(Type::Float | Type::Double)) =>
+                {
+                    Expression::IndexedUpdateValue { value: Box::new(value) }
+                }
+                _ => super::update_value(&first, value),
+            };
             if self.eat_keyword(Token::Comma) {
                 let assignment = Expression::Assign {
                     target: Box::new(crate::lvalues::canonical_assignment_target(first)),

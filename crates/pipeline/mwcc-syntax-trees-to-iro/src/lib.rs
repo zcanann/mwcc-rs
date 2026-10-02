@@ -1483,7 +1483,27 @@ impl Builder<'_, '_> {
             }
             Expression::AddressOf { operand } => self.address_of(operand)?,
             // Provenance wrappers: the value is the wrapped expression.
-            Expression::IndexedUpdateValue { value } => self.expression(value)?,
+            Expression::IndexedUpdateValue { value } => {
+                let built = self.expression(value)?;
+                // (A floating `x += k` keeps its operands in source order.)
+                let constant = |e: &Expr| match &e.kind {
+                    ExprKind::Float(_) => true,
+                    ExprKind::Convert(inner) => matches!(inner.kind, ExprKind::Float(_) | ExprKind::Int(_)),
+                    _ => false,
+                };
+                match built.kind {
+                    ExprKind::Binary(op @ (BinaryOp::Add | BinaryOp::Multiply), left, right)
+                        if is_float(built.ty)
+                            && !self.unit.unoptimized
+                            && left.ty == built.ty
+                            && constant(&right)
+                            && std::env::var_os("MWCC_IRO_NO_FLOAT_UPDATES").is_none() =>
+                    {
+                        Expr { kind: ExprKind::Idiom(mwcc_iro::Idiom::Update(op, left, right)), ty: built.ty }
+                    }
+                    kind => Expr { kind, ty: built.ty },
+                }
+            }
             Expression::BitFieldRead { extracted, promoted_type, .. } => {
                 let value = self.expression(extracted)?;
                 converted(promoted(value), *promoted_type)
@@ -1569,8 +1589,13 @@ impl Builder<'_, '_> {
                 let stepped = if matches!(ty, Type::Pointer(_) | Type::StructPointer { .. }) {
                     self.pointer_arithmetic(op, current.clone(), Expr::int(1))?
                 } else if is_float(ty) {
-                    // (A floating value steps by 1.0.)
-                    Expr::binary(op, current.clone(), Expr { kind: ExprKind::Float(1.0), ty }, ty)
+                    // (A floating value steps by 1.0, operands in source order.)
+                    let one = Expr { kind: ExprKind::Float(1.0), ty };
+                    if op == BinaryOp::Add && !self.unit.unoptimized {
+                        Expr { kind: ExprKind::Idiom(mwcc_iro::Idiom::Update(op, Box::new(current.clone()), Box::new(one))), ty }
+                    } else {
+                        Expr::binary(op, current.clone(), one, ty)
+                    }
                 } else {
                     Expr::binary(op, promoted(current.clone()), Expr::int(1), promote(ty))
                 };
