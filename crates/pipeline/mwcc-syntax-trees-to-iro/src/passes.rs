@@ -2655,6 +2655,18 @@ fn word_identities(op: BinaryOp, left: &Expr, right: &Expr, ty: Type) -> Option<
         {
             Some(Expr::typed_int(right.as_int()?, ty))
         }
+        // `(int)(u >> n) & m`: the retyping changes no bits (the shift's
+        // kind comes from its operand).
+        (BinaryOp::BitAnd, ExprKind::Convert(inner), ExprKind::Int(_))
+            if matches!(inner.ty, Type::Int | Type::UnsignedInt) && matches!(inner.kind, ExprKind::Binary(BinaryOp::ShiftRight, ..)) =>
+        {
+            let inner = Expr { ty, ..(**inner).clone() };
+            Some(Expr::binary(BinaryOp::BitAnd, inner, right.clone(), ty))
+        }
+        // `x - (k << 16)` is `addis x,-k`.
+        (BinaryOp::Subtract, _, ExprKind::Int(k)) if *k as u32 & 0xffff == 0 && *k as u32 != 0 && *k as i32 != i32::MIN => {
+            Some(Expr::binary(BinaryOp::Add, left.clone(), Expr::typed_int(i64::from((*k as i32).wrapping_neg()), ty), ty))
+        }
         (BinaryOp::Equal | BinaryOp::NotEqual, ExprKind::Int(_), _) if right.as_int().is_none() => {
             Some(Expr::binary(op, right.clone(), left.clone(), ty))
         }
