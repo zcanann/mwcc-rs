@@ -16,6 +16,8 @@ use crate::{coloring, schedule};
 pub struct FinishOptions {
     /// MWCC's scheduler runs (`-O4`-style latency scheduling).
     pub schedule: bool,
+    /// GC/1.x-2.x: a surviving copy tested against 0 is `mr.`.
+    pub move_record: bool,
     /// Remove dead definitions while building interference (MWCC's
     /// `gDeleteDeadInstructions`).
     pub delete_dead: bool,
@@ -82,6 +84,9 @@ pub fn finish(
     }
     let colors = coloring::color(&mut pcode, options.delete_dead)?;
     dump(&pcode, "AFTER REGISTER COLORING");
+    if options.move_record && !options.unoptimized && !toggle("MWCC_PCODE_NO_MOVE_RECORD") {
+        move_records(&mut pcode);
+    }
     // (GC/3.x folds at -O0 too.)
     if !options.unoptimized || options.fold_absolute_into_own_base {
         fold_absolute_displacements(&mut pcode, options.fold_absolute_into_own_base);
@@ -1596,6 +1601,45 @@ fn update_loads(pcode: &mut PCodeFunction) {
                 Instruction::StoreWord { offset, .. } | Instruction::StoreHalfword { offset, .. } | Instruction::StoreByte { offset, .. } => *offset = 0,
                 _ => {}
             }
+        }
+    }
+}
+
+/// `mr rD,rS` (or an early `addi rD,rS,0`) followed by `cmpwi rD,0`, with
+/// nothing between that touches rD or cr0, becomes `mr. rD,rS`.
+fn move_records(pcode: &mut PCodeFunction) {
+    use mwcc_pcode::Class;
+    for block in &mut pcode.blocks {
+        let mut index = 0;
+        while index < block.instructions.len() {
+            let Instruction::CompareWordImmediate { a: tested, immediate: 0 } = block.instructions[index].instruction else {
+                index += 1;
+                continue;
+            };
+            let mut at = index;
+            let mut found = None;
+            while at > 0 {
+                at -= 1;
+                let candidate = &block.instructions[at];
+                if candidate.defs(Class::General).contains(&tested) {
+                    found = match candidate.instruction {
+                        Instruction::Or { a, s, b } if a == tested && s == b && s != a => Some((a, s)),
+                        Instruction::AddImmediate { d, a, immediate: 0 } if d == tested && a != 0 && a != d => Some((d, a)),
+                        _ => None,
+                    };
+                    break;
+                }
+                let name = format!("{:?}", candidate.instruction);
+                if name.contains("Record") || name.starts_with("Compare") || candidate.instruction.is_call() || name.starts_with("Branch") {
+                    break;
+                }
+            }
+            if let Some((d, s)) = found {
+                block.instructions[at].instruction = Instruction::OrRecord { a: d, s, b: s };
+                block.instructions.remove(index);
+                continue;
+            }
+            index += 1;
         }
     }
 }

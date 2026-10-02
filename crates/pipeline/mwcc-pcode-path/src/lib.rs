@@ -303,6 +303,7 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         lowered.makes_calls,
         mwcc_pcode_to_machine_code::FinishOptions {
             schedule: behavior.schedule_latency_slots,
+            move_record: !request.config.build.label.starts_with("GC/3.") && !request.config.build.label.starts_with("Wii/"),
             delete_dead: behavior.optimization != mwcc_versions::Optimization::O0,
             two_integer_units: behavior.integer_select_style == mwcc_versions::IntegerSelectStyle::Branchless,
             unoptimized,
