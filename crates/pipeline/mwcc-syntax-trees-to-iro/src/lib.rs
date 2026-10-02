@@ -296,6 +296,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         strings: Vec::new(),
         guarded: 0,
         argument_guards: 0,
+        calling_arguments: 0,
         temporaries: Vec::new(),
         direct_return: false,
     };
@@ -602,6 +603,8 @@ struct Builder<'a, 'u> {
     /// unspecified order): a register variable's post-step still applies
     /// after the statement there.
     argument_guards: usize,
+    /// Enclosing calls with an argument that itself calls.
+    calling_arguments: usize,
     /// Registers holding assigned values, numbered after `variables`.
     temporaries: Vec<Variable>,
     /// String literals by bytes, in first-use order.
@@ -1548,7 +1551,12 @@ impl Builder<'_, '_> {
                         || matches!(target.as_ref(), Expression::Variable(name)
                             if self.names.get(name).is_some_and(|&id| self.variables[id].frame.is_some()))) =>
             {
-                if self.guarded > 0 || std::env::var_os("MWCC_IRO_NO_MEMORY_POST_VALUE").is_some() {
+                // (In call arguments too, when no argument of an enclosing call
+                // calls: the step then precedes the calls either way.)
+                let in_arguments = self.guarded == self.argument_guards
+                    && self.calling_arguments == 0
+                    && std::env::var_os("MWCC_IRO_NO_ARGUMENT_POST_STEP").is_none();
+                if (self.guarded > 0 && !in_arguments) || std::env::var_os("MWCC_IRO_NO_MEMORY_POST_VALUE").is_some() {
                     return Err(unsupported("expression PostStep"));
                 }
                 let old = self.expression(target)?;
@@ -1560,6 +1568,9 @@ impl Builder<'_, '_> {
                 let op = if *operator == BinaryOperator::Subtract { BinaryOp::Subtract } else { BinaryOp::Add };
                 let stepped = if matches!(ty, Type::Pointer(_) | Type::StructPointer { .. }) {
                     self.pointer_arithmetic(op, current.clone(), Expr::int(1))?
+                } else if is_float(ty) {
+                    // (A floating value steps by 1.0.)
+                    Expr::binary(op, current.clone(), Expr { kind: ExprKind::Float(1.0), ty }, ty)
                 } else {
                     Expr::binary(op, promoted(current.clone()), Expr::int(1), promote(ty))
                 };
@@ -1710,13 +1721,20 @@ impl Builder<'_, '_> {
             return Err(unsupported("call target of this type"));
         }
         let mut values = vec![target];
-        for argument in arguments {
-            let value = promoted(self.argument_expression(argument)?);
-            if is_float(value.ty) || !is_value_type(value.ty) {
-                return Err(unsupported("indirect call argument of this type"));
+        let calling = arguments.iter().any(|argument| format!("{argument:?}").contains("Call"));
+        self.calling_arguments += usize::from(calling);
+        let evaluated: Compilation<()> = (|| {
+            for argument in arguments {
+                let value = promoted(self.argument_expression(argument)?);
+                if is_float(value.ty) || !is_value_type(value.ty) {
+                    return Err(unsupported("indirect call argument of this type"));
+                }
+                values.push(value);
             }
-            values.push(value);
-        }
+            Ok(())
+        })();
+        self.calling_arguments -= usize::from(calling);
+        evaluated?;
         Ok(Expr { kind: ExprKind::Call { name: mwcc_iro::INDIRECT_CALL.to_owned(), arguments: values }, ty })
     }
 
@@ -2005,6 +2023,9 @@ impl Builder<'_, '_> {
                 };
                 let parameter_types = self.unit.call_parameter_types.get(name).cloned();
                 let mut values = Vec::with_capacity(arguments.len());
+                // (A step hoisted out of an argument stays ahead of no call.)
+                let calling = arguments.iter().any(|argument| format!("{argument:?}").contains("Call"));
+                self.calling_arguments += usize::from(calling);
                 for (index, argument) in arguments.iter().enumerate() {
                     // A struct passed by value: a caller copy, by address.
                     match parameter_types.as_ref().and_then(|types| types.get(index)).copied() {
@@ -2023,6 +2044,7 @@ impl Builder<'_, '_> {
                         self.argument_expression(argument)?
                     });
                 }
+                self.calling_arguments -= usize::from(calling);
                 let mut arguments = values;
                 if variadic {
                     // Arguments past the fixed parameters take the default
