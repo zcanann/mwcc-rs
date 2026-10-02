@@ -245,12 +245,12 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         unrolling: matches!(behavior.optimization, mwcc_versions::Optimization::O3 | mwcc_versions::Optimization::O4)
             && request.config.flags.explicit_speed_goal,
         reassociates_sums: !request.config.build.label.starts_with("GC/3.") && !request.config.build.label.starts_with("Wii/"),
-        // (GC/3.x divides by multiplication at every level.)
-        // (And at any level with an explicit `,p`.)
-        magic_division: behavior.optimization == mwcc_versions::Optimization::O4
-            || request.config.flags.explicit_speed_goal
-            || request.config.build.label.starts_with("GC/3.")
-            || request.config.build.label.starts_with("Wii/"),
+        // (At any level with an explicit `,p`; GC/3.x and Wii also by
+        // default, but not when optimizing for size.)
+        magic_division: request.config.flags.explicit_speed_goal
+            || ((request.config.build.label.starts_with("GC/3.") || request.config.build.label.starts_with("Wii/"))
+                && request.config.flags.optimization_goal != mwcc_versions::OptimizationGoal::Size)
+            || (behavior.optimization == mwcc_versions::Optimization::O4 && std::env::var_os("MWCC_PCODE_O4_MAGIC_DIVISION").is_some()),
         signed_promoted_truth: request.config.build.label.starts_with("GC/3.") || request.config.build.label.starts_with("Wii/"),
         nonvolatile_pointers: request.nonvolatile_pointers,
         inline_initialized_locals: request.inline_initialized_locals,
