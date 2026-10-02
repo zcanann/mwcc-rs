@@ -1187,7 +1187,9 @@ impl Parser {
                 continue;
             }
             let field_is_function_pointer_typedef = matches!(self.peek(), Token::Identifier(word) if self.function_pointer_typedefs.contains_key(word));
+            let type_start = self.position;
             let mut field_type = self.parse_type()?;
+            let scalar_base = self.last_cxx_pointer_base;
             layout.has_volatile_fields |= self.last_type_was_volatile;
             let field_function_type = field_is_function_pointer_typedef
                 .then(|| self.last_cxx_function_type.take())
@@ -1197,6 +1199,9 @@ impl Parser {
                 field_type = Type::Pointer(Pointee::Pointer);
                 self.last_struct_tag = None;
             }
+            // (Later declarators carry their own stars: `T *p, *n;`.)
+            let first_depth = self.tokens[type_start..self.position].iter().filter(|token| **token == Token::Star).count();
+            let first_type = field_type;
             // Only a ROW-POINTER typedef member reaches here (an array-typedef member
             // was intercepted above). It occupies one pointer word. Preserve its row
             // byte stride as the same safety marker used by an explicitly spelled
@@ -1213,14 +1218,35 @@ impl Parser {
                 }
                 None => None,
             };
-            let struct_tag = self.last_struct_tag.take();
+            let mut struct_tag = self.last_struct_tag.take();
+            let first_tag = struct_tag.clone();
             // A declarator may carry `__attribute__((aligned(n)))` between the type
             // and the name (e.g. `u8 ATTRIBUTE_ALIGN(4) board_data[32];`); skip it,
             // honouring any requested alignment so subsequent offsets stay exact.
             let attr_align = self.skip_attributes()?;
             // One or more comma-separated declarators share the field type, e.g.
             // `f32 x, y, z;`. Each gets its own naturally-aligned offset.
+            let mut first_declarator = true;
             loop {
+                if !first_declarator && row_pointer_stride.is_none() {
+                    let mut stars = 0;
+                    while self.eat_keyword(Token::Star) {
+                        stars += 1;
+                    }
+                    if stars == first_depth {
+                        field_type = first_type;
+                        struct_tag = first_tag.clone();
+                    } else if stars == 0 && first_depth > 0 && scalar_base.is_some() {
+                        field_type = scalar_base.expect("checked");
+                        struct_tag = None;
+                    } else if stars == 1 && first_depth == 0 && !matches!(first_type, Type::Struct { .. }) {
+                        field_type = Type::Pointer(pointee_of(first_type)?);
+                        struct_tag = None;
+                    } else {
+                        return Err(Diagnostic::error("member declarators of different pointer depths (not yet supported)"));
+                    }
+                }
+                first_declarator = false;
                 // A parenthesized pointer member is either a function pointer
                 // `RET (*name)(params)` or a pointer to an array `T (*name)[N]`.
                 // Both occupy one word. Keep the row byte stride as a marker for the
