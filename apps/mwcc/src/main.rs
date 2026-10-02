@@ -1834,11 +1834,18 @@ fn compile(
             // Internal or const tables can target defined or declared functions
             // and data. The writer owns definition hoisting and undefined-symbol
             // first-use ordering; storage and linkage are independent decisions.
+            // (A function the unit defines counts even when it was not
+            // compiled — parity keep-going.)
+            let defined_names: std::collections::HashSet<String> = prototyped_names
+                .iter()
+                .cloned()
+                .chain(unit.functions.iter().map(|function| function.name.clone()))
+                .collect();
             let function_address_table = global_initializers::function_address_table(
                 global,
                 elements,
                 &machine_functions,
-                &prototyped_names,
+                if parity_keep_going { &defined_names } else { &prototyped_names },
             );
             let data_address_table =
                 global_initializers::data_address_table(global, elements, &unit.globals);

@@ -247,8 +247,13 @@ fn lower_function_body(
     };
     // (Statics carrying relocations — pointer tables — stay legacy.)
     // (As do ones whose data would not fit their computed size.)
+    // (Symbol relocations — tables of functions or objects — ride along.)
     let statics_supported = (static_strings_free
-        && static_locals.iter().all(|local| local.data_relocations.is_empty())
+        && static_locals.iter().all(|local| {
+            local.data_relocations.is_empty()
+                || (local.data_relocations.iter().all(|relocation| matches!(relocation.target, LocalDataRelocationTarget::Symbol(_)))
+                    && std::env::var_os("MWCC_PCODE_NO_STATIC_TABLES").is_none())
+        })
         && static_local_data
             .iter()
             .all(|datum| datum.initial_bytes.as_ref().is_none_or(|bytes| bytes.len() as u32 <= datum.size)))
