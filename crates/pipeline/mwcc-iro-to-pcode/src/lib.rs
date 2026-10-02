@@ -2150,7 +2150,47 @@ impl Lowerer<'_, '_> {
                     && is_float(ty) == is_float(when_false.ty)
                     && !toggle("MWCC_PCODE_NO_BRANCH_SELECT") =>
             {
+                // (After the early builds, `c ? 1 : 0` is c's truth value.)
+                if !self.unoptimized
+                    && !self.unit.branch_preserving
+                    && !is_float(ty)
+                    && !is_float(condition.ty)
+                    && when_true.as_int() == Some(1)
+                    && when_false.as_int() == Some(0)
+                    && !toggle("MWCC_PCODE_NO_SELECT_TRUTH")
+                {
+                    let truth = match &condition.kind {
+                        ExprKind::Binary(op, ..) if op.is_comparison() => (**condition).clone(),
+                        _ => Expr::binary(BinaryOp::NotEqual, (**condition).clone(), Expr::int(0), Type::Int),
+                    };
+                    let (value, _) = self.expression_with_target(&truth, target)?;
+                    return Ok((value, ty));
+                }
                 let d = self.result_for(ty, target);
+                // (An arm that is the destination itself: only the other
+                // arm, under the condition that selects it.)
+                let destination_variable = |e: &Expr| {
+                    unpromoted(e).as_var().is_some_and(|id| self.registers[id] == Some(d))
+                };
+                if !self.unoptimized && !is_float(ty) && !toggle("MWCC_PCODE_NO_SELF_ARM") {
+                    let kept = if destination_variable(when_true) {
+                        Some((true, when_false))
+                    } else if destination_variable(when_false) {
+                        Some((false, when_true))
+                    } else {
+                        None
+                    };
+                    if let Some((skip_when, other)) = kept {
+                        let join = self.new_label();
+                        self.branch_on(condition, skip_when, join)?;
+                        let (value, _) = self.expression_with_target(other, Some(d))?;
+                        if value != d {
+                            self.copy(ty, d, value);
+                        }
+                        self.place_label(join);
+                        return Ok((d, ty));
+                    }
+                }
                 // Optimized, one arm is computed before the branch: the
                 // else arm, unless only the then arm is constant.
                 // (Not floating selects, nor arms that call.)
@@ -2172,7 +2212,12 @@ impl Lowerer<'_, '_> {
                     };
                     let loads = |e: &Expr| format!("{:?}", e.kind).contains("Load {") || format!("{:?}", e.kind).contains("Global(");
                     let both_variables = unpromoted(when_true).as_var().is_some() && unpromoted(when_false).as_var().is_some();
-                    if !(cheap(first) && !loads(second)) || both_variables {
+                    // (Nor when the condition or the other arm reads the
+                    // destination's variable: the hoisted arm would clobber it.)
+                    let reads_destination = |e: &Expr| {
+                        (0..self.function.variables.len()).any(|id| self.registers[id] == Some(d) && e.mentions(id))
+                    };
+                    if !(cheap(first) && !loads(second)) || both_variables || reads_destination(condition) || reads_destination(second) {
                         return self.two_path_select(condition, when_true, when_false, ty, d);
                     }
                     let join = self.new_label();

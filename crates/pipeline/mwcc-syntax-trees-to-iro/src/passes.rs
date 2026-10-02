@@ -265,6 +265,24 @@ fn narrowing_in(body: &mut [Stmt], return_type: Type, variables: &[Type]) {
             _ => {}
         }
     }
+    /// `x & m` with `m` within the low N bytes (`char a & 0xf`): x's
+    /// promotion from a narrow type at least N bytes wide is dropped.
+    fn mask_narrowing(value: &mut Expr) {
+        let ExprKind::Binary(BinaryOp::BitAnd, left, right) = &mut value.kind else { return };
+        let mask = right.as_int().filter(|&mask| mask > 0 && mask <= 0xffff);
+        let Some(mask) = mask.filter(|_| std::env::var_os("MWCC_IRO_NO_MASK_NARROWING").is_none()) else { return };
+        // (Through a right shift, the bits the mask keeps move up.)
+        let (operand, mask) = match &mut left.kind {
+            ExprKind::Binary(BinaryOp::ShiftRight, inner, count) if count.as_int().is_some_and(|n| (0..16).contains(&n)) => {
+                let n = count.as_int().unwrap_or(0);
+                (inner.as_mut(), mask << n)
+            }
+            _ => (left.as_mut(), mask),
+        };
+        if mask <= 0xffff {
+            strip(operand, if mask <= 0xff { 1 } else { 2 });
+        }
+    }
     fn visit(expression: &mut Expr) {
         children(expression, &mut |child| visit(child));
         if let ExprKind::Convert(operand) = &mut expression.kind {
@@ -301,8 +319,21 @@ fn narrowing_in(body: &mut [Stmt], return_type: Type, variables: &[Type]) {
             _ => None,
         };
         if let Some((ty, value)) = narrowed {
+            // (Only a statement's own value: MWCC extends a masked narrow
+            // value inside a condition.)
+            mask_narrowing(value);
             if is_narrow(ty) {
                 strip(value, width(ty));
+                // (A literal narrowed on the way out is truncated.)
+                if let Some(literal) = value.as_int().filter(|_| std::env::var_os("MWCC_IRO_NO_NARROW_LITERALS").is_none()) {
+                    let truncated = match ty {
+                        Type::Char => i64::from(literal as i8),
+                        Type::UnsignedChar => i64::from(literal as u8),
+                        Type::Short => i64::from(literal as i16),
+                        _ => i64::from(literal as u16),
+                    };
+                    *value = Expr::typed_int(truncated, value.ty);
+                }
             }
         }
     }
@@ -1199,6 +1230,21 @@ fn fold_once(expression: &Expr) -> Option<Expr> {
             let value = operand.as_int()?;
             Some(Expr::typed_int(if expression.ty == Type::UnsignedInt { value & 0xffff_ffff } else { i64::from(value as i32) }, expression.ty))
         }
+        // A narrow cast of a literal truncates it.
+        ExprKind::Convert(operand)
+            if matches!(expression.ty, Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort)
+                && operand.as_int().is_some()
+                && std::env::var_os("MWCC_IRO_NO_NARROW_LITERALS").is_none() =>
+        {
+            let value = operand.as_int()?;
+            let value = match expression.ty {
+                Type::Char => i64::from(value as i8),
+                Type::UnsignedChar => i64::from(value as u8),
+                Type::Short => i64::from(value as i16),
+                _ => i64::from(value as u16),
+            };
+            Some(Expr::typed_int(value, expression.ty))
+        }
         // Integer and pointer casts of a literal are the literal, typed.
         ExprKind::Convert(operand)
             if matches!(expression.ty, Type::Int | Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. })
@@ -1286,21 +1332,6 @@ fn fold_once(expression: &Expr) -> Option<Expr> {
             if matches!(op, BinaryOp::Multiply | BinaryOp::Divide) && mwcc_iro::is_general_word(expression.ty) {
                 if let (ExprKind::Unary(UnaryOp::Negate, a), ExprKind::Unary(UnaryOp::Negate, b)) = (&left.kind, &right.kind) {
                     return Some(Expr { kind: ExprKind::Binary(*op, a.clone(), b.clone()), ty: expression.ty });
-                }
-            }
-            // `(x & 2^k) == 2^k` is bit k of `x`.
-            if matches!(op, BinaryOp::Equal) {
-                if let ExprKind::Binary(BinaryOp::BitAnd, x, mask) = &left.kind {
-                    if let (Some(m), Some(v)) = (mask.as_int(), right.as_int()) {
-                        let m = m as u32;
-                        if m == v as u32 && m.is_power_of_two() && m > 1 && mwcc_iro::is_unsigned(x.ty) && !mwcc_iro::is_narrow(x.ty) {
-                            let k = Expr::typed_int(i64::from(m.trailing_zeros()), Type::Int);
-                            let shifted = Expr::binary(BinaryOp::ShiftRight, (**x).clone(), k, x.ty);
-                            let mut bit = Expr::binary(BinaryOp::BitAnd, shifted, Expr::typed_int(1, x.ty), x.ty);
-                            bit.ty = Type::Int;
-                            return Some(bit);
-                        }
-                    }
                 }
             }
             if let Some(rewritten) = word_identities(*op, left, right, expression.ty) {
@@ -2556,6 +2587,20 @@ fn word_identities(op: BinaryOp, left: &Expr, right: &Expr, ty: Type) -> Option<
             let mask = u32::MAX >> k.as_int()?;
             Some(Expr::binary(BinaryOp::BitAnd, (**x).clone(), Expr::typed_int(i64::from(mask), ty), ty))
         }
+        // (Different counts: a shift and a mask.)
+        (BinaryOp::ShiftRight, ExprKind::Binary(BinaryOp::ShiftLeft, x, k), _)
+            if ty == Type::UnsignedInt && x.ty == Type::UnsignedInt && k.as_int().is_some_and(|k| (1..32).contains(&k))
+                && right.as_int().is_some_and(|n| (1..32).contains(&n)) =>
+        {
+            let (k, n) = (k.as_int()?, right.as_int()?);
+            let mask = i64::from((u32::MAX << k) >> n);
+            let shifted = if k > n {
+                Expr::binary(BinaryOp::ShiftLeft, (**x).clone(), Expr::typed_int(k - n, Type::Int), ty)
+            } else {
+                Expr::binary(BinaryOp::ShiftRight, (**x).clone(), Expr::typed_int(n - k, Type::Int), ty)
+            };
+            Some(Expr::binary(BinaryOp::BitAnd, shifted, Expr::typed_int(mask, ty), ty))
+        }
         (BinaryOp::Add | BinaryOp::Subtract, ExprKind::Binary(BinaryOp::Multiply, a, k1), ExprKind::Binary(BinaryOp::Multiply, b, k2))
             if var(a) && same_leaf(a, b) =>
         {
@@ -2576,4 +2621,25 @@ fn word_identities(op: BinaryOp, left: &Expr, right: &Expr, ty: Type) -> Option<
         }
         _ => None,
     }
+}
+
+/// After the early builds, `(x & 2^k) == 2^k` is bit k of `x`
+/// (`rlwinm x,32-k,31,31`).
+pub fn bit_tests(body: &mut [Stmt]) {
+    fn rewrite(expression: &mut Expr) {
+        children(expression, &mut |child| rewrite(child));
+        let ExprKind::Binary(BinaryOp::Equal, left, right) = &expression.kind else { return };
+        let ExprKind::Binary(BinaryOp::BitAnd, x, mask) = &left.kind else { return };
+        let (Some(m), Some(v)) = (mask.as_int(), right.as_int()) else { return };
+        let m = m as u32;
+        if m != v as u32 || !m.is_power_of_two() || m < 2 || !mwcc_iro::is_general_word(x.ty) || is_narrow(x.ty) {
+            return;
+        }
+        let k = Expr::typed_int(i64::from(m.trailing_zeros()), Type::Int);
+        let shifted = Expr::binary(BinaryOp::ShiftRight, (**x).clone(), k, x.ty);
+        let mut bit = Expr::binary(BinaryOp::BitAnd, shifted, Expr::typed_int(1, x.ty), x.ty);
+        bit.ty = Type::Int;
+        *expression = bit;
+    }
+    for_each_expression(body, &mut |expression| rewrite(expression));
 }
