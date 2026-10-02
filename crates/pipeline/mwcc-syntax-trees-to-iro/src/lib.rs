@@ -1751,7 +1751,9 @@ impl Builder<'_, '_> {
         let evaluated: Compilation<()> = (|| {
             for argument in arguments {
                 let value = promoted(self.argument_expression(argument)?);
-                if is_float(value.ty) || !is_value_type(value.ty) {
+                // (Floating arguments go in f1.., as for a direct call.)
+                let floating = is_float(value.ty) && std::env::var_os("MWCC_IRO_NO_INDIRECT_FLOAT_ARGUMENTS").is_none();
+                if (is_float(value.ty) && !floating) || !is_value_type(value.ty) {
                     return Err(unsupported("indirect call argument of this type"));
                 }
                 values.push(value);
