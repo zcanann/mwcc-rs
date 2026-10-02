@@ -207,6 +207,9 @@ pub fn run(function: &mut Function, branch_preserving: bool, reassociates_sums: 
             for_each_expression(&mut function.body, &mut |expression| fold(expression));
         }
     }
+    if enabled("HOIST_CONSTANTS") {
+        for_each_expression(&mut function.body, &mut |expression| hoist_constants(expression, reassociates_sums));
+    }
     if enabled("DISPLACEMENTS") {
         displacements(&mut function.body);
     }
@@ -2679,4 +2682,79 @@ pub fn bit_tests(body: &mut [Stmt]) {
         *expression = bit;
     }
     for_each_expression(body, &mut |expression| rewrite(expression));
+}
+
+/// Sums of variables carry their constants last: `(a - 1) + b` is
+/// `(a + b) - 1`, `(a + 1) + (b - 3)` is `(b + a) - 2`; and a common factor
+/// comes out: `a*b + a*c` is `a * (b + c)`. GC/1.x-2.x (`variable_first`)
+/// put the constant term's variable first in `b + (a - 1)`; GC/3.x keeps
+/// source order.
+pub fn hoist_constants(expression: &mut Expr, variable_first: bool) {
+    children(expression, &mut |child| hoist_constants(child, variable_first));
+    let ty = expression.ty;
+    if !matches!(ty, Type::Int | Type::UnsignedInt) {
+        return;
+    }
+    let var = |e: &Expr| matches!(e.kind, ExprKind::Var(_)) && matches!(e.ty, Type::Int | Type::UnsignedInt);
+    // (GC/1.x-2.x: `(a + b) - k` takes k from b: `a + (b - k)`.)
+    if variable_first {
+        if let ExprKind::Binary(BinaryOp::Subtract, sum, k) = &expression.kind {
+            if let (ExprKind::Binary(BinaryOp::Add, a, b), Some(k)) = (&sum.kind, k.as_int()) {
+                if var(a) && var(b) {
+                    let inner = Expr::binary(BinaryOp::Subtract, (**b).clone(), Expr::typed_int(k, ty), ty);
+                    *expression = Expr::binary(BinaryOp::Add, (**a).clone(), inner, ty);
+                    return;
+                }
+            }
+        }
+    }
+    let ExprKind::Binary(BinaryOp::Add, left, right) = &expression.kind else { return };
+    // `x + c` / `x - c` with x a variable: (x, signed c).
+    let offset = |e: &Expr| -> Option<(Expr, i64)> {
+        let ExprKind::Binary(op @ (BinaryOp::Add | BinaryOp::Subtract), x, c) = &e.kind else { return None };
+        // (GC/1.x-2.x reassociate `x + k` themselves.)
+        if variable_first && *op == BinaryOp::Add {
+            return None;
+        }
+        let c = c.as_int()?;
+        var(x).then(|| ((**x).clone(), if *op == BinaryOp::Add { c } else { -c }))
+    };
+    let rebuilt = match (offset(left), offset(right)) {
+        (Some((x, c)), None) if var(right) => Some((x, (**right).clone(), c)),
+        (None, Some((x, c))) if var(left) => Some(if variable_first { (x, (**left).clone(), c) } else { ((**left).clone(), x, c) }),
+        (Some((x, c1)), Some((y, c2))) => Some((y, x, c1 + c2)),
+        _ => None,
+    };
+    if let Some((first, second, c)) = rebuilt {
+        let sum = Expr::binary(BinaryOp::Add, first, second, ty);
+        let c = i64::from(c as i32);
+        *expression = Expr::binary(BinaryOp::Add, sum, Expr::typed_int(c, ty), ty);
+        return;
+    }
+    // `a*b + a*c` (any operand order) is `a * (b + c)`.
+    let (ExprKind::Binary(BinaryOp::Multiply, p, q), ExprKind::Binary(BinaryOp::Multiply, r, t)) = (&left.kind, &right.kind) else { return };
+    if ![p, q, r, t].iter().all(|e| var(e)) {
+        return;
+    }
+    let factored = if same_leaf(p, r) {
+        Some((p, q, t))
+    } else if same_leaf(p, t) {
+        Some((p, q, r))
+    } else if same_leaf(q, r) {
+        Some((q, p, t))
+    } else if same_leaf(q, t) {
+        Some((q, p, r))
+    } else {
+        None
+    };
+    if let Some((common, b, c)) = factored {
+        let sum = Expr::binary(BinaryOp::Add, (**b).clone(), (**c).clone(), ty);
+        // (GC/1.x-2.x keep the factor where the first product has it.)
+        let factor_right = variable_first && same_leaf(common, q) && !same_leaf(common, p);
+        *expression = if factor_right {
+            Expr::binary(BinaryOp::Multiply, sum, (**common).clone(), ty)
+        } else {
+            Expr::binary(BinaryOp::Multiply, (**common).clone(), sum, ty)
+        };
+    }
 }
