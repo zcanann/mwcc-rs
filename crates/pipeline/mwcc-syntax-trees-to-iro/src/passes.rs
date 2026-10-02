@@ -202,6 +202,10 @@ pub fn run(function: &mut Function, branch_preserving: bool, reassociates_sums: 
             reassociate_sum(expression);
         }
         for_each_expression(&mut function.body, &mut |expression| all(expression));
+        // (Reassociation can pair literals.)
+        if enabled("FOLD") {
+            for_each_expression(&mut function.body, &mut |expression| fold(expression));
+        }
     }
     if enabled("DISPLACEMENTS") {
         displacements(&mut function.body);

@@ -65,6 +65,13 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     }
     if unit.strength_reduction && std::env::var_os("MWCC_IRO_NO_CONSTANT_PROPAGATION").is_none() {
         strength::propagate_constants(&mut built.function);
+        // (Propagated literals fold: `x + k + m` -> `x + 7`.)
+        if std::env::var_os("MWCC_IRO_NO_PROPAGATED_FOLD").is_none() {
+            passes::for_each_expression(&mut built.function.body, &mut |expression| {
+                passes::algebra(expression);
+                passes::fold(expression);
+            });
+        }
     }
     if unit.strength_reduction && std::env::var_os("MWCC_IRO_NO_STRENGTH_REDUCTION").is_none() {
         strength::strength_reduce(&mut built.function, !unit.branch_preserving, unit.unrolling);
