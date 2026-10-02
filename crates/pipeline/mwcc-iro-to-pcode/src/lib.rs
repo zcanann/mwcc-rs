@@ -803,6 +803,10 @@ impl Lowerer<'_, '_> {
             ordered.sort_by_key(|&id| function.variables[id].frame.map_or(0, |(size, _)| size.max(1).next_power_of_two()));
         }
         for id in ordered {
+            // (After the early builds an unreferenced one takes none.)
+            if !self.unit.early_frame && references(&function.body, id) == 0 && !toggle("MWCC_PCODE_O0_UNUSED_FRAME_OBJECTS") {
+                continue;
+            }
             if let (VariableKind::Local, Some((size, align))) = (function.variables[id].kind, function.variables[id].frame) {
                 let offset = self.frame_cursor.div_ceil(align.max(1)) * align.max(1);
                 self.frame_cursor = offset + size;
