@@ -383,6 +383,13 @@ impl Lowerer<'_, '_> {
         let inherited = (incoming == 1 && !entered && self.restorable[label.0] && !toggle("MWCC_PCODE_NO_DOMINATOR_CSE"))
             .then(|| self.snapshots.remove(&label.0))
             .flatten();
+        // (Reached only by falling through: what is known stays known.)
+        let fall_through_only = incoming == 0
+            && entered
+            && self.restorable[label.0]
+            && !self.unoptimized
+            && !toggle("MWCC_PCODE_NO_FALLTHROUGH_CSE");
+        let kept = fall_through_only.then(|| self.known());
         self.clear_block_caches();
         let block = if self.pcode.blocks[current].instructions.is_empty() && !self.block_is_target(current) {
             current
@@ -398,6 +405,12 @@ impl Lowerer<'_, '_> {
             self.common = known.common;
             self.float_constants = known.float_constants;
             self.restored_labels.push(label.0);
+        } else if let Some(known) = kept {
+            self.loaded_globals = known.loaded_globals;
+            self.extended = known.extended;
+            self.constants = known.constants;
+            self.common = known.common;
+            self.float_constants = known.float_constants;
         }
     }
 
@@ -1677,6 +1690,8 @@ impl Lowerer<'_, '_> {
         // A constant on the left compares mirrored so it can be an immediate.
         let (op, left, right) = if left.as_int().is_some() && right.as_int().is_none() {
             (op.mirror(), right, left)
+        } else if !self.unoptimized && equality_variable_first(op, left, right) {
+            (op, right, left)
         } else {
             (op, left, right)
         };
@@ -2917,6 +2932,8 @@ impl Lowerer<'_, '_> {
         use BinaryOp::*;
         let (op, left, right) = if left.as_int().is_some() && right.as_int().is_none() {
             (op.mirror(), right, left)
+        } else if !self.unoptimized && equality_variable_first(op, left, right) {
+            (op, right, left)
         } else {
             (op, left, right)
         };
@@ -5582,4 +5599,17 @@ fn pool_constant_count(body: &[Stmt]) -> usize {
     };
     for_each_statement_expression(body, &mut visit);
     keys.len()
+}
+
+/// `computed == v` compares `v` first: an arithmetic result or indexed
+/// load goes second in an equality with a variable.
+fn equality_variable_first(op: BinaryOp, left: &Expr, right: &Expr) -> bool {
+    matches!(op, BinaryOp::Equal | BinaryOp::NotEqual)
+        && right.as_var().is_some()
+        && match &left.kind {
+            ExprKind::Binary(inner, ..) => !inner.is_comparison(),
+            ExprKind::Load { index: Some(_), .. } => true,
+            _ => false,
+        }
+        && !toggle("MWCC_PCODE_EQUALITY_IN_ORDER")
 }

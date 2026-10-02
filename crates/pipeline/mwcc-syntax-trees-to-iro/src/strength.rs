@@ -174,7 +174,7 @@ fn statements(body: &mut Vec<Stmt>, function: &mut Function, fold_start: bool) {
         };
         // (A count register loop's count is set before them.)
         if let Stmt::Counted { count, .. } = &mut body[index] {
-            if !hoisted.is_empty() && count.as_int().is_some() {
+            if (!hoisted.is_empty() || std::env::var_os("MWCC_IRO_COUNT_WITH_HOISTS_ONLY").is_none()) && count.as_int().is_some() {
                 let ty = count.ty;
                 let variable = function.add_temporary(ty);
                 hoisted.insert(0, Stmt::Assign { variable, value: count.clone() });

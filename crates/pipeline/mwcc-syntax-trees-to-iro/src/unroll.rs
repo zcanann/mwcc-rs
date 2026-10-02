@@ -92,7 +92,20 @@ fn unrolled(
                 _ => false,
             }
     };
-    if body.is_empty() || !body.iter().all(plain) {
+    // (Or an exit: `if (c) { ...; break; }` / `if (c) return v;`.)
+    let exit = |statement: &Stmt| match statement {
+        Stmt::If { then_body, else_body, .. } if else_body.is_empty() && !format!("{statement:?}").contains("Call {") => {
+            matches!(then_body.last(), Some(Stmt::Break | Stmt::Return(_)))
+                && then_body[..then_body.len() - 1].iter().all(plain)
+        }
+        _ => false,
+    };
+    if body.is_empty() || !body.iter().all(|statement| plain(statement) || exit(statement)) {
+        return None;
+    }
+    let exits = body.iter().any(exit);
+    let breaks = format!("{body:?}").contains("Break");
+    if exits && std::env::var_os("MWCC_IRO_NO_EXIT_LOOPS").is_some() {
         return None;
     }
     // Other induction variables: `v = v + c`, assigned once.
@@ -170,7 +183,8 @@ fn unrolled(
             guard: Some(guard),
             body: rest.clone(),
         };
-        if !UNROLLING.with(|flag| flag.get()) {
+        // (A loop with exits is not unrolled.)
+        if !UNROLLING.with(|flag| flag.get()) || exits {
             // `mtctr n - i0`, skipped unless `n > i0`.
             let count = if start == 0 { n.clone() } else { Expr::binary(BinaryOp::Subtract, n.clone(), Expr::int(start), ty) };
             return Some(vec![Stmt::Counted { count, guard: Some(entered), body: rest }]);
@@ -239,6 +253,9 @@ fn unrolled(
     } else {
         limit.min(trips / 2)
     };
+    // (With exits: completely or not at all, and a `break` only when the
+    // induction is not read after.)
+    let factor = if exits && (factor != trips || breaks && live_after(variable)) { 1 } else { factor };
     let passes = trips / factor;
     let left_over = trips % factor;
     let keep_induction = left_over > 0 || live_after(variable);
@@ -251,7 +268,12 @@ fn unrolled(
         main.push(advance(v, factor * c, induction_type(body, v)));
     }
     if passes == 1 {
-        out.extend(main);
+        // (A `break` leaves the copies.)
+        if breaks {
+            out.push(Stmt::Loop { test_first: false, condition: Some(Expr::int(0)), body: main, step: Vec::new(), effects: Vec::new() });
+        } else {
+            out.extend(main);
+        }
         if keep_induction {
             out.push(Stmt::Assign { variable, value: Expr { kind: ExprKind::Int(start + direction * factor), ty } });
         }
