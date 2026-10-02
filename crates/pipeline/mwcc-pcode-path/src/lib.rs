@@ -158,16 +158,22 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
             other => u32::from(other.width()) / 8,
         };
         let size = element * local.array_length.map_or(1, u32::from);
+        let small_data = addressing == GlobalAddressing::SmallData && size > 0 && size <= 8;
+        // (A static joins its section's anchor like a unit global.)
+        let initialized = local.data_bytes.is_some() || !local.data_relocations.is_empty() || local.initializer.is_some();
+        let anchor = (!small_data && !local.is_const && std::env::var_os("MWCC_PCODE_NO_STATIC_ANCHOR").is_none())
+            .then_some(if initialized { "...data.0" } else { "...bss.0" })
+            .filter(|section| *section != "...data.0" || data_anchor);
         globals.insert(
             local.name.clone(),
             GlobalInfo {
                 ty: local.declared_type,
-                small_data: addressing == GlobalAddressing::SmallData && size > 0 && size <= 8,
+                small_data,
                 is_array: local.array_length.is_some(),
                 is_volatile: local.is_volatile,
                 is_function: false,
                 is_const: local.is_const && !local.is_volatile,
-                anchor: None,
+                anchor,
                 fixed_address: None,
                     folded: None,
             },
