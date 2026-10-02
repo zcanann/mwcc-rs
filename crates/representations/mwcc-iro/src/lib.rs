@@ -92,6 +92,10 @@ pub struct Unit<'a> {
     /// GC/3.x and Wii frames: an array or struct slot is word-aligned even
     /// at -O0, and doubleword-aligned when its size is a multiple of 8.
     pub doubleword_aggregates: bool,
+    /// GC/3.x and Wii fold an absolute address's low half into every
+    /// access (sharing only its `lis`); earlier builds reuse the whole
+    /// address within a block.
+    pub absolute_low_folds: bool,
     /// GC/1.0-1.2.5n comparison values (carry forms; no zero shortcuts).
     pub branch_preserving: bool,
     /// GC/1.x-2.x reassociate integer sums (`a + b + c` = `a + (b + c)`).

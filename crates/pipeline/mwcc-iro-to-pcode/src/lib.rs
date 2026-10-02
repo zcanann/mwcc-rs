@@ -2394,8 +2394,25 @@ impl Lowerer<'_, '_> {
         if let Some(anchor) = self.anchored.get(name).copied() {
             return self.anchored_load(global.ty, anchor, name, target);
         }
-        let address = self.absolute_address(name);
+        let address = self.global_address(name);
         self.load(global.ty, address, 0, None, target)
+    }
+
+    /// A global's absolute address (`lis; addi`), reused within a block
+    /// by its loads and stores.
+    fn global_address(&mut self, name: &str) -> u32 {
+        let key = format!("&{name}");
+        let shared = !self.unoptimized && !self.unit.absolute_low_folds && !toggle("MWCC_PCODE_NO_GLOBAL_ADDRESS_REUSE");
+        if shared {
+            if let Some(&(register, _, _)) = self.common.get(&key) {
+                return register;
+            }
+        }
+        let d = self.absolute_address(name);
+        if shared {
+            self.common.insert(key, (d, Type::Pointer(mwcc_iro::Pointee::Int), Vec::new()));
+        }
+        d
     }
 
     /// `lis; addi` forming an absolute symbol's address.
@@ -4028,7 +4045,7 @@ impl Lowerer<'_, '_> {
                     };
                     (0, 0, None, Some(relocation))
                 } else {
-                    (self.absolute_address(name), 0, None, None)
+                    (self.global_address(name), 0, None, None)
                 }
             }
         })
