@@ -5225,10 +5225,29 @@ fn references(body: &[Stmt], variable: VarId) -> usize {
 
 /// References of `variable`, one used directly as an address counting `base`.
 fn references_weighted(body: &[Stmt], variable: VarId, base: usize) -> usize {
-    let as_base = |e: &Expr| if matches!(e.kind, ExprKind::Var(id) if id == variable) { base } else { 0 };
+    // (An address `p + k` is the pointer used as a base too.)
+    fn based_on(e: &Expr, variable: VarId) -> bool {
+        match &e.kind {
+            ExprKind::Var(id) => *id == variable,
+            ExprKind::Binary(BinaryOp::Add, left, right) if right.as_int().is_some() && !toggle("MWCC_PCODE_O0_BARE_BASES") => {
+                based_on(left, variable)
+            }
+            _ => false,
+        }
+    }
+    let as_base = |e: &Expr| if based_on(e, variable) { base } else { 0 };
     let expression = |e: &Expr, variable: VarId| count(e, variable, base);
     fn count(e: &Expr, variable: VarId, base: usize) -> usize {
-        let as_base = |e: &Expr| if matches!(e.kind, ExprKind::Var(id) if id == variable) { base } else { 0 };
+        fn based_on(e: &Expr, variable: VarId) -> bool {
+            match &e.kind {
+                ExprKind::Var(id) => *id == variable,
+                ExprKind::Binary(BinaryOp::Add, left, right) if right.as_int().is_some() && !toggle("MWCC_PCODE_O0_BARE_BASES") => {
+                    based_on(left, variable)
+                }
+                _ => false,
+            }
+        }
+        let as_base = |e: &Expr| if based_on(e, variable) { base } else { 0 };
         let expression = |e: &Expr, variable: VarId| count(e, variable, base);
         match &e.kind {
             ExprKind::Var(id) => usize::from(*id == variable),
