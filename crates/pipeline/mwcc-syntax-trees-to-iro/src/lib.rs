@@ -438,6 +438,52 @@ fn early_returns(body: Vec<Stmt>, result: Option<VarId>, ty: Type) -> Vec<Stmt> 
     out
 }
 
+/// An expansion's returns (inside loops and switches too) as result
+/// assignments and jumps to `label`, placed after it.
+fn returns_to_label(body: Vec<Stmt>, result: Option<VarId>, ty: Type, label: &str) -> Vec<Stmt> {
+    let mut out = Vec::with_capacity(body.len());
+    for statement in body {
+        match statement {
+            Stmt::Return(value) => {
+                if let (Some(id), Some(value)) = (result, value) {
+                    out.push(Stmt::Assign { variable: id, value: assigned(value, ty) });
+                }
+                out.push(Stmt::Goto(label.to_owned()));
+            }
+            Stmt::SetReturn(value) => {
+                if let Some(id) = result {
+                    out.push(Stmt::Assign { variable: id, value: assigned(value, ty) });
+                }
+            }
+            Stmt::If { condition, then_body, else_body } => out.push(Stmt::If {
+                condition,
+                then_body: returns_to_label(then_body, result, ty, label),
+                else_body: returns_to_label(else_body, result, ty, label),
+            }),
+            Stmt::Loop { test_first, condition, body, step, effects } => out.push(Stmt::Loop {
+                test_first,
+                condition,
+                body: returns_to_label(body, result, ty, label),
+                step: returns_to_label(step, result, ty, label),
+                effects: returns_to_label(effects, result, ty, label),
+            }),
+            Stmt::Counted { count, guard, body } => out.push(Stmt::Counted {
+                count,
+                guard,
+                body: returns_to_label(body, result, ty, label),
+            }),
+            Stmt::Switch { value, cases, arms, default } => out.push(Stmt::Switch {
+                value,
+                cases,
+                arms: arms.into_iter().map(|arm| returns_to_label(arm, result, ty, label)).collect(),
+                default,
+            }),
+            other => out.push(other),
+        }
+    }
+    out
+}
+
 /// Whether any statement returns (or sets the return value).
 fn returns_anywhere(body: &[Stmt]) -> bool {
     body.iter().any(|statement| match statement {
@@ -1663,7 +1709,9 @@ impl Builder<'_, '_> {
         // `return v` an assignment of the result and a `break` (not from
         // inside a loop or switch, where `break` means something else).
         let early = built.returns_through_variable || returns_anywhere(&inlined.body);
-        if early && (std::env::var_os("MWCC_IRO_NO_INLINE_EARLY_RETURN").is_some() || returns_in_breakable(&inlined.body)) {
+        // (A return inside a loop or switch jumps to the expansion's end.)
+        let jumps = early && returns_in_breakable(&inlined.body);
+        if early && (std::env::var_os("MWCC_IRO_NO_INLINE_EARLY_RETURN").is_some() || jumps && std::env::var_os("MWCC_IRO_NO_INLINE_RETURN_JUMPS").is_some()) {
             return Err(unsupported("inline expansion with an early return"));
         }
         // At -O0 the expansion's variables are register variables.
@@ -1751,6 +1799,19 @@ impl Builder<'_, '_> {
             let id = self.variables.len() + self.temporaries.len();
             self.temporaries.push(Variable { name: format!("{}$result", callee.name), ty, kind, frame: None, initialized: false, raw: false, volatile: false });
             let result = (ty != Type::Void).then_some(id);
+            if jumps {
+                let label = format!("@inline_end{id}");
+                let mut body = returns_to_label(std::mem::take(&mut inlined.body), result, ty, &label);
+                if let (Some(id), Some(value)) = (result, value) {
+                    body.push(Stmt::Assign { variable: id, value: assigned(value, ty) });
+                }
+                body.push(Stmt::Label(label));
+                self.pending.extend(body);
+                return Ok(match result {
+                    Some(id) => Expr { kind: ExprKind::Var(id), ty },
+                    None => Expr { kind: ExprKind::Int(0), ty: Type::Void },
+                });
+            }
             let mut body = early_returns(std::mem::take(&mut inlined.body), result, ty);
             if let (Some(id), Some(value)) = (result, value) {
                 body.push(Stmt::Assign { variable: id, value: assigned(value, ty) });
