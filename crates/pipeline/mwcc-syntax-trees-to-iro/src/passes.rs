@@ -2311,8 +2311,26 @@ pub fn forward_offsets(function: &mut Function) {
         if counts[variable] != 1 || function.variables[variable].kind != VariableKind::Local {
             continue;
         }
-        let ExprKind::Binary(BinaryOp::Add, base, offset) = &value.kind else { continue };
-        let Some(k) = offset.as_int() else { continue };
+        // (Also `(u32)p - k` assigned to a pointer: the same offset address.)
+        let (value, base, k) = match &value.kind {
+            ExprKind::Binary(BinaryOp::Add, base, offset) if offset.as_int().is_some() => (value.clone(), base.clone(), offset.as_int().unwrap_or(0)),
+            ExprKind::Binary(BinaryOp::Subtract, base, offset)
+                if offset.as_int().is_some()
+                    && (matches!(value.ty, Type::Int | Type::UnsignedInt) || pointer_like(value.ty))
+                    && pointer_like(function.variables[variable].ty)
+                    && matches!(&base.kind, ExprKind::Convert(inner) if matches!(inner.kind, ExprKind::Var(_)) && pointer_like(inner.ty))
+                    && std::env::var_os("MWCC_IRO_NO_WORD_OFFSETS").is_none() =>
+            {
+                let ExprKind::Convert(inner) = &base.kind else { continue };
+                let ty = function.variables[variable].ty;
+                let k = -offset.as_int().unwrap_or(0);
+                let base = Box::new(Expr { ty, ..(**inner).clone() });
+                let rebuilt = Expr::binary(BinaryOp::Add, (*base).clone(), Expr::typed_int(k, Type::Int), ty);
+                (rebuilt, base, k)
+            }
+            _ => continue,
+        };
+        let offset = Expr::typed_int(k, Type::Int);
         if !pointer_like(value.ty) || !pointer_like(base.ty) {
             continue;
         }
