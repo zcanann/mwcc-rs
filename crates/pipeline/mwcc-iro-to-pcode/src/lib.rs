@@ -4851,6 +4851,21 @@ impl Lowerer<'_, '_> {
                         let own = self.temporary();
                         Some(self.expression_with_target(argument, Some(own))?.0)
                     }
+                    // (Optimized, after the early builds, a computed word
+                    // goes straight to its register too.)
+                    _ if !pass
+                        && !self.unit.early_frame
+                        && !is_float(argument.ty)
+                        && !plain_variable(argument)
+                        && !matches!(argument.kind, ExprKind::GlobalAddress(..))
+                        // (A frame address with a global's waits for the copies.)
+                        && !(matches!(argument.kind, ExprKind::LocalAddress(_))
+                            && arguments.iter().any(|other| matches!(other.kind, ExprKind::GlobalAddress(..))))
+                        && !toggle("MWCC_PCODE_COMPUTED_ARGUMENT_TEMPORARIES") =>
+                    {
+                        // (A value found elsewhere is copied with the others.)
+                        Some(self.expression_with_target(argument, Some(registers[index]))?.0)
+                    }
                     _ => Some(self.expression(argument)?.0),
                 };
             }
@@ -6146,5 +6161,16 @@ fn register_need(e: &Expr) -> u32 {
         }
         ExprKind::Unary(_, operand) | ExprKind::Convert(operand) => register_need(operand).max(1),
         _ => 0,
+    }
+}
+
+/// A variable, possibly retyped between words (no instruction).
+fn plain_variable(expression: &Expr) -> bool {
+    match &expression.kind {
+        ExprKind::Var(_) => true,
+        ExprKind::Convert(operand) => {
+            !is_float(operand.ty) && !is_narrow(operand.ty) && !is_narrow(expression.ty) && !is_wide(operand.ty) && plain_variable(operand)
+        }
+        _ => false,
     }
 }

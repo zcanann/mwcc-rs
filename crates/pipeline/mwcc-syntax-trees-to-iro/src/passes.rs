@@ -186,6 +186,9 @@ pub fn run(function: &mut Function, branch_preserving: bool, reassociates_sums: 
         for_each_expression(&mut function.body, &mut |expression| logical_constants(expression));
         constant_branches(&mut function.body);
     }
+    if enabled("FORWARD_UPDATES") && !has_label(&function.body) {
+        forward_updates(function);
+    }
     // (Forwarding reasons in structured order: not across `goto`s.)
     if enabled("FORWARD") && !has_label(&function.body) {
         forward_offsets(function);
@@ -2294,4 +2297,96 @@ pub fn forward_offsets(function: &mut Function) {
         children(expression, &mut |child| substitute(child, forwarded));
     }
     for_each_expression(&mut function.body, &mut |expression| substitute(expression, &forwarded));
+}
+
+/// A word variable updated in place by a constant (`x = x + k`, `x <<= k`,
+/// `x &= k`, ...) in the function's top-level statements keeps its old
+/// value: every later use reads `x op k` instead, up to the variable's next
+/// top-level assignment (whose value reads it the same way, so successive
+/// updates fold). Not when a nested statement assigns it before then.
+pub fn forward_updates(function: &mut Function) {
+    fn assigns(body: &[Stmt], variable: VarId) -> bool {
+        body.iter().any(|statement| match statement {
+            Stmt::Assign { variable: assigned, .. } => *assigned == variable,
+            Stmt::If { then_body, else_body, .. } => assigns(then_body, variable) || assigns(else_body, variable),
+            Stmt::Loop { body, step, effects, .. } => {
+                assigns(body, variable) || assigns(step, variable) || assigns(effects, variable)
+            }
+            Stmt::Counted { body, .. } => assigns(body, variable),
+            Stmt::Switch { arms, .. } => arms.iter().any(|arm| assigns(arm, variable)),
+            _ => false,
+        })
+    }
+    fn assigned_in_loop(body: &[Stmt], variable: VarId) -> bool {
+        body.iter().any(|statement| match statement {
+            Stmt::If { then_body, else_body, .. } => {
+                assigned_in_loop(then_body, variable) || assigned_in_loop(else_body, variable)
+            }
+            Stmt::Loop { body, step, effects, .. } => {
+                assigns(body, variable) || assigns(step, variable) || assigns(effects, variable)
+            }
+            Stmt::Counted { body, .. } => assigns(body, variable),
+            Stmt::Switch { arms, .. } => arms.iter().any(|arm| assigned_in_loop(arm, variable)),
+            _ => false,
+        })
+    }
+    fn addressed(expression: &Expr, variable: VarId) -> bool {
+        if matches!(expression.kind, ExprKind::LocalAddress(id) if id == variable) {
+            return true;
+        }
+        let mut found = false;
+        let mut copy = expression.clone();
+        children(&mut copy, &mut |child| found |= addressed(child, variable));
+        found
+    }
+    let mut index = 0;
+    while index < function.body.len() {
+        let Stmt::Assign { variable, value } = &function.body[index] else {
+            index += 1;
+            continue;
+        };
+        let (variable, value) = (*variable, value.clone());
+        let word = matches!(value.ty, Type::Int | Type::UnsignedInt) || pointer_like(value.ty);
+        let update = matches!(&value.kind,
+            ExprKind::Binary(
+                BinaryOp::Add | BinaryOp::Subtract | BinaryOp::ShiftLeft | BinaryOp::ShiftRight | BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor,
+                left,
+                right,
+            ) if matches!(left.kind, ExprKind::Var(id) if id == variable) && right.as_int().is_some());
+        let candidate = &function.variables[variable];
+        let eligible = word
+            && update
+            && matches!(candidate.kind, VariableKind::Local | VariableKind::Parameter)
+            && candidate.frame.is_none()
+            && !candidate.volatile
+            && !candidate.raw;
+        if !eligible {
+            index += 1;
+            continue;
+        }
+        // The statements reading the update: to the next top-level
+        // assignment, none nested before it.
+        let rest = &function.body[index + 1..];
+        let end = rest
+            .iter()
+            .position(|statement| matches!(statement, Stmt::Assign { variable: assigned, .. } if *assigned == variable))
+            .unwrap_or(rest.len());
+        let mut addressed_anywhere = false;
+        for_each_expression(&mut function.body.clone(), &mut |e| addressed_anywhere |= addressed(e, variable));
+        // (Nor a variable a loop assigns.)
+        if addressed_anywhere || assigns(&rest[..end], variable) || assigned_in_loop(&function.body, variable) {
+            index += 1;
+            continue;
+        }
+        let stop = index + 1 + end;
+        let limit = (stop + 1).min(function.body.len());
+        for statement in &mut function.body[index + 1..limit] {
+            substitute(std::slice::from_mut(statement), variable, &value);
+        }
+        // (The next definition reads the old value too.)
+        if let Some(Stmt::Assign { value: next, .. }) = function.body.get_mut(stop) {
+            fold(next);
+        }
+        function.body.remove(index);
+    }
 }
