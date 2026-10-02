@@ -2372,6 +2372,17 @@ impl Lowerer<'_, '_> {
                     return Ok((source, ty));
                 }
                 let (source, source_type) = self.expression(operand)?;
+                // (Only a loaded byte is already zero-extended: a raw
+                // parameter's register is not.)
+                if raw
+                    && source_type == Type::Char
+                    && ty == Type::UnsignedChar
+                    && !matches!(operand.kind, ExprKind::Load { .. } | ExprKind::Global(_))
+                {
+                    let destination = self.result(target);
+                    self.emit_plain(extension(Type::UnsignedChar, destination, source));
+                    return Ok((destination, ty));
+                }
                 self.convert_value(source, source_type, raw, ty, target)
             }
             ExprKind::Call { name, arguments } => {
