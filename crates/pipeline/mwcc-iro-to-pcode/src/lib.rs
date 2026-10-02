@@ -603,10 +603,11 @@ impl Lowerer<'_, '_> {
         }
         for id in ordered {
             match function.variables[id].frame {
-                // (Early frames: a local declared with an initializer, or
-                // one never read, keeps a slot.)
+                // (Early frames: a local with no register keeps a slot: one
+                // never read, or set only to a constant.)
                 None if early
-                    && (function.variables[id].initialized
+                    && ((function.variables[id].initialized
+                        && assignments(&function.body, id) <= 1)
                         || references(&function.body, id) == assignments(&function.body, id)) =>
                 {
                     let width = width(function.variables[id].ty);

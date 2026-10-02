@@ -260,6 +260,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         })
         .collect();
     let mut builder = Builder {
+        expansions: 0,
         struct_parameters: function
             .parameters
             .iter()
@@ -293,6 +294,9 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         });
     }
     let mut images: Vec<Vec<u8>> = Vec::new();
+    // (Early frames: locals whose initializer is a constant, an inline
+    // expansion's value or a floating-to-integer conversion.)
+    let mut slotted: Vec<VarId> = Vec::new();
     for local in &function.locals {
         // (A folded static has no variable and no runtime initialization.)
         if builder.folded.contains_key(&local.name) {
@@ -324,7 +328,22 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         }
         if let Some(initializer) = &local.initializer {
             let variable = builder.names[&local.name];
+            let expansions = builder.expansions;
             let value = assigned(builder.expression(initializer)?, local.declared_type);
+            let converts_float = format!("{value:?}").contains("Convert(Expr { kind") && {
+                fn floating_conversion(e: &Expr) -> bool {
+                    match &e.kind {
+                        ExprKind::Convert(operand) => (is_float(operand.ty) && !is_float(e.ty)) || floating_conversion(operand),
+                        ExprKind::Binary(_, left, right) => floating_conversion(left) || floating_conversion(right),
+                        ExprKind::Unary(_, operand) => floating_conversion(operand),
+                        _ => false,
+                    }
+                }
+                floating_conversion(&value)
+            };
+            if literal_value(initializer, local.declared_type).is_some() || builder.expansions != expansions || converts_float {
+                slotted.push(variable);
+            }
             body.append(&mut builder.pending);
             body.push(match builder.variables[variable].frame {
                 Some(_) if local.array_length.is_none() && is_value_type(local.declared_type) => Stmt::Store {
@@ -366,6 +385,9 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
     let temporaries = std::mem::take(&mut builder.temporaries);
     let mut builder_strings = std::mem::take(&mut builder.strings);
     let mut variables = variables;
+    for (id, variable) in variables.iter_mut().enumerate() {
+        variable.initialized = slotted.contains(&id) || (variable.initialized && std::env::var_os("MWCC_IRO_ALL_INITIALIZED_SLOTTED").is_some());
+    }
     variables.extend(temporaries);
     let returns_through_variable = function.return_type != Type::Void
         && (!function.guards.is_empty()
@@ -542,6 +564,8 @@ struct Builder<'a, 'u> {
     variables: &'a [Variable],
     /// Parameters passed as structs by value (held as their address).
     struct_parameters: Vec<VarId>,
+    /// Inline expansions made so far.
+    expansions: usize,
     /// Assignments inside the expression being built, hoisted before the
     /// statement that contains it.
     pending: Vec<Stmt>,
@@ -1678,6 +1702,7 @@ impl Builder<'_, '_> {
     /// temporaries) runs before the calling statement, and the call's value
     /// is the callee's final return value.
     fn inline_call(&mut self, callee: &ast::Function, arguments: &[Expression]) -> Compilation<Expr> {
+        self.expansions += 1;
         thread_local! {
             static DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
         }
