@@ -1263,6 +1263,36 @@ fn fold_once(expression: &Expr) -> Option<Expr> {
             if *op == BinaryOp::Multiply && right.as_int() == Some(0) && speculable(left) {
                 return Some(Expr::typed_int(0, expression.ty));
             }
+            // `x * 1` is `x`; `x - x` is 0.
+            if *op == BinaryOp::Multiply && right.as_int() == Some(1) && mwcc_iro::is_general_word(expression.ty) {
+                let mut value = (**left).clone();
+                value.ty = expression.ty;
+                return Some(value);
+            }
+            if *op == BinaryOp::Subtract && matches!(left.kind, ExprKind::Var(_)) && same_leaf(left, right) && mwcc_iro::is_general_word(expression.ty) {
+                return Some(Expr::typed_int(0, expression.ty));
+            }
+            // `-a * -b` is `a * b` (integers: GC/3.x negates floats).
+            if matches!(op, BinaryOp::Multiply | BinaryOp::Divide) && mwcc_iro::is_general_word(expression.ty) {
+                if let (ExprKind::Unary(UnaryOp::Negate, a), ExprKind::Unary(UnaryOp::Negate, b)) = (&left.kind, &right.kind) {
+                    return Some(Expr { kind: ExprKind::Binary(*op, a.clone(), b.clone()), ty: expression.ty });
+                }
+            }
+            // `(x & 2^k) == 2^k` is bit k of `x`.
+            if matches!(op, BinaryOp::Equal) {
+                if let ExprKind::Binary(BinaryOp::BitAnd, x, mask) = &left.kind {
+                    if let (Some(m), Some(v)) = (mask.as_int(), right.as_int()) {
+                        let m = m as u32;
+                        if m == v as u32 && m.is_power_of_two() && m > 1 && mwcc_iro::is_unsigned(x.ty) && !mwcc_iro::is_narrow(x.ty) {
+                            let k = Expr::typed_int(i64::from(m.trailing_zeros()), Type::Int);
+                            let shifted = Expr::binary(BinaryOp::ShiftRight, (**x).clone(), k, x.ty);
+                            let mut bit = Expr::binary(BinaryOp::BitAnd, shifted, Expr::typed_int(1, x.ty), x.ty);
+                            bit.ty = Type::Int;
+                            return Some(bit);
+                        }
+                    }
+                }
+            }
             // `x & ~0` is `x`.
             if *op == BinaryOp::BitAnd
                 && matches!(expression.ty, Type::Int | Type::UnsignedInt)
@@ -1400,6 +1430,25 @@ fn fold_typed(op: BinaryOp, left: &Expr, right: &Expr) -> Option<i64> {
         if let Some(value) = value {
             return Some(i64::from(value));
         }
+        let value = match op {
+            BinaryOp::Divide if b != 0 => Some(a / b),
+            BinaryOp::Modulo if b != 0 => Some(a % b),
+            BinaryOp::ShiftRight if b < 32 && unsigned(left.ty) => Some(a >> b),
+            _ => None,
+        };
+        if let Some(value) = value {
+            return Some(i64::from(value as i32));
+        }
+    }
+    let (x, y) = (a as i32, b as i32);
+    let value = match op {
+        BinaryOp::Divide if y != 0 => Some(x.wrapping_div(y)),
+        BinaryOp::Modulo if y != 0 => Some(x.wrapping_rem(y)),
+        BinaryOp::ShiftRight if (0..32).contains(&y) && !unsigned(left.ty) => Some(x >> y),
+        _ => None,
+    };
+    if let Some(value) = value.filter(|_| std::env::var_os("MWCC_IRO_NO_DIVISION_FOLDS").is_none()) {
+        return Some(i64::from(value));
     }
     fold_literals(op, a, b)
 }
@@ -2444,4 +2493,32 @@ fn absorbed<'a>(op: BinaryOp, outer: &'a Expr, inner: &Expr) -> Option<&'a Expr>
         return None;
     }
     ((same_leaf(x, outer) && speculable(y)) || (same_leaf(y, outer) && speculable(x))).then_some(outer)
+}
+
+/// Before GC/3.x, floating negations cancel: `-(-x)` is `x`, `-a * -b` is
+/// `a * b` (and so for division).
+pub fn float_negations(body: &mut [Stmt]) {
+    fn rewrite(expression: &mut Expr) {
+        children(expression, &mut |child| rewrite(child));
+        if !matches!(expression.ty, Type::Float | Type::Double) {
+            return;
+        }
+        let replacement = match &expression.kind {
+            ExprKind::Unary(UnaryOp::Negate, operand) => match &operand.kind {
+                ExprKind::Unary(UnaryOp::Negate, inner) if inner.ty == expression.ty => Some((**inner).clone()),
+                _ => None,
+            },
+            ExprKind::Binary(op @ (BinaryOp::Multiply | BinaryOp::Divide), left, right) => match (&left.kind, &right.kind) {
+                (ExprKind::Unary(UnaryOp::Negate, a), ExprKind::Unary(UnaryOp::Negate, b)) => {
+                    Some(Expr { kind: ExprKind::Binary(*op, a.clone(), b.clone()), ty: expression.ty })
+                }
+                _ => None,
+            },
+            _ => None,
+        };
+        if let Some(replacement) = replacement {
+            *expression = replacement;
+        }
+    }
+    for_each_expression(body, &mut |expression| rewrite(expression));
 }

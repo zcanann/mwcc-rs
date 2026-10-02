@@ -43,6 +43,9 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     if std::env::var_os("MWCC_IRO_NO_SCALARIZE").is_none() {
         passes::scalarize(&mut built.function, unit.keeps_struct_stores);
     }
+    if unit.reassociates_sums && std::env::var_os("MWCC_IRO_NO_FLOAT_NEGATIONS").is_none() {
+        passes::float_negations(&mut built.function.body);
+    }
     passes::run(&mut built.function, unit.branch_preserving, unit.reassociates_sums, unit.unrolling);
     if std::env::var_os("MWCC_IRO_NO_FRAME_BASES").is_none() {
         passes::fold_frame_bases(&mut built.function);
@@ -75,6 +78,9 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
 /// front end's literal folding, and every `return` leaves directly.
 pub fn build_unoptimized_compile(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     let mut built = build_unoptimized(function, unit)?;
+    if unit.reassociates_sums && std::env::var_os("MWCC_IRO_NO_FLOAT_NEGATIONS").is_none() {
+        passes::float_negations(&mut built.function.body);
+    }
     passes::run_unoptimized(&mut built.function);
     built.returns_through_variable = false;
     Ok(built)
