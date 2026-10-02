@@ -1565,12 +1565,31 @@ pub fn sign_idiom(condition: &Expr, when_true: &Expr, when_false: &Expr, variabl
         Idiom::Insert { .. } | Idiom::Unary(..) | Idiom::Update(..) => return None,
     };
     let equality = matches!(idiom, Idiom::Masked { relation: BinaryOp::Equal | BinaryOp::NotEqual, .. });
-    let ty = variables[tested.as_var()?];
+    let ty = match tested.as_var() {
+        Some(id) => variables[id],
+        None => tested.ty,
+    };
     (ty == Type::Int || equality && matches!(ty, Type::UnsignedInt | Type::Pointer(_))).then_some(idiom)
 }
 
 fn recognize(condition: &Expr, when_true: &Expr, when_false: &Expr) -> Option<Idiom> {
-    let is_var = |e: &Expr| e.as_var().is_some();
+    // A variable, or arithmetic on variables and constants (`(s16)(x << 1)`).
+    fn pure(e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Var(_) | ExprKind::Int(_) => true,
+            ExprKind::Convert(operand) => !mwcc_iro::is_float(operand.ty) && pure(operand),
+            ExprKind::Unary(op, operand) => *op != UnaryOp::LogicalNot && pure(operand),
+            ExprKind::Binary(op, left, right) => {
+                !op.is_comparison()
+                    && !matches!(op, BinaryOp::LogicalAnd | BinaryOp::LogicalOr | BinaryOp::Divide | BinaryOp::Modulo)
+                    && pure(left)
+                    && pure(right)
+            }
+            _ => false,
+        }
+    }
+    let expressions = std::env::var_os("MWCC_IRO_VARIABLE_IDIOMS_ONLY").is_none();
+    let is_var = |e: &Expr| e.as_var().is_some() || (expressions && e.as_int().is_none() && !mwcc_iro::is_float(e.ty) && pure(e));
     // A bare truth value tests `!= 0`.
     if is_var(condition) {
         return match (is_var(when_true), when_false.as_int()) {
@@ -1592,12 +1611,14 @@ fn recognize(condition: &Expr, when_true: &Expr, when_false: &Expr) -> Option<Id
     if !relation.is_comparison() {
         return None;
     }
-    let tested_id = tested.as_var()?;
+    let key = format!("{:?}", tested.kind);
     let equality = matches!(relation, BinaryOp::Equal | BinaryOp::NotEqual);
-    let negation_of = |e: &Expr| matches!(&e.kind, ExprKind::Unary(UnaryOp::Negate, operand) if operand.as_var() == Some(tested_id));
-    let same = |e: &Expr| e.as_var() == Some(tested_id);
+    let negation_of = |e: &Expr| matches!(&e.kind, ExprKind::Unary(UnaryOp::Negate, operand) if format!("{:?}", operand.kind) == key);
+    let same = |e: &Expr| format!("{:?}", e.kind) == key;
     let negative_side = matches!(relation, BinaryOp::Less | BinaryOp::LessEqual);
+    // (Only a variable's absolute value is branch-free.)
     if !equality
+        && tested.as_var().is_some()
         && (negative_side && negation_of(when_true) && same(when_false)
             || !negative_side && same(when_true) && negation_of(when_false))
     {

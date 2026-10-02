@@ -3003,7 +3003,12 @@ impl Lowerer<'_, '_> {
                     }
                     _ => unreachable!("sign idiom relations"),
                 }
-                let (b, ty) = self.expression(value)?;
+                // (The tested value itself is not recomputed.)
+                let (b, ty) = if format!("{:?}", value.kind) == format!("{:?}", tested.kind) && value.as_var().is_none() {
+                    (a, value.ty)
+                } else {
+                    self.expression(value)?
+                };
                 let d = self.result(target);
                 self.emit_plain(if *keep_when_true {
                     Instruction::And { a: d, s: b, b: mask }
