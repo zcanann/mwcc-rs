@@ -2176,16 +2176,35 @@ impl Lowerer<'_, '_> {
             }
             // A load through a pointer to non-volatile storage is reused
             // until a store or call (or the pointer changes).
-            ExprKind::Load { base, index: None, offset } if target.is_none() && self.shareable_pointer(base).is_some() => {
+            // (Loaded into a variable, it is that variable's value until
+            // the variable changes.)
+            ExprKind::Load { base, index: None, offset }
+                if self.shareable_pointer(base).is_some()
+                    && (target.is_none()
+                        || self.target_variable(target).is_some()
+                        // (A virtual destination holds it as well.)
+                        || (target.is_some_and(|t| t >= 32) && !self.unoptimized && !toggle("MWCC_PCODE_NO_VIRTUAL_TARGET_LOAD_CSE"))
+                        || (self.common.contains_key(&load_key(self.shareable_pointer(base).expect("checked"), *offset, ty))
+                            && !toggle("MWCC_PCODE_NO_TARGETED_LOAD_CSE"))) =>
+            {
                 let id = self.shareable_pointer(base).expect("checked");
-                let key = format!("*{id}:{offset}:{ty:?}");
-                if let Some(&(register, ty, _)) = self.common.get(&key) {
-                    return Ok((register, ty));
+                let key = load_key(id, *offset, ty);
+                if self.target_variable(target).is_none() {
+                    if let Some(&(register, ty, _)) = self.common.get(&key) {
+                        return Ok((register, ty));
+                    }
                 }
+                let variable = self.target_variable(target);
                 let (a, _) = self.expression(base)?;
                 let (a, displacement) = self.displacement(a, *offset)?;
-                let result = self.load(ty, a, displacement, None, None)?;
-                self.common.insert(key, (result.0, result.1, vec![id]));
+                let result = self.load(ty, a, displacement, None, target)?;
+                // (Not when it lands in a physical register: that one is
+                // reused freely.)
+                if result.0 >= 32 {
+                    let mut read = vec![id];
+                    read.extend(variable);
+                    self.common.insert(key, (result.0, result.1, read));
+                }
                 Ok(result)
             }
             // The value of `a[i] op= v` loads through the store's address.
@@ -2466,6 +2485,15 @@ impl Lowerer<'_, '_> {
                 last.object = Some(object);
             }
         }
+    }
+
+    /// The register variable `target` is (when loads into it are reusable).
+    fn target_variable(&self, target: Option<u32>) -> Option<VarId> {
+        let target = target?;
+        if self.unoptimized || toggle("MWCC_PCODE_NO_VARIABLE_LOAD_CSE") {
+            return None;
+        }
+        (0..self.function.variables.len()).find(|&id| self.registers[id] == Some(target) && self.homes[id].is_none())
     }
 
     fn load(
@@ -5917,4 +5945,11 @@ fn root_global(base: &Expr) -> Option<String> {
         }
         _ => None,
     }
+}
+
+/// A reusable load's key: the pointer variable, offset and loaded kind
+/// (any word is the same word).
+fn load_key(pointer: VarId, offset: i32, ty: Type) -> String {
+    let kind = if is_general_word(ty) && !is_narrow(ty) && !toggle("MWCC_PCODE_TYPED_LOAD_KEYS") { "word".to_owned() } else { format!("{ty:?}") };
+    format!("*{pointer}:{offset}:{kind}")
 }
