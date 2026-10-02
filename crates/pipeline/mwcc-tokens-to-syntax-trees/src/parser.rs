@@ -14,6 +14,7 @@ pub(crate) struct PragmaState {
     pub(crate) defer_codegen: bool,
     pub(crate) force_active: bool,
     pub(crate) peephole_disabled: bool,
+    pub(crate) dont_inline: bool,
     pub(crate) code_section: Option<String>,
 }
 
@@ -871,6 +872,10 @@ pub(crate) struct Parser {
     pub(crate) force_active: bool,
     /// `#pragma peephole off`/`on`/`reset` state for the following definitions.
     pub(crate) peephole_disabled: bool,
+    /// `#pragma dont_inline on` is active.
+    pub(crate) dont_inline: bool,
+    /// Functions defined while `#pragma dont_inline on` was active.
+    pub(crate) dont_inline_functions: std::collections::HashSet<String>,
     /// Parsed single-return inline bodies: name -> (parameter names, body) —
     /// substituted at call sites with pure arguments (mwcc -inline auto).
     pub(crate) inline_bodies:

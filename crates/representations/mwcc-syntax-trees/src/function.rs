@@ -395,6 +395,9 @@ pub struct InlineExpansionFacts {
 pub struct TranslationUnit {
     pub globals: Vec<GlobalDeclaration>,
     pub functions: Vec<Function>,
+    /// Functions defined while `#pragma dont_inline on` was active: none
+    /// is expanded inline, and none expands a call inline.
+    pub dont_inline_functions: std::collections::HashSet<String>,
     /// Parser-internal names of anonymous 12-byte records used by
     /// `__register_global_object`. The invocation layer resolves these after
     /// compiler-version ordinal accounting, because the parser deliberately

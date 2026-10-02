@@ -331,6 +331,7 @@ impl Parser {
                     defer_codegen: self.defer_codegen,
                     force_active: self.force_active,
                     peephole_disabled: self.peephole_disabled,
+                    dont_inline: self.dont_inline,
                     code_section: self.code_section.clone(),
                 }),
                 "pop" => {
@@ -343,6 +344,7 @@ impl Parser {
                             defer_codegen: false,
                             force_active: false,
                             peephole_disabled: false,
+                            dont_inline: false,
                             code_section: None,
                         });
                     self.cplusplus = state.cplusplus;
@@ -350,6 +352,7 @@ impl Parser {
                     self.defer_codegen = state.defer_codegen;
                     self.force_active = state.force_active;
                     self.peephole_disabled = state.peephole_disabled;
+                    self.dont_inline = state.dont_inline;
                     self.code_section = state.code_section;
                 }
                 "cplusplus on" => self.cplusplus = true,
@@ -364,6 +367,8 @@ impl Parser {
                 "force_active off" | "force_active reset" => self.force_active = false,
                 "peephole off" => self.peephole_disabled = true,
                 "peephole on" | "peephole reset" => self.peephole_disabled = false,
+                "dont_inline on" => self.dont_inline = true,
+                "dont_inline off" | "dont_inline reset" => self.dont_inline = false,
                 "section code_type" => self.code_section = None,
                 directive if directive.starts_with("section code_type ") => {
                     let name = directive["section code_type ".len()..].trim();
@@ -718,7 +723,17 @@ impl Parser {
         // the common shape — all such data declared before any function — is modeled,
         // so defer the unit if an emittable static global follows a function.
         let mut seen_function = false;
+        // (Functions defined under `#pragma dont_inline on`, tagged before
+        // the next pragmas apply.)
+        let mut tagged = 0;
         while *self.peek() != Token::EndOfFile {
+            if self.dont_inline {
+                for function in &functions[tagged..] {
+                    let function: &Function = function;
+                    self.dont_inline_functions.insert(function.name.clone());
+                }
+            }
+            tagged = functions.len();
             self.consume_top_level_pragmas();
             if *self.peek() == Token::EndOfFile {
                 break;
@@ -1368,7 +1383,14 @@ impl Parser {
                 cxx_const_reference_parameter_types.insert(method.mangled.clone(), positions);
             }
         }
+        if self.dont_inline {
+            for function in &functions[tagged..] {
+                let function: &Function = function;
+                self.dont_inline_functions.insert(function.name.clone());
+            }
+        }
         Ok(TranslationUnit {
+            dont_inline_functions: std::mem::take(&mut self.dont_inline_functions),
             globals,
             functions,
             global_destructor_records: startup.destructor_records,

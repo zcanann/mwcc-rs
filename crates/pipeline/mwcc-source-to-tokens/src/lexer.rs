@@ -119,7 +119,7 @@ pub fn tokenize_bytes_located(bytes: &[u8]) -> Compilation<Vec<LocatedToken>> {
                             .strip_prefix("section code_type ")
                             .is_some_and(|name| name.starts_with('"') && name.ends_with('"'));
                     if code_section
-                        || matches!(rest, "cplusplus on" | "cplusplus off" | "cplusplus reset" | "exceptions on" | "exceptions off" | "exceptions reset" | "push" | "pop" | "defer_codegen on" | "defer_codegen off" | "force_active on" | "force_active off" | "force_active reset" | "peephole on" | "peephole off" | "peephole reset")
+                        || matches!(rest, "cplusplus on" | "cplusplus off" | "cplusplus reset" | "exceptions on" | "exceptions off" | "exceptions reset" | "push" | "pop" | "defer_codegen on" | "defer_codegen off" | "force_active on" | "force_active off" | "force_active reset" | "peephole on" | "peephole off" | "peephole reset" | "dont_inline on" | "dont_inline off" | "dont_inline reset")
                     {
                         push_token!(Token::Pragma(rest.to_string()), line_start);
                     }

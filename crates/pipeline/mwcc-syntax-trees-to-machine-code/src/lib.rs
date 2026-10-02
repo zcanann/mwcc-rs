@@ -70,6 +70,8 @@ pub struct SourceFunctionFacts<'a> {
     pub nonvolatile_pointer_bindings: &'a HashSet<(String, String)>,
     /// Pointer parameters and locals declared `const T *`.
     pub parameter_pointee_const: &'a HashSet<(String, String)>,
+    /// Functions defined under `#pragma dont_inline on`.
+    pub dont_inline_functions: &'a HashSet<String>,
     pub local_pointee_const: &'a HashSet<(String, String)>,
     pub parameter_fundamentals:
         &'a HashMap<(String, String), mwcc_syntax_trees::SourceFundamentalType>,
@@ -181,6 +183,12 @@ fn lower_function_body(
     // when deferred or with `-ipa file`) within the size limit; a
     // source-declared inline within its larger limit.
     let inline_decision = |name: &str| -> Option<Option<&mwcc_syntax_trees::Function>> {
+        // (`#pragma dont_inline` at the caller's or the callee's definition.)
+        if (source_facts.dont_inline_functions.contains(name) || source_facts.dont_inline_functions.contains(&function.name))
+            && std::env::var_os("MWCC_PCODE_IGNORE_DONT_INLINE").is_none()
+        {
+            return None;
+        }
         let automatic = config.flags.inline_enabled && config.flags.automatic_inlining_enabled;
         let size_goal = config.flags.optimization_goal == mwcc_versions::OptimizationGoal::Size;
         let limit = pcode_path::automatic_inline_limit(config.build.label, size_goal);
