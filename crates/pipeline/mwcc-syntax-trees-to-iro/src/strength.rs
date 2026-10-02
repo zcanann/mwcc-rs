@@ -165,6 +165,13 @@ fn statements(body: &mut Vec<Stmt>, function: &mut Function, fold_start: bool) {
             }
             _ => Vec::new(),
         };
+        // Arithmetic on values the loop does not change is computed before
+        // it.
+        let invariants = if std::env::var_os("MWCC_IRO_NO_INVARIANT_MOTION").is_none() {
+            hoist_invariant_expressions(&mut body[index], function)
+        } else {
+            Vec::new()
+        };
         // (A count register loop's count is set before them.)
         if let Stmt::Counted { count, .. } = &mut body[index] {
             if !hoisted.is_empty() && count.as_int().is_some() {
@@ -202,6 +209,13 @@ fn statements(body: &mut Vec<Stmt>, function: &mut Function, fold_start: bool) {
         for (offset, constant) in hoisted.into_iter().enumerate() {
             body.insert(before_start + offset, constant);
         }
+        // (Right before the loop.)
+        let loop_at = index + count;
+        let invariant_count = invariants.len();
+        for (offset, invariant) in invariants.into_iter().enumerate() {
+            body.insert(loop_at + offset, invariant);
+        }
+        let count = count + invariant_count;
         index += count + 1;
         // (What the statements just passed assign.)
         for statement in &body[index - count - 1..index] {
@@ -659,6 +673,130 @@ fn based(body: &[Stmt], variable: VarId) -> bool {
         Stmt::Switch { value, arms, .. } => expression(value, variable) || arms.iter().any(|arm| based(arm, variable)),
         Stmt::Break | Stmt::Continue | Stmt::Goto(_) | Stmt::Label(_) => false,
     })
+}
+
+/// Arithmetic inside a loop on variables it does not assign (no loads, no
+/// calls) is computed once before it, into a variable.
+fn hoist_invariant_expressions(statement: &mut Stmt, function: &mut Function) -> Vec<Stmt> {
+    let mut assigned = Vec::new();
+    collect_assigned(std::slice::from_ref(statement), &mut assigned);
+    let invariant_variable = |id: VarId, function: &Function| {
+        !assigned.contains(&id) && function.variables[id].frame.is_none() && !function.variables[id].volatile
+    };
+    fn invariant(e: &Expr, check: &dyn Fn(VarId) -> bool) -> bool {
+        match &e.kind {
+            ExprKind::Int(_) | ExprKind::Float(_) | ExprKind::GlobalAddress(_) | ExprKind::LocalAddress(_) => true,
+            ExprKind::Var(id) => check(*id),
+            ExprKind::Binary(op, left, right) => {
+                !op.is_comparison()
+                    && !matches!(op, BinaryOp::LogicalAnd | BinaryOp::LogicalOr)
+                    && invariant(left, check)
+                    && invariant(right, check)
+            }
+            ExprKind::Unary(_, operand) | ExprKind::Convert(operand) => invariant(operand, check),
+            _ => false,
+        }
+    }
+    fn hoistable(e: &Expr) -> bool {
+        matches!(e.kind, ExprKind::Binary(..) | ExprKind::Unary(..) | ExprKind::Convert(..))
+            && !mwcc_iro::is_wide(e.ty)
+            && format!("{:?}", e.kind).contains("Var(")
+    }
+    struct Hoister<'a> {
+        check: &'a dyn Fn(VarId) -> bool,
+        found: Vec<(String, Expr, VarId)>,
+        function: &'a mut Function,
+    }
+    impl Hoister<'_> {
+        fn expression(&mut self, e: &mut Expr) {
+            if hoistable(e) && invariant(e, self.check) {
+                let key = format!("{e:?}");
+                let variable = match self.found.iter().find(|(k, ..)| *k == key) {
+                    Some(&(_, _, variable)) => variable,
+                    None => {
+                        let variable = self.function.add_temporary(e.ty);
+                        self.found.push((key, e.clone(), variable));
+                        variable
+                    }
+                };
+                *e = Expr { kind: ExprKind::Var(variable), ty: e.ty };
+                return;
+            }
+            match &mut e.kind {
+                // (An address stays in its addressing mode.)
+                ExprKind::Load { index, .. } => {
+                    if let Some(index) = index {
+                        self.expression(index);
+                    }
+                }
+                // (An argument `x + k` is computed into its register as
+                // cheaply as it would be copied there.)
+                ExprKind::Call { arguments, .. } => {
+                    for argument in arguments {
+                        let displaced = matches!(&argument.kind, ExprKind::Binary(BinaryOp::Add | BinaryOp::Subtract, left, right)
+                            if left.as_var().is_some() && right.as_int().is_some());
+                        if !displaced || std::env::var_os("MWCC_IRO_HOIST_DISPLACED_ARGUMENTS").is_some() {
+                            self.expression(argument);
+                        }
+                    }
+                }
+                _ => crate::passes::children(e, &mut |child| self.expression(child)),
+            }
+        }
+        fn statements(&mut self, body: &mut [Stmt]) {
+            for statement in body {
+                match statement {
+                    Stmt::Assign { value, .. } | Stmt::Eval(value) | Stmt::SetReturn(value) => self.expression(value),
+                    Stmt::Return(Some(value)) => self.expression(value),
+                    Stmt::Store { place, value, .. } => {
+                        if let Place::Memory { index: Some(index), .. } = place {
+                            self.expression(index);
+                        }
+                        self.expression(value);
+                    }
+                    Stmt::If { condition, then_body, else_body } => {
+                        self.expression(condition);
+                        self.statements(then_body);
+                        self.statements(else_body);
+                    }
+                    Stmt::Loop { condition, body, step, effects, .. } => {
+                        if let Some(condition) = condition {
+                            self.expression(condition);
+                        }
+                        self.statements(body);
+                        self.statements(step);
+                        self.statements(effects);
+                    }
+                    Stmt::Counted { body, .. } => self.statements(body),
+                    Stmt::Switch { value, arms, .. } => {
+                        self.expression(value);
+                        arms.iter_mut().for_each(|arm| self.statements(arm));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    let variables: Vec<bool> = (0..function.variables.len()).map(|id| invariant_variable(id, function)).collect();
+    let check = |id: VarId| variables.get(id).copied().unwrap_or(false);
+    let mut hoister = Hoister { check: &check, found: Vec::new(), function };
+    match statement {
+        Stmt::Loop { condition, body, step, effects, .. } => {
+            if let Some(condition) = condition {
+                hoister.expression(condition);
+            }
+            hoister.statements(body);
+            hoister.statements(step);
+            hoister.statements(effects);
+        }
+        Stmt::Counted { body, .. } => hoister.statements(body),
+        _ => {}
+    }
+    hoister
+        .found
+        .into_iter()
+        .map(|(_, value, variable)| Stmt::Assign { variable, value })
+        .collect()
 }
 
 /// Integer constants stored inside a loop: each becomes a variable set

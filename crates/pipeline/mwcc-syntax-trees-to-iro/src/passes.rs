@@ -1066,7 +1066,7 @@ pub fn map_strings(body: &mut [Stmt], map: &dyn Fn(usize) -> usize) {
     for_each_expression(body, &mut |e| expression(e, map));
 }
 
-fn children(expression: &mut Expr, rewrite: &mut dyn FnMut(&mut Expr)) {
+pub(crate) fn children(expression: &mut Expr, rewrite: &mut dyn FnMut(&mut Expr)) {
     match &mut expression.kind {
         ExprKind::Int(_)
         | ExprKind::Float(_)
