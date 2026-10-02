@@ -1065,6 +1065,14 @@ fn compile(
         {
             function_config.flags.cpp_exceptions = *enabled;
         }
+        if let Some(reason) = unit.unparsed_functions.get(&function.name) {
+            let diagnostic = Diagnostic::error(reason.clone());
+            if parity_keep_going {
+                eprintln!("mwcc: parity skipped function '{}': {}", function.name, diagnostic);
+                continue;
+            }
+            return Err(diagnostic);
+        }
         match mwcc_syntax_trees_to_machine_code::lower_function_with_source_facts(
             function,
             &unit.globals,

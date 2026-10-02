@@ -876,6 +876,7 @@ pub(crate) struct Parser {
     pub(crate) dont_inline: bool,
     /// Functions defined while `#pragma dont_inline on` was active.
     pub(crate) dont_inline_functions: std::collections::HashSet<String>,
+    pub(crate) unparsed_functions: std::collections::HashMap<String, String>,
     /// Parsed single-return inline bodies: name -> (parameter names, body) —
     /// substituted at call sites with pure arguments (mwcc -inline auto).
     pub(crate) inline_bodies:
@@ -883,6 +884,8 @@ pub(crate) struct Parser {
     /// Number of single-return inline substitutions made in the function body
     /// currently being parsed.
     pub(crate) inline_substitution_count: usize,
+    /// An `asm { }` block nested in the current function's statements.
+    pub(crate) nested_inline_asm: bool,
     /// Locals (by function) whose initializer substituted an inline call.
     pub(crate) function_inline_initialized_locals: std::collections::HashSet<(String, String)>,
     /// Per-function provenance retained after those calls disappear from ASTs.

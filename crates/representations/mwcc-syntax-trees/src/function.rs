@@ -398,6 +398,9 @@ pub struct TranslationUnit {
     /// Functions defined while `#pragma dont_inline on` was active: none
     /// is expanded inline, and none expands a call inline.
     pub dont_inline_functions: std::collections::HashSet<String>,
+    /// Functions whose bodies the parser could not read (name, reason): each
+    /// is a placeholder, left uncompiled.
+    pub unparsed_functions: std::collections::HashMap<String, String>,
     /// Locals (function, name) whose initializer substituted an inline call.
     pub function_inline_initialized_locals: std::collections::HashSet<(String, String)>,
     /// Parser-internal names of anonymous 12-byte records used by

@@ -511,6 +511,29 @@ impl Parser {
 
     /// A `{ ... }` block, or a single (non-`return`) statement, as a conditional
     /// branch body.
+    /// A nested `asm { ... }` block: skipped, the function marked as
+    /// containing inline assembly (which it is never compiled with).
+    fn skip_nested_asm_block(&mut self) -> Compilation<bool> {
+        if *self.peek() != Token::Asm || *self.peek_at(1) != Token::BraceOpen {
+            return Ok(false);
+        }
+        self.advance();
+        self.advance();
+        let mut depth = 1usize;
+        while depth > 0 {
+            if self.position + 1 >= self.tokens.len() {
+                return Err(Diagnostic::error("unterminated asm block"));
+            }
+            match self.advance() {
+                Token::BraceOpen => depth += 1,
+                Token::BraceClose => depth -= 1,
+                _ => {}
+            }
+        }
+        self.nested_inline_asm = true;
+        Ok(true)
+    }
+
     pub(crate) fn parse_block_or_statement(
         &mut self,
         local_names: &mut std::collections::HashSet<String>,
@@ -518,6 +541,9 @@ impl Parser {
     ) -> Compilation<Vec<Statement>> {
         if *self.peek() == Token::BraceOpen {
             return self.parse_block(local_names, block_locals);
+        }
+        if self.skip_nested_asm_block()? {
+            return Ok(Vec::new());
         }
         // An empty body — `while (c) ;` / `if (c) ;` — is no statements.
         if *self.peek() == Token::Semicolon {
@@ -577,6 +603,9 @@ impl Parser {
             }
             if let Some(statement) = self.parse_jump_statement()? {
                 statements.push(statement);
+                continue;
+            }
+            if self.skip_nested_asm_block()? {
                 continue;
             }
             // A nested bare `{ ... }` scoping block flattens recursively (its

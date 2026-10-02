@@ -1391,6 +1391,7 @@ impl Parser {
         }
         Ok(TranslationUnit {
             dont_inline_functions: std::mem::take(&mut self.dont_inline_functions),
+            unparsed_functions: std::mem::take(&mut self.unparsed_functions),
             function_inline_initialized_locals: std::mem::take(&mut self.function_inline_initialized_locals),
             globals,
             functions,
@@ -4105,6 +4106,9 @@ impl Parser {
                         .insert("this".to_string(), scope.clone());
                 }
             }
+            let body_position = self.position;
+            let body_name = name.clone();
+            let body_return_type = return_type;
             let parsed_function = self.function_body(
                 if let Some(scope) = &constructor_scope {
                     Type::StructPointer {
@@ -4133,6 +4137,52 @@ impl Parser {
                     self.variable_structs.remove("this");
                 }
             }
+            // (A body the parser cannot read leaves only this function
+            // uncompiled: skip to its closing brace.)
+            let parsed_function = match parsed_function {
+                Err(error)
+                    if self.tokens.get(body_position).is_some_and(|token| *token == Token::BraceOpen)
+                        && std::env::var_os("MWCC_STRICT_FUNCTION_PARSE").is_none() =>
+                {
+                    self.position = body_position;
+                    let mut depth = 0usize;
+                    loop {
+                        if self.position + 1 >= self.tokens.len() {
+                            return Err(error);
+                        }
+                        match self.advance() {
+                            Token::BraceOpen => depth += 1,
+                            Token::BraceClose => {
+                                depth -= 1;
+                                if depth == 0 {
+                                    break;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    self.unparsed_functions.insert(body_name.clone(), error.message.clone());
+                    Ok(Function {
+                        return_type: body_return_type,
+                        name: body_name,
+                        is_static: function_is_static,
+                        is_weak: function_is_weak,
+                        parameters: Vec::new(),
+                        locals: Vec::new(),
+                        statements: Vec::new(),
+                        guards: Vec::new(),
+                        return_expression: None,
+                        section: None,
+                        preceded_by_asm: false,
+                        asm_body: None,
+                        inline_asm_blocks: vec![mwcc_syntax_trees::InlineAsmBlock { statement_index: 0, items: Vec::new() }],
+                        force_active: false,
+                        text_deferred: false,
+                        peephole_disabled: false,
+                    })
+                }
+                other => other,
+            };
             let mut function = parsed_function?;
             let constructor_vptr_insertion_index = constructor_initialization.vptr_insertion_index;
             if !constructor_initialization.statements.is_empty() {
@@ -5972,6 +6022,7 @@ impl Parser {
         let mut statements = Vec::new();
         let mut statement_lines = Vec::new();
         let mut inline_asm_blocks = Vec::new();
+        self.nested_inline_asm = false;
         // Zero or more guarded early returns: `if (condition) return value;`. An
         // `if (c) return x; else return y;` terminates the function as a single
         // conditional return (the ternary `c ? x : y`).
@@ -6336,7 +6387,11 @@ impl Parser {
             section: None,
             preceded_by_asm: false,
             asm_body: None,
-            inline_asm_blocks,
+            inline_asm_blocks: if std::mem::take(&mut self.nested_inline_asm) && inline_asm_blocks.is_empty() {
+                vec![mwcc_syntax_trees::InlineAsmBlock { statement_index: 0, items: Vec::new() }]
+            } else {
+                inline_asm_blocks
+            },
             force_active: self.force_active,
         })
     }
