@@ -3728,11 +3728,13 @@ impl Lowerer<'_, '_> {
         // when it is a field, else the right one).
         if op == BinaryOp::BitOr && !self.unoptimized {
             let refined = !toggle("MWCC_PCODE_OLD_INSERTS");
-            // (A rotation `(x << n) | (x >> 32 - n)` is no insert: GC/1.0-
-            // 1.2.5n rotate, later builds shift and `or`.)
-            let rotated = rotation(left, right).filter(|_| refined && toggle("MWCC_PCODE_ROTATION_INSERTS"));
+            // (A rotation `(x << n) | (x >> 32 - n)` is a rotate on GC/3.x
+            // and Wii, an `or` on GC/1.0-1.2.5n when it is the target's value.)
+            let rotated = rotation(left, right).filter(|_| {
+                refined && (self.unit.rotates || (self.unit.early_frame && target.is_some())) && !toggle("MWCC_PCODE_ROTATION_INSERTS")
+            });
             if let Some((x, n)) = rotated {
-                if self.unit.early_frame {
+                if self.unit.rotates {
                     let (x, _) = self.expression(x)?;
                     let d = self.result(target);
                     self.emit_plain(Instruction::RotateAndMask { a: d, s: x, shift: n, begin: 0, end: 31 });
@@ -3864,6 +3866,15 @@ impl Lowerer<'_, '_> {
                     let d = self.result(target);
                     self.emit_plain(Instruction::RotateAndMask { a: d, s: a, shift: 0, begin, end });
                     return Ok((d, Type::Int));
+                }
+            }
+            // A masked rotation is one rotate-and-mask (GC/3.x, Wii).
+            if let (Some((begin, end)), ExprKind::Binary(BinaryOp::BitOr, a, b), true) = (mask_bounds(right), &left.kind, self.unit.rotates && !self.unoptimized) {
+                if let Some((x, n)) = rotation(a, b).filter(|_| !toggle("MWCC_PCODE_ROTATION_INSERTS")) {
+                    let (x, _) = self.expression(x)?;
+                    let d = self.result(target);
+                    self.emit_plain(Instruction::RotateAndMask { a: d, s: x, shift: n, begin, end });
+                    return Ok((d, ty));
                 }
             }
             if let Some((operand, shift, begin, end)) = shift_mask(left, right) {

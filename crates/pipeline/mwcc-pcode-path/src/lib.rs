@@ -260,6 +260,7 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         reassociates_sums: !request.config.build.label.starts_with("GC/3.") && !request.config.build.label.starts_with("Wii/"),
         cancels_float_negations: !request.config.build.label.starts_with("GC/3.") && !request.config.build.label.starts_with("Wii/"),
         steps_after_pointer_stores: request.config.build.label.starts_with("GC/3.") || request.config.build.label.starts_with("Wii/"),
+        rotates: request.config.build.label.starts_with("GC/3.") || request.config.build.label.starts_with("Wii/"),
         // (At any level with an explicit `,p`; GC/3.x and Wii also by
         // default, but not when optimizing for size.)
         magic_division: request.config.flags.explicit_speed_goal
