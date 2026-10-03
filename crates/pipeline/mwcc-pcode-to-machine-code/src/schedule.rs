@@ -478,8 +478,14 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
                     let tagged_stores = matches!(later_memory_kind, Memory::Store(_))
                         && (instructions[index].object.is_some() || instructions[*later].object.is_some());
                     let aliased = may_alias(object, other);
+                    // (Two stores to different named objects keep their
+                    // order in the final pass without waiting.)
+                    let named_apart = matches!((object, other), (Some(ObjectKey::Symbol(a)), Some(ObjectKey::Symbol(b))) if a != b)
+                        && matches!(later_memory_kind, Memory::Store(_))
+                        && !tagged_stores
+                        && std::env::var_os("MWCC_SCHED_NAMED_STORE_LATENCY").is_none();
                     if aliased || tagged_stores {
-                        edges.push((index, *later, latency));
+                        edges.push((index, *later, if named_apart { 0 } else { latency }));
                     }
                 }
             }
