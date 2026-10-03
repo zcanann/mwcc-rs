@@ -1278,6 +1278,22 @@ fn fold_once(expression: &Expr) -> Option<Expr> {
             value.ty = expression.ty;
             Some(value)
         }
+        // `~k` and `-k` of a literal word are literals.
+        ExprKind::Unary(op @ (UnaryOp::BitNot | UnaryOp::Negate), operand)
+            if operand.as_int().is_some() && mwcc_iro::is_general_word(expression.ty) && !mwcc_iro::is_wide(expression.ty) =>
+        {
+            let value = operand.as_int()? as i32;
+            let folded = if *op == UnaryOp::BitNot { !value } else { value.wrapping_neg() };
+            let value = if mwcc_iro::is_unsigned(expression.ty) { i64::from(folded as u32) } else { i64::from(folded) };
+            Some(Expr::typed_int(value, expression.ty))
+        }
+        // `!!!x` is `!x`.
+        ExprKind::Unary(UnaryOp::LogicalNot, operand)
+            if matches!(&operand.kind, ExprKind::Unary(UnaryOp::LogicalNot, inner) if matches!(inner.kind, ExprKind::Unary(UnaryOp::LogicalNot, _))) =>
+        {
+            let ExprKind::Unary(_, inner) = &operand.kind else { return None };
+            Some((**inner).clone())
+        }
         // `-(x < 0)` is the sign mask `x >> 31`.
         ExprKind::Unary(UnaryOp::Negate, operand)
             if expression.ty == Type::Int
@@ -1702,6 +1718,11 @@ fn negation(expression: &Expr) -> Option<Expr> {
         _ => None,
     };
     let ty = expression.ty;
+    // (GC/3.x keeps every floating negation; earlier builds fold them, but
+    // a negated variable on the left of a sum stays.)
+    if mwcc_iro::is_float(ty) && !FLOAT_NEGATION_ALGEBRA.with(|flag| flag.get()) {
+        return None;
+    }
     match op {
         BinaryOp::Subtract => {
             if let Some(b) = negated(right) {
@@ -1717,6 +1738,10 @@ fn negation(expression: &Expr) -> Option<Expr> {
         BinaryOp::Add => {
             if let Some(b) = negated(right) {
                 return Some(Expr::binary(BinaryOp::Subtract, (**left).clone(), b, ty));
+            }
+            // (A floating `-a + b` keeps a negated variable.)
+            if mwcc_iro::is_float(ty) && negated(left).is_some_and(|a| matches!(a.kind, ExprKind::Var(_))) {
+                return None;
             }
             let a = negated(left)?;
             Some(Expr::binary(BinaryOp::Subtract, (**right).clone(), a, ty))
@@ -2736,6 +2761,12 @@ fn word_identities(op: BinaryOp, left: &Expr, right: &Expr, ty: Type) -> Option<
             let inner = Expr { ty, ..(**inner).clone() };
             Some(Expr::binary(BinaryOp::BitAnd, inner, right.clone(), ty))
         }
+        // `(x & m) >> n` with m keeping every bit the shift keeps (logical).
+        (BinaryOp::ShiftRight, ExprKind::Binary(BinaryOp::BitAnd, x, m), ExprKind::Int(n))
+            if ty == Type::UnsignedInt && (1..32).contains(n) && m.as_int().is_some_and(|m| (m as u32) | (u32::MAX >> (32 - n)) == u32::MAX) =>
+        {
+            Some(Expr::binary(BinaryOp::ShiftRight, (**x).clone(), right.clone(), ty))
+        }
         // `x - (k << 16)` is `addis x,-k`.
         (BinaryOp::Subtract, _, ExprKind::Int(k)) if *k as u32 & 0xffff == 0 && *k as u32 != 0 && *k as i32 != i32::MIN => {
             Some(Expr::binary(BinaryOp::Add, left.clone(), Expr::typed_int(i64::from((*k as i32).wrapping_neg()), ty), ty))
@@ -2756,6 +2787,16 @@ pub fn bit_tests(body: &mut [Stmt]) {
         let ExprKind::Binary(BinaryOp::BitAnd, x, mask) = &left.kind else { return };
         let (Some(m), Some(v)) = (mask.as_int(), right.as_int()) else { return };
         let m = m as u32;
+        // (`(x & 2^k) == 0` is bit k flipped.)
+        if v == 0 && m.is_power_of_two() && m > 1 && mwcc_iro::is_general_word(x.ty) && !is_narrow(x.ty) && std::env::var_os("MWCC_IRO_NO_CLEAR_BIT_TESTS").is_none() {
+            let k = Expr::typed_int(i64::from(m.trailing_zeros()), Type::Int);
+            let shifted = Expr::binary(BinaryOp::ShiftRight, Expr { ty: Type::UnsignedInt, ..(**x).clone() }, k, Type::UnsignedInt);
+            let bit = Expr::binary(BinaryOp::BitAnd, shifted, Expr::typed_int(1, Type::UnsignedInt), Type::UnsignedInt);
+            let mut flipped = Expr::binary(BinaryOp::BitXor, bit, Expr::typed_int(1, Type::UnsignedInt), Type::UnsignedInt);
+            flipped.ty = Type::Int;
+            *expression = flipped;
+            return;
+        }
         let fits = !is_narrow(x.ty) || m < 1u32 << (8 * width(x.ty));
         if m != v as u32 || !m.is_power_of_two() || m < 2 || !mwcc_iro::is_general_word(x.ty) || !fits {
             return;
@@ -2766,7 +2807,41 @@ pub fn bit_tests(body: &mut [Stmt]) {
         bit.ty = Type::Int;
         *expression = bit;
     }
-    for_each_expression(body, &mut |expression| rewrite(expression));
+    // (A tested condition keeps its comparison: `rlwinm.` and a branch.)
+    fn walk(body: &mut [Stmt]) {
+        for statement in body.iter_mut() {
+            match statement {
+                Stmt::If { condition, then_body, else_body } => {
+                    children(condition, &mut |child| rewrite(child));
+                    walk(then_body);
+                    walk(else_body);
+                }
+                Stmt::Loop { condition, body, step, effects, .. } => {
+                    if let Some(condition) = condition {
+                        children(condition, &mut |child| rewrite(child));
+                    }
+                    walk(body);
+                    walk(step);
+                    walk(effects);
+                }
+                Stmt::Counted { count, guard, body } => {
+                    rewrite(count);
+                    if let Some(guard) = guard {
+                        children(guard, &mut |child| rewrite(child));
+                    }
+                    walk(body);
+                }
+                Stmt::Switch { value, arms, .. } => {
+                    rewrite(value);
+                    for arm in arms {
+                        walk(arm);
+                    }
+                }
+                other => for_each_expression(std::slice::from_mut(other), &mut |expression| rewrite(expression)),
+            }
+        }
+    }
+    walk(body);
 }
 
 /// Sums of variables carry their constants last: `(a - 1) + b` is
@@ -2902,4 +2977,9 @@ fn reads_memory_in(statement: &Stmt) -> bool {
     // follow it.)
     let listing = format!("{statement:?}");
     listing.contains("Load {") || listing.contains("Global(") || listing.contains("Call {")
+}
+
+thread_local! {
+    /// Floating negations fold into sums (GC/1.x-2.x); set per build.
+    pub static FLOAT_NEGATION_ALGEBRA: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }

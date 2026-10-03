@@ -2313,8 +2313,8 @@ impl Lowerer<'_, '_> {
             }
             // `~(a | b)`, `~(a & b)`, `~(a ^ b)`: `nor`, `nand`, `eqv`.
             ExprKind::Unary(UnaryOp::BitNot, operand)
-                if matches!(&operand.kind, ExprKind::Binary(BinaryOp::BitOr | BinaryOp::BitAnd | BinaryOp::BitXor, left, right)
-                    if right.as_int().is_none() && left.as_int().is_none())
+                if matches!(&operand.kind, ExprKind::Binary(op @ (BinaryOp::BitOr | BinaryOp::BitAnd | BinaryOp::BitXor), left, right)
+                    if (right.as_int().is_none() || *op == BinaryOp::BitOr) && left.as_int().is_none())
                     && !toggle("MWCC_PCODE_NO_NOR") =>
             {
                 let ExprKind::Binary(op, left, right) = &operand.kind else { unreachable!() };

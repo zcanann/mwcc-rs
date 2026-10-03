@@ -39,6 +39,7 @@ pub struct Built {
 
 /// Build the IR for `function` and run the IRO passes.
 pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
+    passes::FLOAT_NEGATION_ALGEBRA.with(|flag| flag.set(unit.cancels_float_negations));
     let mut built = build_unoptimized(function, unit)?;
     if std::env::var_os("MWCC_IRO_NO_SCALARIZE").is_none() {
         passes::scalarize(&mut built.function, unit.keeps_struct_stores);
@@ -89,6 +90,7 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
 /// Build the IR for an unoptimized (`-O0`) compile: no IRO passes beyond the
 /// front end's literal folding, and every `return` leaves directly.
 pub fn build_unoptimized_compile(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
+    passes::FLOAT_NEGATION_ALGEBRA.with(|flag| flag.set(unit.cancels_float_negations));
     let mut built = build_unoptimized(function, unit)?;
     if unit.cancels_float_negations && std::env::var_os("MWCC_IRO_NO_FLOAT_NEGATIONS").is_none() {
         passes::float_negations(&mut built.function.body);
