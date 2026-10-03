@@ -3263,8 +3263,35 @@ impl Lowerer<'_, '_> {
                     }
                     _ => None,
                 };
-                let (mut x, _) = match self.inserted.take() {
-                    Some((at, x)) if at == value.as_ref() as *const Expr as usize => (x, value.ty),
+                // (A value `(y >> n) & m` whose inserted bits lie inside m and
+                // below the shifted-out ones is y rotated by `shift - n`.)
+                let mut shift = *shift;
+                let rotated = if self.unoptimized || self.unit.early_frame || toggle("MWCC_PCODE_NO_ROTATED_INSERT") {
+                    None
+                } else {
+                    let (shifted, mask) = match &value.kind {
+                        ExprKind::Binary(BinaryOp::BitAnd, inner, m) if m.as_int().is_some() => (inner.as_ref(), m.as_int().map(|m| m as u32)),
+                        _ => (value.as_ref(), None),
+                    };
+                    match &shifted.kind {
+                        ExprKind::Binary(BinaryOp::ShiftRight, y, n)
+                            if matches!(y.ty, Type::UnsignedInt | Type::Pointer(_) | Type::StructPointer { .. })
+                                && n.as_int().is_some_and(|n| (1..32).contains(&n)) =>
+                        {
+                            let n = n.as_int().unwrap_or(0) as u32;
+                            let value_bits = field_bits(*begin, *end).rotate_right(u32::from(shift));
+                            let fits = value_bits & !(u32::MAX >> n) == 0 && mask.is_none_or(|m| value_bits & !m == 0);
+                            fits.then_some((y.as_ref(), n))
+                        }
+                        _ => None,
+                    }
+                };
+                let (mut x, _) = match (self.inserted.take(), rotated) {
+                    (Some((at, x)), _) if at == value.as_ref() as *const Expr as usize => (x, value.ty),
+                    (_, Some((y, n))) => {
+                        shift = ((u32::from(shift) + 32 - n) % 32) as u8;
+                        self.expression(y)?
+                    }
                     _ => self.expression(narrow_source.unwrap_or(value))?,
                 };
                 if self.unoptimized
@@ -3286,7 +3313,7 @@ impl Lowerer<'_, '_> {
                 if b != d {
                     self.emit_plain(Instruction::Or { a: d, s: b, b });
                 }
-                self.emit_plain(Instruction::RotateAndMaskInsert { a: d, s: x, shift: *shift, begin: *begin, end: *end });
+                self.emit_plain(Instruction::RotateAndMaskInsert { a: d, s: x, shift, begin: *begin, end: *end });
                 Ok((d, Type::Int))
             }
             Idiom::Unary(IntrinsicOp::CountLeadingZeros, value) => {

@@ -189,6 +189,9 @@ pub fn run(function: &mut Function, branch_preserving: bool, reassociates_sums: 
     if enabled("FORWARD_UPDATES") && !has_label(&function.body) {
         forward_updates(function);
     }
+    if std::env::var_os("MWCC_IRO_NO_SINGLE_USES").is_none() && !has_label(&function.body) {
+        forward_single_uses(function);
+    }
     // (Forwarding reasons in structured order: not across `goto`s.)
     if enabled("FORWARD") && !has_label(&function.body) {
         forward_offsets(function);
@@ -2839,4 +2842,64 @@ pub fn hoist_constants(expression: &mut Expr, variable_first: bool) {
             Expr::binary(BinaryOp::Multiply, (**common).clone(), sum, ty)
         };
     }
+}
+
+/// A local assigned once from a call-free value and read once, in the very
+/// next top-level statement, is replaced by its value there (MWCC propagates
+/// the expression into its single use).
+pub fn forward_single_uses(function: &mut Function) {
+    fn reads(body: &[Stmt], variable: VarId) -> usize {
+        let mut count = 0;
+        let mut copy = body.to_vec();
+        for_each_expression(&mut copy, &mut |e| {
+            fn walk(e: &Expr, variable: VarId, count: &mut usize) {
+                if matches!(e.kind, ExprKind::Var(id) if id == variable) {
+                    *count += 1;
+                }
+                let mut copy = e.clone();
+                children(&mut copy, &mut |child| walk(child, variable, count));
+            }
+            walk(e, variable, &mut count);
+        });
+        count
+    }
+    let mut index = 0;
+    while index + 1 < function.body.len() {
+        let Stmt::Assign { variable, value } = &function.body[index] else {
+            index += 1;
+            continue;
+        };
+        let (variable, value) = (*variable, value.clone());
+        let candidate = &function.variables[variable];
+        let eligible = matches!(candidate.kind, VariableKind::Local)
+            && candidate.frame.is_none()
+            && !candidate.volatile
+            && !candidate.raw
+            && !format!("{value:?}").contains("Call {")
+            // (Nor a read of memory past another: their order holds.)
+            && !(reads_memory(&value) && reads_memory_in(&function.body[index + 1]))
+            && !value.mentions(variable)
+            && reads(&function.body, variable) == 1
+            && reads(std::slice::from_ref(&function.body[index + 1]), variable) == 1
+            && matches!(&function.body[index + 1], Stmt::Store { .. } | Stmt::Assign { .. } | Stmt::Eval(_))
+            && function.body.iter().filter(|s| matches!(s, Stmt::Assign { variable: v, .. } if *v == variable)).count() == 1;
+        if !eligible {
+            index += 1;
+            continue;
+        }
+        substitute(std::slice::from_mut(&mut function.body[index + 1]), variable, &value);
+        function.body.remove(index);
+    }
+}
+
+fn reads_memory(expression: &Expr) -> bool {
+    let listing = format!("{expression:?}");
+    listing.contains("Load {") || listing.contains("Global(")
+}
+
+fn reads_memory_in(statement: &Stmt) -> bool {
+    // (A call may change memory: a read moved into its statement could
+    // follow it.)
+    let listing = format!("{statement:?}");
+    listing.contains("Load {") || listing.contains("Global(") || listing.contains("Call {")
 }
