@@ -2124,6 +2124,43 @@ fn rewrite_selects(function: &mut Function, body: &mut Vec<Stmt>, top_level: boo
                             continue;
                         }
                     }
+                    // (Any values stored to one global: selected into a
+                        // temporary stored once, the else value set first
+                        // when it is one instruction.)
+                    (
+                        [Stmt::Store { place: Place::Global(name), ty, value, .. }],
+                        [Stmt::Store { place: Place::Global(other), ty: other_ty, value: other_value, .. }],
+                    ) if name == other
+                        && ty == other_ty
+                        && mwcc_iro::is_general_word(*ty)
+                        && !mwcc_iro::is_wide(*ty)
+                        && !format!("{value:?}{other_value:?}").contains("Call {")
+                        && std::env::var_os("MWCC_IRO_NO_GLOBAL_STORE_JOINS").is_none() =>
+                    {
+                        let (name, ty) = (name.clone(), *ty);
+                        let temporary = function.add_temporary(value.ty);
+                        let assign = |value: &Expr| Stmt::Assign { variable: temporary, value: value.clone() };
+                        let single = |e: &Expr| match &e.kind {
+                            ExprKind::Int(k) => i16::try_from(*k).is_ok(),
+                            ExprKind::Var(_) => true,
+                            ExprKind::Binary(_, left, right) => left.as_var().is_some() && right.as_int().is_some_and(|k| i16::try_from(k).is_ok()),
+                            ExprKind::Unary(_, operand) => operand.as_var().is_some(),
+                            _ => false,
+                        };
+                        if single(other_value) && speculable(other_value) && !condition.mentions(temporary) {
+                            output.push(assign(other_value));
+                            output.push(Stmt::If { condition, then_body: vec![assign(value)], else_body: Vec::new() });
+                        } else {
+                            output.push(Stmt::If { condition, then_body: vec![assign(value)], else_body: vec![assign(other_value)] });
+                        }
+                        output.push(Stmt::Store {
+                            place: Place::Global(name),
+                            ty,
+                            value: Expr { kind: ExprKind::Var(temporary), ty: value.ty },
+                            compound: false,
+                        });
+                        continue;
+                    }
                     ([Stmt::Return(Some(value))], [Stmt::Return(Some(other_value))]) => {
                         if let Some(rewritten) = select(function, &condition, value, other_value, Destination::Return) {
                             output.extend(rewritten);

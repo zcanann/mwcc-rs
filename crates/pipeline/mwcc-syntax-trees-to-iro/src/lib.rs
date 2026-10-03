@@ -64,6 +64,26 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
             Place::Global(name) => unit.globals.get(name).is_some_and(|global| !global.is_volatile),
         };
         passes::dead_stores(&mut built.function.body, &removable);
+        // (A local's last update returned at once is the returned value.)
+        if std::env::var_os("MWCC_IRO_NO_RETURNED_UPDATES").is_none() {
+            let body = &mut built.function.body;
+            let length = body.len();
+            if length >= 2 {
+                if let (Stmt::Assign { variable, value }, Stmt::SetReturn(Expr { kind: ExprKind::Var(returned), .. })) = (&body[length - 2], &body[length - 1]) {
+                    if variable == returned
+                        && built.function.variables[*variable].kind == mwcc_iro::VariableKind::Local
+                        && built.function.variables[*variable].frame.is_none()
+                        && !built.function.variables[*variable].volatile
+                        && value.ty == built.function.return_type
+                        && value.mentions(*variable)
+                    {
+                        let value = value.clone();
+                        body.truncate(length - 2);
+                        body.push(Stmt::SetReturn(value));
+                    }
+                }
+            }
+        }
         // (A destructor's vtable stores die with the object when nothing
         // after them reads memory or calls, but `operator delete`.)
         if built.function.name.starts_with("__dt__") && std::env::var_os("MWCC_IRO_KEEP_DESTRUCTOR_VTABLES").is_none() {
