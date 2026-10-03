@@ -3195,12 +3195,31 @@ pub fn forward_single_uses(function: &mut Function) {
             && reads(std::slice::from_ref(&function.body[index + 1]), variable) == uses
             && (returned || matches!(&function.body[index + 1], Stmt::Store { .. } | Stmt::Assign { .. } | Stmt::Eval(_)))
             && function.body.iter().filter(|s| matches!(s, Stmt::Assign { variable: v, .. } if *v == variable)).count() == 1;
-        if !eligible {
+        // (Or a last update `v = f(v)` whose one reader is the next store
+        // of a narrow value: the store takes `f(v)`.)
+        let rest = &function.body[index + 1..];
+        let update = !eligible
+            && matches!(candidate.kind, VariableKind::Local)
+            && candidate.frame.is_none()
+            && !candidate.volatile
+            && !candidate.raw
+            && mwcc_iro::is_narrow(candidate.ty)
+            && value.mentions(variable)
+            && !format!("{value:?}").contains("Call {")
+            && matches!(&function.body[index + 1], Stmt::Store { ty, .. } if *ty == candidate.ty)
+            && reads(std::slice::from_ref(&function.body[index + 1]), variable) == 1
+            && reads(&rest[1..], variable) == 0
+            && !rest.iter().any(|s| matches!(s, Stmt::Assign { variable: v, .. } if *v == variable))
+            && !has_label(&function.body)
+            && !toggle_env("MWCC_IRO_NO_FORWARDED_NARROW_UPDATES");
+        if !eligible && !update {
             index += 1;
             continue;
         }
         substitute(std::slice::from_mut(&mut function.body[index + 1]), variable, &value);
         function.body.remove(index);
+        // (The value it updated may now forward too.)
+        index = index.saturating_sub(1);
     }
 }
 
