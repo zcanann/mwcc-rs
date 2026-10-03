@@ -611,7 +611,9 @@ pub fn propagate_constants(function: &mut Function) {
             continue;
         };
         let local = &function.variables[variable];
-        let eligible = local.kind == VariableKind::Local
+        // (Or an inline expansion's constant result.)
+        let eligible = (local.kind == VariableKind::Local
+            || (local.name.ends_with("$result") && value.as_int().is_some() && std::env::var_os("MWCC_IRO_NO_RESULT_CONSTANTS").is_none()))
             && local.frame.is_none()
             && !local.volatile
             && !local.raw

@@ -152,6 +152,10 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
                 passes::fold(expression);
             });
         }
+        // (And a test of a propagated constant goes.)
+        if !passes::has_label(&built.function.body) && std::env::var_os("MWCC_IRO_NO_PROPAGATED_BRANCHES").is_none() {
+            passes::constant_branches(&mut built.function.body);
+        }
     }
     if unit.strength_reduction && std::env::var_os("MWCC_IRO_NO_STRENGTH_REDUCTION").is_none() {
         strength::set_loop_addresses(
