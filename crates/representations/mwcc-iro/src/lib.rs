@@ -553,6 +553,8 @@ pub fn pointer_to(ty: Type) -> Option<Type> {
         Type::StructPointer { element_size } => Type::Pointer(Pointee::StructPointer(element_size)),
         Type::Pointer(_) => Type::Pointer(Pointee::Pointer),
         Type::Struct { size, .. } => Type::StructPointer { element_size: size },
+        Type::LongLong => Type::Pointer(Pointee::LongLong),
+        Type::UnsignedLongLong => Type::Pointer(Pointee::UnsignedLongLong),
         _ => return None,
     })
 }

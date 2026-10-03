@@ -403,6 +403,17 @@ impl Lowerer<'_, '_> {
                     }
                 }
             }
+            // (An indexed one adds the index to the base first.)
+            Place::Memory { base, index: Some(index), offset } if !super::toggle("MWCC_PCODE_NO_INDEXED_WIDE_STORES") => {
+                let (pointer, _) = self.base_expression(base)?;
+                let (scaled, _) = self.expression(index)?;
+                let sum = self.temporary();
+                self.emit_plain(Instruction::Add { d: sum, a: pointer, b: scaled });
+                let (address, displacement) = self.displacement(sum, *offset)?;
+                let next = displacement.checked_add(4).ok_or_else(|| unsupported("a wide store past the displacement"))?;
+                self.emit_based(Instruction::StoreWord { s: low, a: address, offset: next }, address);
+                self.emit_based(Instruction::StoreWord { s: high, a: address, offset: displacement }, address);
+            }
             _ => return Err(unsupported("an indexed wide store")),
         }
         self.forget_loaded_globals(false);
