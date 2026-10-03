@@ -64,6 +64,36 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
             Place::Global(name) => unit.globals.get(name).is_some_and(|global| !global.is_volatile),
         };
         passes::dead_stores(&mut built.function.body, &removable);
+        // (A destructor's vtable stores die with the object when nothing
+        // after them reads memory or calls, but `operator delete`.)
+        if built.function.name.starts_with("__dt__") && std::env::var_os("MWCC_IRO_KEEP_DESTRUCTOR_VTABLES").is_none() {
+            if let [Stmt::If { then_body, else_body, .. }, ..] = built.function.body.as_mut_slice() {
+                let listing = format!("{then_body:?}");
+                if else_body.is_empty()
+                    && !listing.contains("Load {")
+                    && listing.matches("Call {").count() == listing.matches("Call { name: \"__dl__FPv\"").count()
+                {
+                    fn strip(body: &mut Vec<Stmt>) {
+                        body.retain(|statement| {
+                            !matches!(statement, Stmt::Store { place: Place::Memory { base, index: None, .. }, value, .. }
+                                if base.as_var() == Some(0) && matches!(&value.kind, ExprKind::GlobalAddress(name) if name.starts_with("__vt__")))
+                        });
+                        for statement in body.iter_mut() {
+                            if let Stmt::If { then_body, else_body, .. } = statement {
+                                strip(then_body);
+                                strip(else_body);
+                            }
+                        }
+                        // (A test left guarding nothing goes too.)
+                        body.retain(|statement| {
+                            !matches!(statement, Stmt::If { condition, then_body, else_body }
+                                if then_body.is_empty() && else_body.is_empty() && passes::speculable(condition))
+                        });
+                    }
+                    strip(then_body);
+                }
+            }
+        }
     }
     if !unit.branch_preserving && std::env::var_os("MWCC_IRO_NO_BIT_TESTS").is_none() {
         passes::bit_tests(&mut built.function.body);
