@@ -2972,16 +2972,22 @@ pub fn forward_single_uses(function: &mut Function) {
         };
         let (variable, value) = (*variable, value.clone());
         let candidate = &function.variables[variable];
+        // (A pointer read-modify-written through: `s = p->q; s->f = v`,
+        // whose reads all go through it.)
+        let through = read_modify_write(&function.body[index + 1], variable)
+            && matches!(value.kind, ExprKind::Load { .. })
+            && !toggle_env("MWCC_IRO_NO_FORWARDED_RMW_BASE");
+        let uses = if through { 2 } else { 1 };
         let eligible = matches!(candidate.kind, VariableKind::Local)
             && candidate.frame.is_none()
             && !candidate.volatile
             && !candidate.raw
             && !format!("{value:?}").contains("Call {")
             // (Nor a read of memory past another: their order holds.)
-            && !(reads_memory(&value) && reads_memory_in(&function.body[index + 1]))
+            && (through || !(reads_memory(&value) && reads_memory_in(&function.body[index + 1])))
             && !value.mentions(variable)
-            && reads(&function.body, variable) == 1
-            && reads(std::slice::from_ref(&function.body[index + 1]), variable) == 1
+            && reads(&function.body, variable) == uses
+            && reads(std::slice::from_ref(&function.body[index + 1]), variable) == uses
             && matches!(&function.body[index + 1], Stmt::Store { .. } | Stmt::Assign { .. } | Stmt::Eval(_))
             && function.body.iter().filter(|s| matches!(s, Stmt::Assign { variable: v, .. } if *v == variable)).count() == 1;
         if !eligible {
@@ -2991,6 +2997,34 @@ pub fn forward_single_uses(function: &mut Function) {
         substitute(std::slice::from_mut(&mut function.body[index + 1]), variable, &value);
         function.body.remove(index);
     }
+}
+
+fn toggle_env(name: &str) -> bool {
+    std::env::var_os(name).is_some()
+}
+
+/// `*(v + k) = f(*(v + k))`: a store through `variable` whose value reads
+/// memory only there, without calls.
+fn read_modify_write(statement: &Stmt, variable: VarId) -> bool {
+    let Stmt::Store { place: Place::Memory { base, index: None, offset }, value, .. } = statement else { return false };
+    if !matches!(base.kind, ExprKind::Var(id) if id == variable) || format!("{value:?}").contains("Call {") {
+        return false;
+    }
+    fn only_there(e: &Expr, variable: VarId, offset: i32) -> bool {
+        match &e.kind {
+            ExprKind::Load { base, index: None, offset: at } => {
+                *at == offset && matches!(base.kind, ExprKind::Var(id) if id == variable)
+            }
+            ExprKind::Load { .. } | ExprKind::Global(_) => false,
+            _ => {
+                let mut ok = true;
+                let mut copy = e.clone();
+                children(&mut copy, &mut |child| ok &= only_there(child, variable, offset));
+                ok
+            }
+        }
+    }
+    only_there(value, variable, *offset) && reads_memory(value)
 }
 
 fn reads_memory(expression: &Expr) -> bool {
