@@ -1557,7 +1557,12 @@ impl Lowerer<'_, '_> {
             }
             return Ok(());
         }
-        let direct = self.unoptimized.then_some(3);
+        // (Optimized, an arithmetic result is computed into r3 as well.)
+        let computed = matches!(&value.kind, ExprKind::Binary(op, ..) if !op.is_comparison() && !matches!(op, BinaryOp::LogicalAnd | BinaryOp::LogicalOr))
+            && !format!("{value:?}").contains("Call {")
+            && value.ty == return_type
+            && !toggle("MWCC_PCODE_NO_DIRECT_RETURNS");
+        let direct = (self.unoptimized || computed).then_some(3);
         // A returned signed byte load extends in place (`lbz r3; extsb r3,r3`).
         if !self.unoptimized
             && !fits
