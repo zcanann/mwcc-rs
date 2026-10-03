@@ -453,8 +453,8 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
             Memory::Load(object) => {
                 for (later, later_memory_kind) in &later_memory {
                     if let Memory::Store(other) = later_memory_kind {
-                        // (Through one base, only stores are disambiguated.)
-                        if may_alias(&unbased(object), &unbased(other)) {
+                        // (Through one base, disjoint accesses are independent.)
+                        if may_alias(object, other) {
                             edges.push((index, *later, latency));
                         }
                     }
@@ -470,11 +470,7 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
                     // address inside a known global.)
                     let tagged_stores = matches!(later_memory_kind, Memory::Store(_))
                         && (instructions[index].object.is_some() || instructions[*later].object.is_some());
-                    let aliased = if matches!(later_memory_kind, Memory::Store(_)) {
-                        may_alias(object, other)
-                    } else {
-                        may_alias(&unbased(object), &unbased(other))
-                    };
+                    let aliased = may_alias(object, other);
                     if aliased || tagged_stores {
                         edges.push((index, *later, latency));
                     }

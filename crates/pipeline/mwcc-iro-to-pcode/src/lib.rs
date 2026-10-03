@@ -2000,6 +2000,19 @@ impl Lowerer<'_, '_> {
     /// Evaluate a word-sized integer/pointer expression into a register.
     fn expression(&mut self, expression: &Expr) -> Compilation<(u32, Type)> {
         let ExprKind::Load { base, .. } = &expression.kind else { return self.expression_body(expression) };
+        // A load through a pointer reaching no volatile storage is marked
+        // (offsets disambiguate it, GC/3.x).
+        if !self.const_pointee(base) && self.shareable_pointer(base).is_some() {
+            let (block, start) = (self.current_block(), self.pcode.blocks[self.current_block()].instructions.len());
+            let (result, ty) = self.expression_body(expression)?;
+            if self.current_block() == block {
+                let instructions = &mut self.pcode.blocks[block].instructions[start..];
+                if let Some(load) = instructions.iter_mut().rev().find(|instruction| load_destination(&instruction.instruction) == Some(result)) {
+                    load.flags.nonvolatile_base = true;
+                }
+            }
+            return Ok((result, ty));
+        }
         if !self.const_pointee(base) {
             return self.expression_body(expression);
         }
