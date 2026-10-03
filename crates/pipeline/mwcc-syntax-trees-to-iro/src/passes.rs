@@ -216,6 +216,9 @@ pub fn run(function: &mut Function, branch_preserving: bool, reassociates_sums: 
     if enabled("DISPLACEMENTS") {
         displacements(&mut function.body);
     }
+    if enabled("MEMBER_INDEX_DISPLACEMENTS") {
+        member_index_displacements(&mut function.body);
+    }
     if enabled("IDIOMS") && !branch_preserving {
         let variables: Vec<Type> = function.variables.iter().map(|variable| variable.ty).collect();
         for_each_expression(&mut function.body, &mut |expression| idioms(expression, &variables));
@@ -2982,4 +2985,55 @@ fn reads_memory_in(statement: &Stmt) -> bool {
 thread_local! {
     /// Floating negations fold into sums (GC/1.x-2.x); set per build.
     pub static FLOAT_NEGATION_ALGEBRA: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// A member array element (`p->words[i]`): MWCC adds the scaled index to the
+/// struct pointer and keeps the member offset as the displacement
+/// (`slwi; add; lwz 4(r)`), not `addi` then an indexed access.
+pub fn member_index_displacements(body: &mut [Stmt]) {
+    fn rebase(base: &mut Box<Expr>, index: &mut Option<Box<Expr>>, offset: &mut i32) {
+        if index.is_none() {
+            return;
+        }
+        let ExprKind::Binary(BinaryOp::Add, pointer, member) = &base.kind else { return };
+        let Some(k) = member.as_int() else { return };
+        if !pointer_like(pointer.ty) || !(1..0x8000).contains(&(k + i64::from(*offset))) {
+            return;
+        }
+        let ty = base.ty;
+        let pointer = (**pointer).clone();
+        let index_expr = *index.take().expect("checked");
+        **base = Expr::binary(BinaryOp::Add, pointer, index_expr, ty);
+        *offset += k as i32;
+    }
+    fn rewrite(expression: &mut Expr) {
+        children(expression, &mut |child| rewrite(child));
+        if let ExprKind::Load { base, index, offset } = &mut expression.kind {
+            rebase(base, index, offset);
+        }
+    }
+    for statement in body.iter_mut() {
+        if let Stmt::Store { place: Place::Memory { base, index, offset }, .. } = statement {
+            rebase(base, index, offset);
+        }
+        match statement {
+            Stmt::If { then_body, else_body, .. } => {
+                member_index_displacements(then_body);
+                member_index_displacements(else_body);
+            }
+            Stmt::Loop { body, step, effects, .. } => {
+                member_index_displacements(body);
+                member_index_displacements(step);
+                member_index_displacements(effects);
+            }
+            Stmt::Counted { body, .. } => member_index_displacements(body),
+            Stmt::Switch { arms, .. } => {
+                for arm in arms {
+                    member_index_displacements(arm);
+                }
+            }
+            _ => {}
+        }
+    }
+    for_each_expression(body, &mut |expression| rewrite(expression));
 }
