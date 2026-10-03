@@ -119,6 +119,12 @@ impl Lowerer<'_, '_> {
                 Ok((d_high, d_low))
             }
             ExprKind::Binary(BinaryOp::Subtract, left, right) => {
+                // (A constant subtrahend is added negated: `addc; adde`.)
+                if let Some(value) = long_constant(right).filter(|_| left.as_int().is_none() && !super::toggle("MWCC_PCODE_WIDE_SUBTRACT_CONSTANTS")) {
+                    let negated = Expr { kind: ExprKind::Int(value.wrapping_neg()), ty: expression.ty };
+                    let sum = Expr { kind: ExprKind::Binary(BinaryOp::Add, left.clone(), Box::new(negated)), ty: expression.ty };
+                    return self.wide(&sum);
+                }
                 let ((a_high, a_low), (b_high, b_low)) = self.wide_operands(left, right)?;
                 let (d_high, d_low) = (self.temporary(), self.temporary());
                 self.emit_plain(Instruction::SubtractFromCarrying { d: d_low, a: b_low, b: a_low });
