@@ -184,7 +184,7 @@ fn lower_function_body(
     // `-inline auto` a definition preceding the caller (any definition
     // when deferred or with `-ipa file`) within the size limit; a
     // source-declared inline within its larger limit.
-    let inline_decision = |name: &str| -> Option<Option<&mwcc_syntax_trees::Function>> {
+    let decided = |name: &str| -> Option<Option<&mwcc_syntax_trees::Function>> {
         // (`#pragma dont_inline` at the caller's or the callee's definition.)
         if (source_facts.dont_inline_functions.contains(name) || source_facts.dont_inline_functions.contains(&function.name))
             && std::env::var_os("MWCC_PCODE_IGNORE_DONT_INLINE").is_none()
@@ -224,6 +224,13 @@ fn lower_function_body(
         }
         let declared = inline_bodies.composable_body(name).or_else(|| inline_bodies.retained_body(name))?;
         Some((pcode_path::inline_statement_count(declared) <= 64).then_some(declared))
+    };
+    // (An assembly function is never expanded: an ordinary call.)
+    let inline_decision = |name: &str| -> Option<Option<&mwcc_syntax_trees::Function>> {
+        decided(name).filter(|body| {
+            !body.is_some_and(|body| body.asm_body.is_some())
+                || std::env::var_os("MWCC_PCODE_INLINE_ASSEMBLY").is_some()
+        })
     };
     // Function statics address like globals: the body sees them
     // stripped from its locals, and their data rides the output. (Ones

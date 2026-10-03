@@ -141,6 +141,10 @@ pub(super) fn assemble_line(
             let [a, s, b] = rrr(mnemonic, operands)?;
             Instruction::Xor { a, s, b }
         }
+        "andc" => {
+            let [a, s, b] = rrr(mnemonic, operands)?;
+            Instruction::AndComplement { a, s, b }
+        }
         "nor" => {
             let [a, s, b] = rrr(mnemonic, operands)?;
             Instruction::Nor { a, s, b }
@@ -359,6 +363,10 @@ pub(super) fn assemble_line(
             let [d, a, b] = fprs(mnemonic, operands)?;
             Instruction::FloatSubtractDouble { d, a, b }
         }
+        "fsubs" => {
+            let [d, a, b] = fprs(mnemonic, operands)?;
+            Instruction::FloatSubtractSingle { d, a, b }
+        }
         "frsp" => {
             let [d, b] = fprs(mnemonic, operands)?;
             Instruction::RoundToSingle { d, b }
@@ -386,6 +394,11 @@ pub(super) fn assemble_line(
         "ps_madd" => {
             let [d, a, c, b] = fprs(mnemonic, operands)?;
             Instruction::PairedSingleMultiplyAdd { d, a, c, b }
+        }
+        // `ps_msub frD, frA, frC, frB` (opcode 4, XO 28).
+        "ps_msub" => {
+            let [d, a, c, b] = fprs(mnemonic, operands)?;
+            Instruction::VerbatimWord((4 << 26) | (d << 21) | (a << 16) | (b << 11) | (c << 6) | (28 << 1))
         }
         "ps_sum0" => {
             let [d, a, c, b] = fprs(mnemonic, operands)?;
@@ -886,6 +899,16 @@ pub(super) fn assemble_line(
             })?;
             let [s] = gprs(mnemonic, &operands[1..])?;
             Instruction::MoveToConditionRegisterFields { mask, s }
+        }
+        // `mtfsb0 crbD` / `mtfsb1 crbD` — clear or set one FPSCR bit.
+        "mtfsb0" | "mtfsb1" => {
+            expect_operand_count(mnemonic, operands, 1)?;
+            let bit = immediate16u(mnemonic, &operands[0])?;
+            if bit > 31 {
+                return Err(Diagnostic::error(format!("{mnemonic} bit {bit} is not an FPSCR bit")));
+            }
+            let extended = if mnemonic == "mtfsb0" { 70 } else { 38 };
+            Instruction::VerbatimWord((63 << 26) | (u32::from(bit) << 21) | (extended << 1))
         }
         "mtfsf" => {
             expect_operand_count(mnemonic, operands, 2)?;
