@@ -1715,6 +1715,25 @@ impl Builder<'_, '_> {
                 }
                 Expr::binary(BinaryOp::Add, base, Expr::int(i64::from(*offset)), ty)
             }
+            // A row of a multi-dimensional member array is its address
+            // (`p->m[i]`: the member plus `i` rows).
+            Expression::Index { base, index }
+                if matches!(base.as_ref(), Expression::MemberAddress { index_stride: Some(_), .. })
+                    && std::env::var_os("MWCC_IRO_NO_MEMBER_ROWS").is_none() =>
+            {
+                let Expression::MemberAddress { base, offset, element, index_stride: Some(stride) } = base.as_ref() else { unreachable!() };
+                // (The rows first, the member offset outermost: it becomes
+                // the access's displacement.)
+                let address = self.aggregate_address(base)?;
+                let ty = pointee_type(*element).and_then(pointer_to).unwrap_or(Type::Pointer(*element));
+                let index = self.expression(index)?;
+                let row = Expr::binary(BinaryOp::Add, Expr { ty, ..address }, scale(promoted(index), *stride), ty);
+                if *offset == 0 {
+                    row
+                } else {
+                    Expr::binary(BinaryOp::Add, row, Expr::int(i64::from(*offset)), ty)
+                }
+            }
             // A row of a multi-dimensional local array is its address.
             Expression::Index { base, index }
                 if matches!(base.as_ref(), Expression::Variable(name) if self.names.get(name).is_some_and(|id| self.rows.contains_key(id))) =>
