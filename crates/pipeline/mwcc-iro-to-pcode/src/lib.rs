@@ -1459,6 +1459,16 @@ impl Lowerer<'_, '_> {
                 ExprKind::Call { name, arguments } => self.call(name, arguments, Type::Void, None).map(|_| ()),
                 // A discarded value without effects (`(void)x;`).
                 ExprKind::Int(_) | ExprKind::Var(_) => Ok(()),
+                // A discarded volatile read: loaded into a scratch register
+                // (and kept).
+                ExprKind::Load { .. } | ExprKind::Global(_) => {
+                    self.expression(value)?;
+                    let block = self.current_block();
+                    if let Some(load) = self.pcode.blocks[block].instructions.last_mut() {
+                        load.flags.side_effect = true;
+                    }
+                    Ok(())
+                }
                 _ => Err(unsupported("expression statement")),
             },
             Stmt::Store { place, ty, value, .. } if is_wide(*ty) => {

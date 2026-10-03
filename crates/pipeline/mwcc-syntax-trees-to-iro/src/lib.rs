@@ -771,6 +771,7 @@ impl Builder<'_, '_> {
                     None => Vec::new(),
                 },
                 Expression::IntegerLiteral(_) => Vec::new(),
+                other if !self.unit.unoptimized && std::env::var_os("MWCC_IRO_NO_DISCARDED_VALUES").is_none() => self.discarded(other)?,
                 other => return Err(unsupported(format!("statement expression void {}", expression_name(other)))),
             },
             Expression::Assign { target, value } => self.assignment(target, value)?,
@@ -806,8 +807,55 @@ impl Builder<'_, '_> {
                 };
                 vec![Stmt::If { condition, then_body: effects, else_body: Vec::new() }]
             }
+            other if !self.unit.unoptimized && std::env::var_os("MWCC_IRO_NO_DISCARDED_VALUES").is_none() => self.discarded(other)?,
             other => return Err(unsupported(format!("statement expression {}", expression_name(other)))),
         })
+    }
+
+    /// A discarded value without effects: only its reads of memory that may
+    /// be volatile remain (each a load into a scratch register).
+    fn discarded(&mut self, expression: &Expression) -> Compilation<Vec<Stmt>> {
+        let value = self.expression(expression)?;
+        let mut reads = Vec::new();
+        self.volatile_reads(&value, &mut reads);
+        Ok(reads.into_iter().map(Stmt::Eval).collect())
+    }
+
+    fn volatile_reads(&self, value: &Expr, reads: &mut Vec<Expr>) {
+        match &value.kind {
+            ExprKind::Call { .. } => reads.push(value.clone()),
+            ExprKind::Global(name) => {
+                if self.unit.globals.get(name).is_none_or(|global| global.is_volatile) {
+                    reads.push(value.clone());
+                }
+            }
+            ExprKind::Load { base, index, .. } => {
+                let mut pointer = base.as_ref();
+                while let ExprKind::Binary(BinaryOp::Add, left, right) = &pointer.kind {
+                    if right.as_int().is_none() {
+                        break;
+                    }
+                    pointer = left;
+                }
+                let nonvolatile = match &pointer.kind {
+                    ExprKind::Var(id) => self.unit.nonvolatile_pointers.contains(&self.variables[*id].name),
+                    ExprKind::GlobalAddress(name) => self.unit.globals.get(name).is_some_and(|global| !global.is_volatile),
+                    _ => false,
+                };
+                if nonvolatile {
+                    self.volatile_reads(base, reads);
+                    if let Some(index) = index {
+                        self.volatile_reads(index, reads);
+                    }
+                } else {
+                    reads.push(value.clone());
+                }
+            }
+            _ => {
+                let mut copy = value.clone();
+                passes::children(&mut copy, &mut |child| self.volatile_reads(child, reads));
+            }
+        }
     }
 
     /// `field = value` for a bit-field: the containing unit is loaded, the
