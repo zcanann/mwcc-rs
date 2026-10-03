@@ -207,7 +207,12 @@ fn statements(body: &mut Vec<Stmt>, function: &mut Function, fold_start: bool) {
         let count = inits.len() + hoisted.len();
         // (Before the induction variable's own initialization when they
         // do not read it; hoisted constants before that.)
-        let before_start = if initial.is_some() { index - 1 } else { index };
+        // (A count register loop counting from the variable sets it first.)
+        let counts_from_start = matches!(
+            (&body[index], initial),
+            (Stmt::Counted { count: Expr { kind: ExprKind::Var(counted), .. }, .. }, Some((variable, _))) if *counted == variable
+        );
+        let before_start = if initial.is_some() && !counts_from_start { index - 1 } else { index };
         let at = if folded { index - 1 } else { index };
         for (offset, init) in inits.into_iter().enumerate() {
             body.insert(at + offset, init);

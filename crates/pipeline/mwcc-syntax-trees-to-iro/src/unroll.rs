@@ -7,15 +7,19 @@ use mwcc_iro::{BinaryOp, Expr, ExprKind, Function, Stmt, VarId};
 use crate::passes::substitute;
 
 /// `unrolling`: copies per pass (an explicit speed goal); otherwise one.
-pub fn unroll_partially(function: &mut Function, unrolling: bool) {
+/// `counts_down_in_place`: a loop counting its variable down to 0 counts in
+/// CTR from the variable itself (GC/3.x and Wii).
+pub fn unroll_partially(function: &mut Function, unrolling: bool, counts_down_in_place: bool) {
     let mut body = std::mem::take(&mut function.body);
     UNROLLING.with(|flag| flag.set(unrolling));
+    DOWN_IN_PLACE.with(|flag| flag.set(counts_down_in_place && std::env::var_os("MWCC_IRO_NO_DOWN_COUNTS_IN_PLACE").is_none()));
     statements(&mut body, function);
     function.body = body;
 }
 
 thread_local! {
     static UNROLLING: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    static DOWN_IN_PLACE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 fn statements(body: &mut Vec<Stmt>, function: &mut Function) {
@@ -280,7 +284,13 @@ fn unrolled(
     } else {
         // (Strength reduction still needs the induction; dead, it goes.)
         main.push(advance(variable, direction * factor, ty));
-        out.push(Stmt::Counted { count: Expr::int(passes), guard: None, body: main });
+        // (Counting down one at a time: from the variable, GC/3.x.)
+        let count = if direction == -1 && factor == 1 && DOWN_IN_PLACE.with(|flag| flag.get()) {
+            Expr { kind: ExprKind::Var(variable), ty }
+        } else {
+            Expr::int(passes)
+        };
+        out.push(Stmt::Counted { count, guard: None, body: main });
     }
     if left_over > 0 {
         let mut rest = body.clone();
