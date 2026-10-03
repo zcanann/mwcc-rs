@@ -2714,6 +2714,7 @@ impl Parser {
             let implicit_int_return = is_kr_definition
                 && matches!(self.peek(), Token::Identifier(_))
                 && self.tokens.get(self.position + 1) == Some(&Token::ParenOpen);
+            let type_start = self.position;
             let mut return_type = if implicit_int_return {
                 // C89 permits an omitted function return type. Clear the same
                 // per-type scratch state parse_type would reset so an earlier
@@ -2733,7 +2734,19 @@ impl Parser {
             self.last_type_was_volatile |= declaration_volatile;
             let declared_source_fundamental = self.last_source_fundamental;
             let declared_pointer_depth = self.last_cxx_pointer_depth;
-            let declared_is_volatile = self.last_type_was_volatile;
+            // (A pointer object is volatile only when the qualifier follows
+            // its star: `volatile u16 *p` points at volatile storage.)
+            let declared_is_volatile = if matches!(return_type, Type::Pointer(_) | Type::StructPointer { .. })
+                && std::env::var_os("MWCC_POINTEE_VOLATILE_GLOBALS").is_none()
+            {
+                let type_tokens = &self.tokens[type_start..self.position];
+                type_tokens
+                    .iter()
+                    .rposition(|token| *token == Token::Star)
+                    .is_some_and(|star| type_tokens[star..].iter().any(|token| matches!(token, Token::Identifier(word) if word == "volatile")))
+            } else {
+                self.last_type_was_volatile
+            };
             let parsed_aggregate_reference = self.last_type_was_aggregate_reference;
             let declared_function_type = self.last_cxx_function_type.clone();
             // Keep the declared aggregate identity before parsing attributes, placement
