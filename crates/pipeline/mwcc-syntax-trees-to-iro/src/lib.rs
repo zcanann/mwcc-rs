@@ -340,6 +340,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         images: Vec::new(),
         guarded: 0,
         argument_guards: 0,
+        testing_assignment: false,
         calling_arguments: 0,
         temporaries: Vec::new(),
         direct_return: false,
@@ -662,6 +663,8 @@ struct Builder<'a, 'u> {
     /// unspecified order): a register variable's post-step still applies
     /// after the statement there.
     argument_guards: usize,
+    /// Building an `if` condition that is itself an assignment.
+    testing_assignment: bool,
     /// Enclosing calls with an argument that itself calls.
     calling_arguments: usize,
     /// Registers holding assigned values, numbered after `variables`.
@@ -1061,7 +1064,12 @@ impl Builder<'_, '_> {
     /// `target = value` used as a value: the assignment is hoisted and the
     /// assigned value is read from a register.
     fn assignment_value(&mut self, target: &Expression, value: &Expression) -> Compilation<Expr> {
-        if self.guarded > 0 || std::env::var_os("MWCC_IRO_NO_ASSIGN_VALUE").is_some() {
+        // (In call arguments too, when no argument of an enclosing call
+        // calls: the assignment then precedes the calls either way.)
+        let in_arguments = self.guarded == self.argument_guards
+            && self.calling_arguments == 0
+            && std::env::var_os("MWCC_IRO_NO_ARGUMENT_ASSIGN_VALUE").is_none();
+        if (self.guarded > 0 && !in_arguments) || std::env::var_os("MWCC_IRO_NO_ASSIGN_VALUE").is_some() {
             return Err(unsupported("expression Assign"));
         }
         if let Expression::Variable(name) = target {
@@ -1085,6 +1093,16 @@ impl Builder<'_, '_> {
             return Ok(Expr { kind: ExprKind::Convert(Box::new(read)), ty });
         }
         let value = assigned(value, ty);
+        // (A constant is its own value.)
+        // (GC/1.0-1.2.5n test an assigned constant's register: `if ((x = 1))`.)
+        if value.as_int().is_some()
+            && !is_float(ty)
+            && !self.unit.unoptimized
+            && !(self.unit.branch_preserving && self.testing_assignment)
+            && std::env::var_os("MWCC_IRO_ASSIGNED_CONSTANT_COPY").is_none() {
+            self.pending.push(Stmt::Store { place, ty, value: value.clone(), compound: false });
+            return Ok(value);
+        }
         let temporary = self.temporary(ty);
         self.pending.push(Stmt::Assign { variable: temporary, value });
         self.pending.push(Stmt::Store { place, ty, value: Expr { kind: ExprKind::Var(temporary), ty }, compound: false });
@@ -1250,11 +1268,17 @@ impl Builder<'_, '_> {
             }
             // (A struct store copies its source through `assignment`.)
             Statement::Store { target, value } => return self.assignment(target, value),
-            Statement::If { condition, then_body, else_body } => Stmt::If {
-                condition: promoted(self.expression(condition)?),
-                then_body: self.statements(then_body)?,
-                else_body: self.statements(else_body)?,
-            },
+            Statement::If { condition, then_body, else_body } => {
+                let testing = matches!(condition, Expression::Assign { .. });
+                let outer = std::mem::replace(&mut self.testing_assignment, testing);
+                let condition = self.expression(condition);
+                self.testing_assignment = outer;
+                Stmt::If {
+                    condition: promoted(condition?),
+                    then_body: self.statements(then_body)?,
+                    else_body: self.statements(else_body)?,
+                }
+            }
             Statement::Return(value) => {
                 Stmt::Return(value.as_ref().map(|value| self.returned(value)).transpose()?)
             }
