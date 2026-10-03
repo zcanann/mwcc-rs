@@ -3748,6 +3748,17 @@ impl Lowerer<'_, '_> {
                 && !matches!(left.kind, ExprKind::Binary(BinaryOp::ShiftRight | BinaryOp::BitAnd, ..))
                 && insert_field(right, true).is_some_and(|field| field_bits(field.2, field.3) & !known_zero(left, true) == 0)
                 && !toggle("MWCC_PCODE_LEFT_FIELD_FIRST");
+            // (GC/1.0-1.2.5n insert into a shifted parameter on the left.)
+            let parameter_count = self.function.parameter_count;
+            let shifted_left = refined
+                && self.unit.early_frame
+                && rotation(left, right).is_none()
+                && matches!(&left.kind, ExprKind::Binary(BinaryOp::ShiftLeft, inner, n)
+                    if n.as_int().is_some() && matches!(unpromoted(inner).kind, ExprKind::Var(id) if id < parameter_count))
+                && right.as_int().is_none()
+                && insert_field(right, true).is_some_and(|field| field_bits(field.2, field.3) & !known_zero(left, true) == 0)
+                && !toggle("MWCC_PCODE_NO_SHIFTED_LEFT_BASE");
+            let shifted_right = shifted_right || shifted_left;
             let insertion = if rotated.is_some() { None } else { match insert_field(left, refined).filter(|_| !shifted_right) {
                 // (A constant base is `ori`/`oris`d instead.)
                 Some(field)
