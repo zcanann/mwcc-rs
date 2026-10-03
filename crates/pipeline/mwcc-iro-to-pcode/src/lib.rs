@@ -1459,6 +1459,21 @@ impl Lowerer<'_, '_> {
                 ExprKind::Call { name, arguments } => self.call(name, arguments, Type::Void, None).map(|_| ()),
                 // A discarded value without effects (`(void)x;`).
                 ExprKind::Int(_) | ExprKind::Var(_) => Ok(()),
+                // A barrier: kept, in order against everything.
+                ExprKind::Idiom(Idiom::Unary(
+                    op @ (IntrinsicOp::Synchronize | IntrinsicOp::InstructionSynchronize | IntrinsicOp::EnforceInOrderIo),
+                    _,
+                )) => {
+                    let mut barrier = PInstr::new(match op {
+                        IntrinsicOp::Synchronize => Instruction::Synchronize,
+                        IntrinsicOp::InstructionSynchronize => Instruction::InstructionSynchronize,
+                        _ => Instruction::EnforceInOrderIo,
+                    });
+                    barrier.flags.side_effect = true;
+                    barrier.flags.serialize = true;
+                    self.emit(barrier);
+                    Ok(())
+                }
                 // A discarded volatile read: loaded into a scratch register
                 // (and kept).
                 ExprKind::Load { .. } | ExprKind::Global(_) => {
@@ -3370,6 +3385,9 @@ impl Lowerer<'_, '_> {
                 let d = self.result_for(ty, target);
                 self.emit_plain(Instruction::FloatAbsolute { d, b });
                 Ok((d, ty))
+            }
+            Idiom::Unary(IntrinsicOp::Synchronize | IntrinsicOp::InstructionSynchronize | IntrinsicOp::EnforceInOrderIo, _) => {
+                Err(unsupported("a barrier's value"))
             }
             Idiom::Absolute(value) => {
                 let (a, _) = self.expression(value)?;

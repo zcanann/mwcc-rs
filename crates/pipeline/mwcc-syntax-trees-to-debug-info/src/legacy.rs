@@ -178,11 +178,11 @@ pub(super) fn lower(
         shape,
         MeasuredShape::VectorInstaller | MeasuredShape::VectorInstallerWithInlineStatics
     ) || vector_installers::matches_predecrement(unit, machine_functions) {
-        line_records.extend(vector_installers::line_records(
-            &source_functions,
-            machine_functions,
-            &layout,
-        )?);
+        // (Code the plan does not describe takes the general records.)
+        match vector_installers::line_records(&source_functions, machine_functions, &layout) {
+            Ok(records) => line_records.extend(records),
+            Err(_) => line_records.extend(general::line_records(&source_functions, machine_functions, &layout, build)),
+        }
     } else if shape == MeasuredShape::FatalMessaging {
         line_records.extend(fatal_messaging::line_records(
             &source_functions,

@@ -2238,6 +2238,14 @@ impl Builder<'_, '_> {
                 let value = self.expression(value)?;
                 Ok(Expr { kind: ExprKind::Idiom(Idiom::Unary(IntrinsicOp::CountLeadingZeros, Box::new(value))), ty: Type::Int })
             }
+            ("__sync" | "__isync" | "__eieio", []) => {
+                let op = match name {
+                    "__sync" => IntrinsicOp::Synchronize,
+                    "__isync" => IntrinsicOp::InstructionSynchronize,
+                    _ => IntrinsicOp::EnforceInOrderIo,
+                };
+                Ok(Expr { kind: ExprKind::Idiom(Idiom::Unary(op, Box::new(Expr::int(0)))), ty: Type::Void })
+            }
             ("__fabs", [value]) => {
                 let value = converted(self.expression(value)?, Type::Double);
                 Ok(Expr { kind: ExprKind::Idiom(Idiom::Unary(IntrinsicOp::FloatAbsolute, Box::new(value))), ty: Type::Double })

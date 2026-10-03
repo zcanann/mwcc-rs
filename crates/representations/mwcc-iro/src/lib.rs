@@ -346,6 +346,10 @@ pub enum IntrinsicOp {
     CountLeadingZeros,
     /// `fabs`.
     FloatAbsolute,
+    /// `sync`, `isync`, `eieio`: barriers (their operand is a dummy 0).
+    Synchronize,
+    InstructionSynchronize,
+    EnforceInOrderIo,
 }
 
 #[derive(Debug, Clone)]
