@@ -113,6 +113,9 @@ pub struct Unit<'a> {
     /// GC/3.x and Wii rotate `(x << n) | (x >> 32 - n)` (`rotlwi`); GC/1.3-
     /// 2.x insert one shift into the other, earlier builds `or` them.
     pub rotates: bool,
+    /// GC/3.x and Wii read a value just stored through a pointer from the
+    /// stored register (store-to-load forwarding).
+    pub forwards_stores: bool,
     /// Loop strength reduction (`-O3`/`-O4`).
     pub strength_reduction: bool,
     /// GC/1.3-2.x subtract a word converted to signed `long long` with a

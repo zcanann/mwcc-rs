@@ -5225,6 +5225,18 @@ impl Lowerer<'_, '_> {
                 self.common.retain(|key, _| !key.starts_with(&prefix));
             }
         }
+        // (GC/3.x: a word stored through a pointer to non-volatile storage
+        // is that place's value until the next store or call.)
+        if let (Place::Memory { base, index: None, offset }, true) = (place, self.unit.forwards_stores) {
+            if let Some(id) = self.shareable_pointer(base).filter(|_| !is_narrow(ty) && !toggle("MWCC_PCODE_NO_STORE_FORWARDING")) {
+                if source >= 32 {
+                    // (Also stale once a variable holding the value changes.)
+                    let mut read = vec![id];
+                    read.extend((0..self.function.variables.len()).filter(|&owner| self.registers[owner] == Some(source)));
+                    self.common.insert(load_key(id, *offset, ty), (source, ty, read));
+                }
+            }
+        }
         // A stored word-sized global's value is still in `source`.
         if let Place::Global(name) = place {
             let global = self.unit.globals[name];
