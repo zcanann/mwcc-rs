@@ -4776,11 +4776,38 @@ impl Lowerer<'_, '_> {
         if !unsigned && divisor < 0 {
             return Err(unsupported("division by a negative constant"));
         }
+        // (At -O3 and up, a dividend loaded once loads after the magic
+        // number.)
+        let magic_first = self.unit.strength_reduction
+            && matches!(left.kind, ExprKind::Load { .. } | ExprKind::Global(_))
+            && format!("{:?}", self.function.body).matches(&format!("{:?}", left.kind)).count() == 1
+            && !toggle("MWCC_PCODE_MAGIC_AFTER_LOADS");
+        let early_magic = if magic_first {
+            // (`lis; addi` into separate registers.)
+            let magic = if unsigned { unsigned_magic(divisor as u32).0 as i32 } else { signed_magic(divisor).0 };
+            let low = magic as i16;
+            if low == 0 || i16::try_from(magic).is_ok() {
+                Some(self.expression(&Expr::int(i64::from(magic)))?.0)
+            } else {
+                let high = self.temporary();
+                self.emit_plain(Instruction::AddImmediateShifted { d: high, a: 0, immediate: (magic.wrapping_sub(i32::from(low)) >> 16) as i16 });
+                let m = self.temporary();
+                let mut addi = PInstr::new(Instruction::AddImmediate { d: m, a: high, immediate: low });
+                addi.not_r0.push(high);
+                self.emit(addi);
+                Some(m)
+            }
+        } else {
+            None
+        };
         let (x, _) = self.expression(left)?;
         let quotient = if op == BinaryOp::Divide { self.result(target) } else { self.temporary() };
         if unsigned {
             let (magic, add, shift) = unsigned_magic(divisor as u32);
-            let (m, _) = self.expression(&Expr::int(i64::from(magic as i32)))?;
+            let m = match early_magic {
+                Some(m) => m,
+                None => self.expression(&Expr::int(i64::from(magic as i32)))?.0,
+            };
             let high = self.temporary();
             self.emit_plain(Instruction::MultiplyHighWordUnsigned { d: high, a: m, b: x });
             if add {
@@ -4799,7 +4826,10 @@ impl Lowerer<'_, '_> {
             }
         } else {
             let (magic, shift) = signed_magic(divisor);
-            let (m, _) = self.expression(&Expr::int(i64::from(magic)))?;
+            let m = match early_magic {
+                Some(m) => m,
+                None => self.expression(&Expr::int(i64::from(magic)))?.0,
+            };
             let mut value = self.temporary();
             self.emit_plain(Instruction::MultiplyHighWord { d: value, a: m, b: x });
             // The product is adjusted in place.
