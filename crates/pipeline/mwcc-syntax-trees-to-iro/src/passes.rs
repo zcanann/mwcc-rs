@@ -513,38 +513,68 @@ fn unrolled(before: &Stmt, statement: &Stmt) -> Option<(VarId, Vec<Stmt>)> {
         return None;
     }
     let variable = *variable;
-    // `v = v + 1`.
+    let wide = WIDE_UNROLLING.with(|flag| flag.get());
+    // `v = v + 1` (or, GC/3.x, `v = v - 1`).
     let [Stmt::Assign { variable: stepped, value: increment }] = step.as_slice() else { return None };
     if *stepped != variable {
         return None;
     }
-    let ExprKind::Binary(BinaryOp::Add, base, one) = &increment.kind else { return None };
-    if base.as_var() != Some(variable) || one.as_int() != Some(1) {
-        return None;
-    }
-    // `v < n` / `v <= n`.
+    let direction = match &increment.kind {
+        ExprKind::Binary(BinaryOp::Add, base, one) if base.as_var() == Some(variable) && one.as_int() == Some(1) => 1,
+        ExprKind::Binary(BinaryOp::Subtract, base, one) if wide && base.as_var() == Some(variable) && one.as_int() == Some(1) => -1,
+        _ => return None,
+    };
+    // `v < n` / `v <= n` (or down to `v != 0` / `v > 0`).
     let ExprKind::Binary(op, left, right) = &condition.kind else { return None };
     let (Some(tested), Some(bound)) = (left.as_var(), right.as_int()) else { return None };
     if tested != variable {
         return None;
     }
-    let end = match op {
-        BinaryOp::Less => bound,
-        BinaryOp::LessEqual => bound + 1,
+    let end = match (op, direction) {
+        (BinaryOp::Less, 1) => bound,
+        (BinaryOp::LessEqual, 1) => bound + 1,
+        (BinaryOp::NotEqual | BinaryOp::Greater, -1) if bound == 0 => 0,
         _ => return None,
     };
-    let trips = end - start;
+    let trips = (end - start) * direction;
     if trips < 1 {
         return None;
     }
-    let mut remaining = trips;
-    for prime in [2, 3, 5, 7] {
-        while remaining % prime == 0 {
-            remaining /= prime;
-        }
-    }
-    if remaining != 1 {
+    // (GC/3.x unrolls a fill of constants through pointers by its size
+    // alone: k stores, each with its pointer's step, `trips * (8k - 1)` at
+    // most 444.)
+    let fills = body
+        .iter()
+        .filter(|statement| {
+            matches!(statement, Stmt::Store { place: Place::Memory { base, index: None, .. }, value, .. }
+                if value.as_int().is_some() && base.as_var().is_some())
+        })
+        .count() as i64;
+    let steps = body
+        .iter()
+        .filter(|statement| {
+            matches!(statement, Stmt::Assign { variable: v, value } if *v != variable
+                && matches!(&value.kind, ExprKind::Binary(BinaryOp::Add, base, k) if base.as_var() == Some(*v) && k.as_int().is_some()))
+        })
+        .count() as i64;
+    let fill = wide && fills > 0 && fills == steps && fills + steps == body.len() as i64 && std::env::var_os("MWCC_IRO_NO_WIDE_FILL_UNROLLING").is_none();
+    if direction < 0 && !fill {
         return None;
+    }
+    if fill {
+        if trips * (8 * fills - 1) > 444 {
+            return None;
+        }
+    } else {
+        let mut remaining = trips;
+        for prime in [2, 3, 5, 7] {
+            while remaining % prime == 0 {
+                remaining /= prime;
+            }
+        }
+        if remaining != 1 {
+            return None;
+        }
     }
     // A straight-line, call-free body that leaves the induction alone.
     fn plain(statement: &Stmt, variable: VarId) -> bool {
@@ -574,13 +604,51 @@ fn unrolled(before: &Stmt, statement: &Stmt) -> Option<(VarId, Vec<Stmt>)> {
             _ => 1,
         })
         .sum();
-    if cost * trips > 48 {
+    if cost * trips > 48 && !fill {
         return None;
     }
     let mut out = Vec::new();
+    // (A fill's copies store at offsets from the pointers, stepped once
+    // after them.)
+    if fill {
+        let mut stepped: Vec<(VarId, i64, Type)> = Vec::new();
+        for _ in 0..trips {
+            for statement in body {
+                match statement {
+                    Stmt::Store { place: Place::Memory { base, offset, .. }, ty, value, compound } => {
+                        let pointer = base.as_var()?;
+                        let delta = stepped.iter().find(|(v, ..)| *v == pointer).map_or(0, |&(_, d, _)| d);
+                        out.push(Stmt::Store {
+                            place: Place::Memory { base: base.clone(), index: None, offset: offset.checked_add(i32::try_from(delta).ok()?)? },
+                            ty: *ty,
+                            value: value.clone(),
+                            compound: *compound,
+                        });
+                    }
+                    Stmt::Assign { variable: pointer, value } => {
+                        let ExprKind::Binary(_, _, step) = &value.kind else { return None };
+                        let step = step.as_int()?;
+                        match stepped.iter_mut().find(|(v, ..)| v == pointer) {
+                            Some(entry) => entry.1 += step,
+                            None => stepped.push((*pointer, step, value.ty)),
+                        }
+                    }
+                    _ => return None,
+                }
+            }
+        }
+        for (pointer, delta, ty) in stepped {
+            out.push(Stmt::Assign {
+                variable: pointer,
+                value: Expr::binary(BinaryOp::Add, Expr { kind: ExprKind::Var(pointer), ty }, Expr::typed_int(delta, Type::Int), ty),
+            });
+        }
+        out.push(Stmt::Assign { variable, value: Expr::int(end) });
+        return Some((variable, out));
+    }
     for k in 0..trips {
         let mut copy = body.clone();
-        substitute(&mut copy, variable, &Expr::int(start + k));
+        substitute(&mut copy, variable, &Expr::int(start + direction * k));
         out.extend(copy);
     }
     out.push(Stmt::Assign { variable, value: Expr::int(end) });
@@ -3196,6 +3264,8 @@ fn reads_memory_in(statement: &Stmt) -> bool {
 thread_local! {
     /// Floating negations fold into sums (GC/1.x-2.x); set per build.
     pub static FLOAT_NEGATION_ALGEBRA: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    /// Fills of constants unroll by their size alone (GC/3.x and Wii).
+    pub static WIDE_UNROLLING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// A comparison against an unsigned operand's largest value folds
     /// (optimized GC/3.x and Wii); set per build.
     pub static UNSIGNED_MAXIMA: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
