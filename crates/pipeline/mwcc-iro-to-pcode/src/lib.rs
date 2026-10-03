@@ -2311,7 +2311,10 @@ impl Lowerer<'_, '_> {
                     d
                 } else {
                     // (GC/3.x keeps a memory base's halves in one register.)
-                    let tied = self.unit.tied_halves && std::ptr::eq(expression, self.memory_base as *const Expr);
+                    // (Also an address assigned to a variable.)
+                    let tied = self.unit.tied_halves
+                        && (std::ptr::eq(expression, self.memory_base as *const Expr)
+                            || (self.target_variable(target).is_some() && !toggle("MWCC_PCODE_UNTIED_VARIABLE_ADDRESSES")));
                     self.absolute_address_into(name, target, tied)
                 };
                 if shared {
