@@ -4776,12 +4776,13 @@ impl Lowerer<'_, '_> {
         if !unsigned && divisor < 0 {
             return Err(unsupported("division by a negative constant"));
         }
-        // (At -O3 and up, a dividend loaded once loads after the magic
-        // number.)
+        // (At -O3 and up, a dividend read once is numbered after the magic
+        // number, though evaluated first.)
         let magic_first = self.unit.strength_reduction
             && matches!(left.kind, ExprKind::Load { .. } | ExprKind::Global(_))
             && format!("{:?}", self.function.body).matches(&format!("{:?}", left.kind)).count() == 1
             && !toggle("MWCC_PCODE_MAGIC_AFTER_LOADS");
+        let mut deferred_magic = None;
         let early_magic = if magic_first {
             // (`lis; addi` into separate registers.)
             let magic = if unsigned { unsigned_magic(divisor as u32).0 as i32 } else { signed_magic(divisor).0 };
@@ -4790,17 +4791,27 @@ impl Lowerer<'_, '_> {
                 Some(self.expression(&Expr::int(i64::from(magic)))?.0)
             } else {
                 let high = self.temporary();
-                self.emit_plain(Instruction::AddImmediateShifted { d: high, a: 0, immediate: (magic.wrapping_sub(i32::from(low)) >> 16) as i16 });
                 let m = self.temporary();
-                let mut addi = PInstr::new(Instruction::AddImmediate { d: m, a: high, immediate: low });
-                addi.not_r0.push(high);
-                self.emit(addi);
+                let emit = move |this: &mut Self| {
+                    this.emit_plain(Instruction::AddImmediateShifted { d: high, a: 0, immediate: (magic.wrapping_sub(i32::from(low)) >> 16) as i16 });
+                    let mut addi = PInstr::new(Instruction::AddImmediate { d: m, a: high, immediate: low });
+                    addi.not_r0.push(high);
+                    this.emit(addi);
+                };
+                if !toggle("MWCC_PCODE_MAGIC_EMITTED_FIRST") {
+                    deferred_magic = Some(emit);
+                } else {
+                    emit(self);
+                }
                 Some(m)
             }
         } else {
             None
         };
         let (x, _) = self.expression(left)?;
+        if let Some(emit) = deferred_magic.take() {
+            emit(self);
+        }
         let quotient = if op == BinaryOp::Divide { self.result(target) } else { self.temporary() };
         if unsigned {
             let (magic, add, shift) = unsigned_magic(divisor as u32);
