@@ -1972,6 +1972,55 @@ fn select(
     if let ExprKind::Unary(UnaryOp::LogicalNot, operand) = &condition.kind {
         return select(function, operand, when_false, when_true, destination);
     }
+    // Constants one apart: `c ? k + 1 : k` is `k + truth(c)`, `c ? k : k + 1`
+    // is `(k + 1) - truth(c)` (a mask).
+    if let (Some(a), Some(b)) = (when_true.as_int(), when_false.as_int()) {
+        let integer_condition = match &condition.kind {
+            ExprKind::Binary(op, left, _) if op.is_comparison() => !mwcc_iro::is_float(left.ty) && !mwcc_iro::is_wide(left.ty),
+            _ => mwcc_iro::is_general_word(condition.ty) && !mwcc_iro::is_wide(condition.ty),
+        };
+        // (Not 0/1, a truth value, nor 0/-1, a sign mask; nor a logical
+        // condition, which has no value form.)
+        let logical = format!("{condition:?}").contains("Logical");
+        let handled = matches!((a, b), (0, 1) | (1, 0) | (0, -1) | (-1, 0));
+        if (a - b).abs() == 1
+            && integer_condition
+            && !logical
+            && !handled
+            && std::env::var_os("MWCC_IRO_NO_CONSECUTIVE_SELECTS").is_none()
+        {
+            let truth = match &condition.kind {
+                ExprKind::Binary(op, ..) if op.is_comparison() => Expr { ty: Type::Int, ..condition.clone() },
+                _ => Expr::binary(BinaryOp::NotEqual, condition.clone(), Expr::int(0), Type::Int),
+            };
+            // (`x >= 0 ? k : k + 1` takes the sign: `k + (x < 0)`.)
+            let (truth, a, b) = match &truth.kind {
+                ExprKind::Binary(BinaryOp::GreaterEqual, x, zero) if zero.as_int() == Some(0) && a == b - 1 => {
+                    (Expr::binary(BinaryOp::Less, (**x).clone(), Expr::int(0), Type::Int), b, a)
+                }
+                _ => (truth, a, b),
+            };
+            // (A mask against zero is an idiom, kept from the algebra.)
+            let term = if a == b + 1 {
+                truth
+            } else {
+                match &truth.kind {
+                    ExprKind::Binary(relation, x, zero) if zero.as_int() == Some(0) && x.ty == Type::Int => Expr {
+                        kind: ExprKind::Idiom(Idiom::Masked {
+                            relation: *relation,
+                            tested: x.clone(),
+                            value: Box::new(Expr::int(-1)),
+                            keep_when_true: true,
+                        }),
+                        ty: Type::Int,
+                    },
+                    _ => Expr::unary(UnaryOp::Negate, truth, Type::Int),
+                }
+            };
+            let value = Expr::binary(BinaryOp::Add, term, Expr::int(b), Type::Int);
+            return Some(vec![destination.assign(value)]);
+        }
+    }
     // `x < 0 ? -1 : 0` (and `x >= 0 ? 0 : -1`) is the sign mask `x >> 31`.
     if let ExprKind::Binary(op @ (BinaryOp::Less | BinaryOp::GreaterEqual), x, zero) = &condition.kind {
         let arms = (when_true.as_int(), when_false.as_int());

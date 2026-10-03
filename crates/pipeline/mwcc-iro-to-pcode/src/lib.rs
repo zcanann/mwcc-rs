@@ -2296,6 +2296,21 @@ impl Lowerer<'_, '_> {
                 };
                 self.expression_with_target(&inverted, target)
             }
+            // `-(x REL 0)`: the relation's sign mask.
+            ExprKind::Unary(UnaryOp::Negate, operand)
+                if matches!(&operand.kind, ExprKind::Binary(relation, x, zero)
+                    if matches!(relation, BinaryOp::NotEqual | BinaryOp::Equal | BinaryOp::Greater | BinaryOp::LessEqual | BinaryOp::GreaterEqual | BinaryOp::Less)
+                        && zero.as_int() == Some(0)
+                        && x.ty == Type::Int)
+                    && !self.unoptimized
+                    && !toggle("MWCC_PCODE_NO_RELATION_MASK") =>
+            {
+                let ExprKind::Binary(relation, x, _) = &operand.kind else { unreachable!() };
+                let (a, _) = self.expression(x)?;
+                let d = self.result(target);
+                self.relation_mask(*relation, a, d);
+                Ok((d, Type::Int))
+            }
             // `~(a | b)`, `~(a & b)`, `~(a ^ b)`: `nor`, `nand`, `eqv`.
             ExprKind::Unary(UnaryOp::BitNot, operand)
                 if matches!(&operand.kind, ExprKind::Binary(BinaryOp::BitOr | BinaryOp::BitAnd | BinaryOp::BitXor, left, right)
@@ -2495,6 +2510,46 @@ impl Lowerer<'_, '_> {
                 let register = self.call(name, arguments, ty, target)?;
                 Ok((register, ty))
             }
+        }
+    }
+
+    /// All ones when `a REL 0` holds, else zero.
+    fn relation_mask(&mut self, relation: BinaryOp, a: u32, mask: u32) {
+        match relation {
+            BinaryOp::Less => {
+                self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: mask, s: a, shift: 31 });
+            }
+            BinaryOp::Greater | BinaryOp::LessEqual => {
+                let negated = self.temporary();
+                self.emit_plain(Instruction::Negate { d: negated, a });
+                let combined = self.temporary();
+                self.emit_plain(if relation == BinaryOp::Greater {
+                    Instruction::AndComplement { a: combined, s: negated, b: a }
+                } else {
+                    Instruction::OrComplement { a: combined, s: a, b: negated }
+                });
+                self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: mask, s: combined, shift: 31 });
+            }
+            BinaryOp::NotEqual => {
+                let negated = self.temporary();
+                self.emit_plain(Instruction::Negate { d: negated, a });
+                let combined = self.temporary();
+                self.emit_plain(Instruction::Or { a: combined, s: negated, b: a });
+                self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: mask, s: combined, shift: 31 });
+            }
+            BinaryOp::Equal => {
+                let zeros = self.temporary();
+                self.emit_plain(Instruction::CountLeadingZeros { a: zeros, s: a });
+                let flag = self.temporary();
+                self.emit_plain(Instruction::RotateAndMask { a: flag, s: zeros, shift: 27, begin: 31, end: 31 });
+                self.emit_plain(Instruction::Negate { d: mask, a: flag });
+            }
+            BinaryOp::GreaterEqual => {
+                let sign = self.temporary();
+                self.emit_plain(Instruction::ShiftRightLogicalImmediate { a: sign, s: a, shift: 31 });
+                self.emit_based(Instruction::AddImmediate { d: mask, a: sign, immediate: -1 }, sign);
+            }
+            _ => unreachable!("sign mask relations"),
         }
     }
 
@@ -3256,45 +3311,17 @@ impl Lowerer<'_, '_> {
                 self.emit_plain(Instruction::SubtractFrom { d, a: sign, b: flipped });
                 Ok((d, Type::Int))
             }
+            // (A mask of all ones is the relation's mask itself.)
+            Idiom::Masked { relation, tested, value, keep_when_true: true } if value.as_int() == Some(-1) => {
+                let (a, _) = self.expression(tested)?;
+                let d = self.result(target);
+                self.relation_mask(*relation, a, d);
+                Ok((d, Type::Int))
+            }
             Idiom::Masked { relation, tested, value, keep_when_true } => {
                 let (a, _) = self.expression(tested)?;
                 let mask = self.temporary();
-                match relation {
-                    BinaryOp::Less => {
-                        self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: mask, s: a, shift: 31 });
-                    }
-                    BinaryOp::Greater | BinaryOp::LessEqual => {
-                        let negated = self.temporary();
-                        self.emit_plain(Instruction::Negate { d: negated, a });
-                        let combined = self.temporary();
-                        self.emit_plain(if *relation == BinaryOp::Greater {
-                            Instruction::AndComplement { a: combined, s: negated, b: a }
-                        } else {
-                            Instruction::OrComplement { a: combined, s: a, b: negated }
-                        });
-                        self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: mask, s: combined, shift: 31 });
-                    }
-                    BinaryOp::NotEqual => {
-                        let negated = self.temporary();
-                        self.emit_plain(Instruction::Negate { d: negated, a });
-                        let combined = self.temporary();
-                        self.emit_plain(Instruction::Or { a: combined, s: negated, b: a });
-                        self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: mask, s: combined, shift: 31 });
-                    }
-                    BinaryOp::Equal => {
-                        let zeros = self.temporary();
-                        self.emit_plain(Instruction::CountLeadingZeros { a: zeros, s: a });
-                        let flag = self.temporary();
-                        self.emit_plain(Instruction::RotateAndMask { a: flag, s: zeros, shift: 27, begin: 31, end: 31 });
-                        self.emit_plain(Instruction::Negate { d: mask, a: flag });
-                    }
-                    BinaryOp::GreaterEqual => {
-                        let sign = self.temporary();
-                        self.emit_plain(Instruction::ShiftRightLogicalImmediate { a: sign, s: a, shift: 31 });
-                        self.emit_based(Instruction::AddImmediate { d: mask, a: sign, immediate: -1 }, sign);
-                    }
-                    _ => unreachable!("sign idiom relations"),
-                }
+                self.relation_mask(*relation, a, mask);
                 // (The tested value itself is not recomputed.)
                 let (b, ty) = if format!("{:?}", value.kind) == format!("{:?}", tested.kind) && value.as_var().is_none() {
                     (a, value.ty)
