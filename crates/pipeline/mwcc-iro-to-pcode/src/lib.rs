@@ -959,7 +959,23 @@ impl Lowerer<'_, '_> {
         let call = match function.body.as_slice() {
             [Stmt::Eval(call)] if function.return_type == Type::Void || !toggle("MWCC_PCODE_NO_FALLOFF_TAIL_CALLS") => call,
             [Stmt::SetReturn(call)] if call.ty == function.return_type => call,
+            // (Or returned through a local.)
+            [Stmt::Assign { variable, value }, Stmt::SetReturn(Expr { kind: ExprKind::Var(returned), ty })]
+                if variable == returned
+                    && *variable >= function.parameter_count
+                    && *ty == function.return_type
+                    && value.ty == *ty
+                    && !value.mentions(*variable)
+                    && !toggle("MWCC_PCODE_NO_LOCAL_TAIL_CALLS") =>
+            {
+                value
+            }
             _ => return Ok(false),
+        };
+        // (A conversion that changes nothing is the call.)
+        let call = match &call.kind {
+            ExprKind::Convert(operand) if operand.ty == call.ty && matches!(operand.kind, ExprKind::Call { .. }) => operand,
+            _ => call,
         };
         // (A floating value converted to unsigned: its runtime helper.)
         let helper;
