@@ -471,6 +471,12 @@ impl Lowerer<'_, '_> {
             }
         }
         let (high, low) = self.wide(value)?;
+        // (GC/3.x and Wii copy the high word first.)
+        if self.unit.equality_subtracts_constant && !super::toggle("MWCC_PCODE_WIDE_RETURN_LOW_FIRST") {
+            self.emit_plain(Instruction::Or { a: 3, s: high, b: high });
+            self.emit_plain(Instruction::Or { a: 4, s: low, b: low });
+            return Ok(());
+        }
         self.emit_plain(Instruction::Or { a: 4, s: low, b: low });
         self.emit_plain(Instruction::Or { a: 3, s: high, b: high });
         Ok(())
