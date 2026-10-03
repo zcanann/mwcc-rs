@@ -3691,6 +3691,19 @@ impl Lowerer<'_, '_> {
         if matches!(op, BinaryOp::Divide | BinaryOp::Modulo) {
             return self.division(op, left, right, ty, target);
         }
+        // A `&&`/`||` value: 0, then 1 unless the condition is false
+        // (GC/1.0-1.2.5n: an `||` 1, then 0 unless it is true).
+        if matches!(op, BinaryOp::LogicalAnd | BinaryOp::LogicalOr) && !toggle("MWCC_PCODE_NO_LOGICAL_VALUES") {
+            let whole = Expr::binary(op, left.clone(), right.clone(), Type::Int);
+            let first = op == BinaryOp::LogicalOr && self.unit.early_frame;
+            let d = self.result(target);
+            self.emit_plain(Instruction::AddImmediate { d, a: 0, immediate: i16::from(first) });
+            let skip = self.new_label();
+            self.branch_on(&whole, first, skip)?;
+            self.emit_plain(Instruction::AddImmediate { d, a: 0, immediate: i16::from(!first) });
+            self.place_label(skip);
+            return Ok((d, Type::Int));
+        }
         // `k - x` is `subfic`.
         if let (BinaryOp::Subtract, Some(value), None) = (op, left.as_int(), right.as_int()) {
             if let Ok(value) = i16::try_from(value) {
