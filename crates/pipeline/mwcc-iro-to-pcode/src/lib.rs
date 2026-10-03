@@ -3562,7 +3562,59 @@ impl Lowerer<'_, '_> {
     // ------------------------------------------------------------ comparisons
 
     /// A comparison's 0/1 value, branch-free as MWCC generates it.
+    /// A comparison's value; GC/3.x and Wii at -O3/-O4 fold its small
+    /// constant operands into immediate forms (`xori`, `addi -k`, `subfic`,
+    /// a shifted constant as a constant).
     fn comparison_value(
+        &mut self,
+        op: BinaryOp,
+        left: &Expr,
+        right: &Expr,
+        target: Option<u32>,
+    ) -> Compilation<(u32, Type)> {
+        let fold = self.unit.equality_subtracts_constant && self.unit.strength_reduction && !toggle("MWCC_PCODE_NO_COMPARISON_IMMEDIATES");
+        let (block, start) = (self.current_block(), self.pcode.blocks[self.current_block()].instructions.len());
+        let result = self.comparison_value_inner(op, left, right, target)?;
+        if fold && self.current_block() == block {
+            let mut known: HashMap<u32, i64> = self.constants.iter().map(|(&value, &register)| (register, value)).collect();
+            for instruction in self.pcode.blocks[block].instructions[start..].iter_mut() {
+                let small = |value: i64| (0..=0x7fff).contains(&value);
+                let replacement = match instruction.instruction {
+                    Instruction::Xor { a, s, b } if known.get(&b).is_some_and(|&k| small(k)) => {
+                        Some(Instruction::XorImmediate { a, s, immediate: known[&b] as u16 })
+                    }
+                    Instruction::Xor { a, s, b } if known.get(&s).is_some_and(|&k| small(k)) => {
+                        Some(Instruction::XorImmediate { a, s: b, immediate: known[&s] as u16 })
+                    }
+                    // `b - k`
+                    Instruction::SubtractFrom { d, a, b } if b != 0 && known.get(&a).is_some_and(|&k| small(k)) && !known.contains_key(&b) => {
+                        Some(Instruction::AddImmediate { d, a: b, immediate: -(known[&a] as i16) })
+                    }
+                    // `k - a`
+                    Instruction::SubtractFrom { d, a, b } if known.get(&b).is_some_and(|&k| small(k)) && !known.contains_key(&a) => {
+                        Some(Instruction::SubtractFromImmediate { d, a, immediate: known[&b] as i16 })
+                    }
+                    Instruction::ShiftRightLogicalImmediate { a, s, shift } if known.get(&s).is_some_and(|&k| small(k)) => {
+                        Some(Instruction::AddImmediate { d: a, a: 0, immediate: ((known[&s] as u32) >> shift) as i16 })
+                    }
+                    _ => None,
+                };
+                if let Some(replacement) = replacement {
+                    instruction.instruction = replacement;
+                }
+                // (A redefined register no longer holds its constant.)
+                for register in instruction.defs(mwcc_pcode::Class::General) {
+                    known.remove(&register);
+                }
+                if let Instruction::AddImmediate { d, a: 0, immediate } = instruction.instruction {
+                    known.insert(d, i64::from(immediate));
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    fn comparison_value_inner(
         &mut self,
         op: BinaryOp,
         left: &Expr,
