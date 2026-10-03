@@ -1044,6 +1044,25 @@ impl Builder<'_, '_> {
 
     /// Whether a syntax expression denotes a whole struct object (its value
     /// is evaluated as its address).
+    /// A struct-valued expression's size and alignment.
+    fn struct_shape(&self, expression: &Expression) -> Option<(u32, u8)> {
+        if !self.struct_valued(expression) {
+            return None;
+        }
+        let ty = match expression {
+            Expression::Variable(name) => match self.names.get(name) {
+                Some(&id) => self.variables[id].ty,
+                None => self.unit.globals.get(name)?.ty,
+            },
+            Expression::Member { member_type, .. } => *member_type,
+            _ => return None,
+        };
+        match ty {
+            Type::Struct { size, align } => Some((size, align)),
+            _ => None,
+        }
+    }
+
     fn struct_valued(&self, expression: &Expression) -> bool {
         match expression {
             Expression::Variable(name) => match self.names.get(name) {
@@ -1995,6 +2014,11 @@ impl Builder<'_, '_> {
         self.calling_arguments += usize::from(calling);
         let evaluated: Compilation<()> = (|| {
             for argument in arguments {
+                // (A struct by value: a caller copy, by address.)
+                if let Some((size, align)) = self.struct_shape(argument).filter(|_| std::env::var_os("MWCC_IRO_NO_INDIRECT_STRUCT_ARGUMENTS").is_none()) {
+                    values.push(self.struct_argument(argument, size, align)?);
+                    continue;
+                }
                 let value = promoted(self.argument_expression(argument)?);
                 // (Floating arguments go in f1.., as for a direct call.)
                 let floating = is_float(value.ty) && std::env::var_os("MWCC_IRO_NO_INDIRECT_FLOAT_ARGUMENTS").is_none();
