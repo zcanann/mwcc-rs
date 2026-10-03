@@ -1957,6 +1957,29 @@ fn rewrite_selects(function: &mut Function, body: &mut Vec<Stmt>, top_level: boo
                             continue;
                         }
                     }
+                    // (Constants stored to one global: a branch-free value
+                    // stored once.)
+                    (
+                        [Stmt::Store { place: Place::Global(name), ty, value, .. }],
+                        [Stmt::Store { place: Place::Global(other), ty: other_ty, value: other_value, .. }],
+                    ) if name == other
+                        && ty == other_ty
+                        && value.as_int().zip(other_value.as_int()).is_some_and(|(a, b)| (a - b).abs() == 1 || (a == 0 && b == -1) || (a == -1 && b == 0))
+                        && std::env::var_os("MWCC_IRO_NO_GLOBAL_STORE_SELECTS").is_none() =>
+                    {
+                        let (name, ty) = (name.clone(), *ty);
+                        let temporary = function.add_temporary(Type::Int);
+                        if let Some(rewritten) = select(function, &condition, value, other_value, Destination::Variable(temporary)) {
+                            output.extend(rewritten);
+                            output.push(Stmt::Store {
+                                place: Place::Global(name),
+                                ty,
+                                value: Expr { kind: ExprKind::Var(temporary), ty: Type::Int },
+                                compound: false,
+                            });
+                            continue;
+                        }
+                    }
                     ([Stmt::Return(Some(value))], [Stmt::Return(Some(other_value))]) => {
                         if let Some(rewritten) = select(function, &condition, value, other_value, Destination::Return) {
                             output.extend(rewritten);
