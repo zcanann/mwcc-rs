@@ -2562,6 +2562,8 @@ impl Lowerer<'_, '_> {
             }
             ExprKind::Convert(operand)
                 if is_unsigned_narrow(ty)
+                    // (-O0 narrows a bit-field's value regardless.)
+                    && !(self.unoptimized && bit_field_extraction(operand) && !toggle("MWCC_PCODE_O0_FITTING_FIELDS"))
                     && {
                         SUM_BOUNDS.with(|flag| flag.set(self.unit.branch_preserving));
                         max_value(operand).is_some_and(|max| max < 1u64 << (8 * width(ty)))
@@ -3244,6 +3246,13 @@ impl Lowerer<'_, '_> {
                 Ok((source, to))
             }
             (Type::Double, Type::Float) => {
+                // (A call's result rounds from its register into the target.)
+                if matches!(operand.kind, ExprKind::Call { .. }) && target.is_some() && !toggle("MWCC_PCODE_CALL_RESULT_ROUNDS_IN_PLACE") {
+                    let (source, _) = self.expression(operand)?;
+                    let d = self.result_for(to, target);
+                    self.emit_plain(Instruction::RoundToSingle { d, b: source });
+                    return Ok((d, to));
+                }
                 // A computed double rounds in place in its own register.
                 if operand.as_var().is_none() && std::env::var_os("MWCC_PCODE_NO_INPLACE_FRSP").is_none() {
                     let (source, _) = self.expression_with_target(operand, target)?;
@@ -6752,6 +6761,16 @@ fn root_global(base: &Expr) -> Option<String> {
 
 /// A reusable load's key: the pointer variable, offset and loaded kind
 /// (any word is the same word).
+/// `(x >> n) & m` of a bit-field read (its shift count carries the marker).
+fn bit_field_extraction(expression: &Expr) -> bool {
+    match &expression.kind {
+        ExprKind::Binary(BinaryOp::BitAnd, left, _) => bit_field_extraction(left),
+        ExprKind::Binary(BinaryOp::ShiftRight, _, count) => count.ty == mwcc_iro::BIT_FIELD_SHIFT && count.as_int().is_some(),
+        ExprKind::Convert(operand) => bit_field_extraction(operand),
+        _ => false,
+    }
+}
+
 fn load_key(pointer: VarId, offset: i32, ty: Type) -> String {
     let kind = if is_general_word(ty) && !is_narrow(ty) && !toggle("MWCC_PCODE_TYPED_LOAD_KEYS") { "word".to_owned() } else { format!("{ty:?}") };
     format!("*{pointer}:{offset}:{kind}")

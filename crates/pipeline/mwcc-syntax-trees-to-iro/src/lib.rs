@@ -341,6 +341,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         guarded: 0,
         argument_guards: 0,
         testing_assignment: false,
+        comparing_field: false,
         calling_arguments: 0,
         temporaries: Vec::new(),
         direct_return: false,
@@ -665,6 +666,8 @@ struct Builder<'a, 'u> {
     argument_guards: usize,
     /// Building an `if` condition that is itself an assignment.
     testing_assignment: bool,
+    /// Building a bit-field read that is a comparison's direct operand.
+    comparing_field: bool,
     /// Enclosing calls with an argument that itself calls.
     calling_arguments: usize,
     /// Registers holding assigned values, numbered after `variables`.
@@ -1491,7 +1494,12 @@ impl Builder<'_, '_> {
             Expression::Binary { operator, left, right } => {
                 let op = binary_op(*operator);
                 let (left_source, right_source) = (left.as_ref(), right.as_ref());
-                let left = self.expression(left)?;
+                let field = |e: &Expression| matches!(e, Expression::BitFieldRead { .. });
+                let outer = self.comparing_field;
+                self.comparing_field = op.is_comparison() && field(left_source);
+                let left = self.expression(left);
+                self.comparing_field = outer;
+                let left = left?;
                 let right = if matches!(op, BinaryOp::LogicalAnd | BinaryOp::LogicalOr) {
                     let mark = (self.pending.len(), self.post.len());
                     match self.guarded_expression(right) {
@@ -1747,6 +1755,25 @@ impl Builder<'_, '_> {
             Expression::BitFieldRead { extracted, promoted_type, .. } => {
                 let mut value = self.expression(extracted)?;
                 mark_bit_field_shift(&mut value);
+                // (-O0 narrows a compared field to its storage unit first.)
+                if self.unit.unoptimized && self.comparing_field && std::env::var_os("MWCC_IRO_O0_UNNARROWED_FIELDS").is_none() {
+                    fn unit_type(e: &Expr) -> Option<Type> {
+                        if let ExprKind::Load { .. } = e.kind {
+                            return Some(e.ty);
+                        }
+                        let mut found = None;
+                        let mut copy = e.clone();
+                        passes::children(&mut copy, &mut |child| {
+                            if found.is_none() {
+                                found = unit_type(child);
+                            }
+                        });
+                        found
+                    }
+                    if let Some(storage) = unit_type(&value).filter(|&ty| is_narrow(ty)) {
+                        value = Expr { kind: ExprKind::Convert(Box::new(value)), ty: storage };
+                    }
+                }
                 converted(promoted(value), *promoted_type)
             }
             Expression::MemberAddress { base, offset, element, index_stride: None } => {
