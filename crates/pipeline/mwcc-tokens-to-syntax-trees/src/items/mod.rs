@@ -4172,6 +4172,8 @@ impl Parser {
             let body_position = self.position;
             let body_name = name.clone();
             let body_return_type = return_type;
+            // (An unreadable body still declares its parameters.)
+            let body_parameters = parameters.clone();
             let parsed_function = self.function_body(
                 if let Some(scope) = &constructor_scope {
                     Type::StructPointer {
@@ -4230,7 +4232,7 @@ impl Parser {
                         name: body_name,
                         is_static: function_is_static,
                         is_weak: function_is_weak,
-                        parameters: Vec::new(),
+                        parameters: if std::env::var_os("MWCC_UNPARSED_WITHOUT_PARAMETERS").is_some() { Vec::new() } else { body_parameters },
                         locals: Vec::new(),
                         statements: Vec::new(),
                         guards: Vec::new(),
