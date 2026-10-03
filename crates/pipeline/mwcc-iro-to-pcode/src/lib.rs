@@ -78,6 +78,7 @@ pub fn lower(
         constants: HashMap::new(),
         unoptimized,
         memory_base: 0,
+        stored_value: 0,
         addressing: false,
         returned: 0,
         testing: 0,
@@ -167,6 +168,9 @@ struct Lowerer<'a, 'u> {
     /// The memory access base being lowered (by address): its sum computes
     /// the base before the index.
     memory_base: usize,
+    /// The value being stored (an address in it keeps its halves tied on
+    /// GC/3.x).
+    stored_value: usize,
     /// The binary operation being lowered is a memory access base.
     addressing: bool,
     /// The integer return value being lowered (by address).
@@ -2410,6 +2414,10 @@ impl Lowerer<'_, '_> {
                     // (Also an address assigned to a variable.)
                     let tied = self.unit.tied_halves
                         && (std::ptr::eq(expression, self.memory_base as *const Expr)
+                            || (std::ptr::eq(expression, self.stored_value as *const Expr)
+                                && !self.unoptimized
+                                && !global.is_function
+                                && !toggle("MWCC_PCODE_UNTIED_STORED_ADDRESSES"))
                             || (self.target_variable(target).is_some() && !toggle("MWCC_PCODE_UNTIED_VARIABLE_ADDRESSES")));
                     self.absolute_address_into(name, target, tied)
                 };
@@ -5510,8 +5518,10 @@ impl Lowerer<'_, '_> {
                 (source?, address)
             }
             None => {
-                let source = self.store_source(value, ty)?;
-                (source, self.store_address(place)?)
+                let outer = std::mem::replace(&mut self.stored_value, value as *const Expr as usize);
+                let source = self.store_source(value, ty);
+                self.stored_value = outer;
+                (source?, self.store_address(place)?)
             }
         };
         let store = match (index, ty) {
