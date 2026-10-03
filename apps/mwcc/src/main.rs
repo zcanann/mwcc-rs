@@ -1040,7 +1040,12 @@ fn compile(
     }
     let mut machine_functions: Vec<mwcc_machine_code::MachineFunction> =
         Vec::with_capacity(unit.functions.len());
+    // A definition is a prototype for the functions after it (and itself).
+    let mut prototyped_here = prototyped_names.clone();
     for (function_index, function) in unit.functions.iter().enumerate() {
+        if std::env::var_os("MWCC_NO_DEFINITION_PROTOTYPES").is_none() {
+            prototyped_here.insert(function.name.clone());
+        }
         if config.flags.whole_file_optimization_enabled()
             && function.is_static
             && inline_summaries.should_elide_ipa_function(&function.name)
@@ -1100,7 +1105,7 @@ fn compile(
             &call_parameter_types,
             &unit.skipped_inline_names,
             &weak_materialized_names,
-            &prototyped_names,
+            &prototyped_here,
             &unit.variadic_definitions,
             &unit.fixed_address_arrays,
             &unit.fixed_address_objects,
