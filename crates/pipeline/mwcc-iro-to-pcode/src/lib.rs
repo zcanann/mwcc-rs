@@ -5366,7 +5366,9 @@ impl Lowerer<'_, '_> {
                         && !self.unit.early_frame
                         && !is_float(argument.ty)
                         && !plain_variable(argument)
-                        && !matches!(argument.kind, ExprKind::GlobalAddress(..))
+                        // (A global's address too once another argument called.)
+                        && (!matches!(argument.kind, ExprKind::GlobalAddress(..))
+                            || (arguments.iter().any(contains_call) && !toggle("MWCC_PCODE_NO_GLOBAL_ARGUMENT_AFTER_CALL")))
                         // (A frame address with a global's waits for the copies.)
                         && !(matches!(argument.kind, ExprKind::LocalAddress(_))
                             && arguments.iter().any(|other| matches!(other.kind, ExprKind::GlobalAddress(..))))
