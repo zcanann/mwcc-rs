@@ -1747,8 +1747,19 @@ impl Lowerer<'_, '_> {
             }
             max_value(inner).is_some_and(|max| max < 1u64 << (8 * width(return_type)))
         };
-        let fits = (mwcc_syntax_trees_to_iro_fits(value, return_type) || bounded)
-            && !(truth && is_narrow(return_type) && !self.unit.returns_bool && std::env::var_os("MWCC_PCODE_TRUTH_FITS").is_none());
+        // (A C++ truth returned as a halfword: converted as the `bool` it
+        // is, which GC/3.x knows is 0 or 1.)
+        let halfword_truth = self.unit.cxx
+            && truth
+            && !self.unit.early_frame
+            && matches!(return_type, Type::Short | Type::UnsignedShort)
+            && !toggle("MWCC_PCODE_NO_HALFWORD_TRUTHS");
+        let value = match &value.kind {
+            ExprKind::Convert(inner) if halfword_truth && truth_kind(inner) => &**inner,
+            _ => value,
+        };
+        let fits = (mwcc_syntax_trees_to_iro_fits(value, return_type) || bounded || (halfword_truth && self.unit.forwards_stores))
+            && !(truth && is_narrow(return_type) && !self.unit.returns_bool && !(halfword_truth && self.unit.forwards_stores) && std::env::var_os("MWCC_PCODE_TRUTH_FITS").is_none());
         if let Some(destination) = self.return_register {
             let raw = self.is_raw(value);
             let (register, ty) = self.expression_with_target(value, Some(destination))?;
@@ -1804,10 +1815,15 @@ impl Lowerer<'_, '_> {
         // zero-extends from a byte into any narrow type.
         let cxx = self.unit.cxx;
         // (A `signed char` result sign-extends the byte instead.)
-        if !fits
-            && truth
-            && is_narrow(return_type)
-            && (is_unsigned_narrow(return_type) || (cxx && return_type != Type::Char))
+        // (Before GC/3.x, a C++ equality or `!` returned as a word is the
+        // `bool` byte widened too.)
+        let widened_bool = cxx
+            && !self.unit.forwards_stores
+            && matches!(return_type, Type::Int | Type::UnsignedInt)
+            && matches!(value.kind, ExprKind::Binary(BinaryOp::Equal, ..) | ExprKind::Unary(UnaryOp::LogicalNot, _))
+            && !toggle("MWCC_PCODE_NO_WIDENED_BOOLS");
+        if ((!fits && truth && is_narrow(return_type) && (is_unsigned_narrow(return_type) || (cxx && return_type != Type::Char)))
+            || widened_bool)
             && !self.unoptimized
         {
             let block = self.current_block();
