@@ -1191,7 +1191,7 @@ fn fold_absolute_displacements(pcode: &mut PCodeFunction, into_own_base: bool) {
                 _ => None,
             };
             match (folded, updated) {
-                (_, Some(instruction)) if later_use && at == index + 1 => {
+                (_, Some(instruction)) if later_use && (at == index + 1 || !toggle("MWCC_PCODE_ADJACENT_UPDATE_STORES")) => {
                     block.instructions[at].instruction = instruction;
                     block.instructions[at].relocation = Some(relocation);
                     block.instructions.remove(index);
