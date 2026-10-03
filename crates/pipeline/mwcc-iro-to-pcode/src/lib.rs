@@ -4434,11 +4434,28 @@ impl Lowerer<'_, '_> {
             // subtraction.)
             && (!contains_call(left) || (op != BinaryOp::Subtract && !toggle("MWCC_PCODE_BOTH_CALLS_IN_ORDER")))
             && !toggle("MWCC_PCODE_CALL_OPERAND_IN_ORDER");
-        // (-O0 computes a subtraction's right operand first.)
-        let subtrahend_first = self.unoptimized
-            && op == BinaryOp::Subtract
+        // (-O0 computes a subtraction's right operand first; optimized,
+        // when it is at least as heavy as the left and both take code.)
+        let weight = |e: &Expr| -> u32 {
+            fn weight(e: &Expr) -> u32 {
+                match &e.kind {
+                    ExprKind::Load { base, index, .. } => 1 + weight(base).max(index.as_deref().map_or(0, weight)),
+                    ExprKind::Global(_) => 1,
+                    ExprKind::Binary(_, left, right) => {
+                        let (a, b) = (weight(left), weight(right));
+                        if a == b { a + 1 } else { a.max(b) }
+                    }
+                    ExprKind::Unary(_, operand) | ExprKind::Convert(operand) => weight(operand).max(1),
+                    _ => 0,
+                }
+            }
+            weight(e)
+        };
+        let subtrahend_first = op == BinaryOp::Subtract
             && immediate.is_none()
             && right.as_int().is_none()
+            && (self.unoptimized
+                || (weight(left) > 0 && weight(right) >= weight(left) && !contains_call(left) && !toggle("MWCC_PCODE_MINUEND_FIRST")))
             && !toggle("MWCC_PCODE_O0_MINUEND_FIRST");
         // (Of two results of a commutative operation, the one needing fewer
         // registers goes first; -O0 also computes it first.)
