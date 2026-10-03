@@ -831,6 +831,16 @@ impl Lowerer<'_, '_> {
             }
         }
         let frame_objects = function.variables.iter().any(|variable| variable.frame.is_some());
+        // (Early builds: a leaf's register parameters still reserve their
+        // slots, counted once registers are saved.)
+        if !calls && self.unit.early_frame && !frame_objects && !toggle("MWCC_PCODE_O0_NO_LEAF_PARAMETER_SLOTS") {
+            let mut reserved: i16 = 0;
+            for id in 0..function.parameter_count {
+                let size: i16 = if function.variables[id].ty == Type::Double { 8 } else { 4 };
+                reserved = (reserved + size - 1) / size * size + size;
+            }
+            self.pcode.reserved_local_bytes = (reserved + 7) / 8 * 8;
+        }
         if frame_objects && home_slots > 0 && toggle("MWCC_PCODE_O0_NO_HOMES_WITH_FRAME") {
             return Err(unsupported("frame locals with parameter homes at -O0"));
         }
