@@ -2110,11 +2110,12 @@ impl Lowerer<'_, '_> {
             }
             // (An unsigned equality with a wider constant subtracts its high
             // half: `addis t,a,-hi; cmplwi t,lo`.)
-            // (Not a pointer's: `li; cmplw`.)
-            (Some(value), true)
+            // (Not a pointer's: `li; cmplw`. A signed word's likewise.)
+            (Some(value), signed_unsigned)
                 if equality
                     && early.is_none()
-                    && matches!(promote(left_type), Type::UnsignedInt)
+                    && (matches!(promote(left_type), Type::UnsignedInt)
+                        || (!signed_unsigned && matches!(promote(left_type), Type::Int) && !toggle("MWCC_PCODE_NO_SIGNED_EQUALITY_HIGH_HALVES")))
                     && !toggle("MWCC_PCODE_NO_EQUALITY_HIGH_HALVES") =>
             {
                 let value = value as u32;
