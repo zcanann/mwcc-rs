@@ -53,6 +53,18 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
         passes::float_negations(&mut built.function.body);
     }
     passes::run(&mut built.function, unit.branch_preserving, unit.reassociates_sums, unit.unrolling);
+    if unit.forwards_stores && std::env::var_os("MWCC_IRO_NO_DEAD_STORES").is_none() {
+        let names: Vec<String> = built.function.variables.iter().map(|variable| variable.name.clone()).collect();
+        let removable = |place: &Place| match place {
+            Place::Memory { base, .. } => match &base.kind {
+                ExprKind::Var(v) => unit.nonvolatile_pointers.contains(&names[*v]),
+                ExprKind::GlobalAddress(name) => unit.globals.get(name).is_some_and(|global| !global.is_volatile),
+                _ => false,
+            },
+            Place::Global(name) => unit.globals.get(name).is_some_and(|global| !global.is_volatile),
+        };
+        passes::dead_stores(&mut built.function.body, &removable);
+    }
     if !unit.branch_preserving && std::env::var_os("MWCC_IRO_NO_BIT_TESTS").is_none() {
         passes::bit_tests(&mut built.function.body);
         passes::narrowing(&mut built.function);

@@ -3418,3 +3418,154 @@ pub fn member_index_displacements(body: &mut [Stmt]) {
     }
     for_each_expression(body, &mut |expression| rewrite(expression));
 }
+
+/// GC/3.x drops a store the same place takes again before anything can
+/// read it: a non-volatile member through a pointer or a scalar global,
+/// overwritten in the same straight-line run with no call, no store or
+/// read that may reach it and no change to its pointer between. (A read of
+/// exactly that place takes a constant stored value.)
+pub fn dead_stores(body: &mut Vec<Stmt>, removable: &dyn Fn(&Place) -> bool) {
+    for statement in body.iter_mut() {
+        match statement {
+            Stmt::If { then_body, else_body, .. } => {
+                dead_stores(then_body, removable);
+                dead_stores(else_body, removable);
+            }
+            Stmt::Loop { body, .. } | Stmt::Counted { body, .. } => dead_stores(body, removable),
+            Stmt::Switch { arms, .. } => arms.iter_mut().for_each(|arm| dead_stores(arm, removable)),
+            _ => {}
+        }
+    }
+    // (The place: a pointer variable and offset, or a global.)
+    #[derive(PartialEq, Clone)]
+    enum Target {
+        Member(VarId, i32),
+        Object(String, i32),
+        Global(String),
+    }
+    fn target(place: &Place) -> Option<Target> {
+        match place {
+            Place::Memory { base, index: None, offset } => match &base.kind {
+                ExprKind::Var(v) => Some(Target::Member(*v, *offset)),
+                ExprKind::GlobalAddress(name) => Some(Target::Object(name.clone(), *offset)),
+                _ => None,
+            },
+            Place::Global(name) => Some(Target::Global(name.clone())),
+            _ => None,
+        }
+    }
+    fn width(ty: Type) -> i32 {
+        match ty {
+            Type::Char | Type::UnsignedChar => 1,
+            Type::Short | Type::UnsignedShort => 2,
+            Type::Double | Type::LongLong | Type::UnsignedLongLong => 8,
+            _ => 4,
+        }
+    }
+    // Whether an access of `width` at `other` may overlap the target.
+    fn overlaps(stored: &Target, size: i32, other: &Target, other_size: i32) -> bool {
+        match (stored, other) {
+            (Target::Member(v, a), Target::Member(w, b)) if v == w => a < &(b + other_size) && b < &(a + size),
+            (Target::Object(x, a), Target::Object(y, b)) if x == y => a < &(b + other_size) && b < &(a + size),
+            (Target::Object(x, _), Target::Object(y, _)) => x == y,
+            (Target::Global(x), Target::Global(y)) => x == y,
+            (Target::Global(x), Target::Object(y, _)) | (Target::Object(y, _), Target::Global(x)) => x == y,
+            // (A pointer may reach anything else.)
+            _ => true,
+        }
+    }
+    // Rewrite the reads in `e` of the stored place to `constant`; false
+    // when `e` may read it otherwise (or calls).
+    fn reads(e: &mut Expr, stored: &Target, size: i32, constant: Option<&Expr>) -> bool {
+        let read = match &e.kind {
+            ExprKind::Call { .. } => return false,
+            ExprKind::Load { base, index: None, offset } => match &base.kind {
+                ExprKind::Var(v) => Some(Target::Member(*v, *offset)),
+                ExprKind::GlobalAddress(name) => Some(Target::Object(name.clone(), *offset)),
+                _ => None,
+            },
+            ExprKind::Load { .. } => return false,
+            ExprKind::Global(name) => Some(Target::Global(name.clone())),
+            _ => None,
+        };
+        if let Some(read) = read {
+            if read == *stored && width(e.ty) == size {
+                match constant {
+                    Some(constant) => {
+                        *e = Expr { kind: constant.kind.clone(), ty: e.ty };
+                        return true;
+                    }
+                    None => return false,
+                }
+            }
+            if overlaps(stored, size, &read, width(e.ty)) {
+                return false;
+            }
+            if !matches!(e.kind, ExprKind::Load { .. }) {
+                return true;
+            }
+        }
+        let mut clean = true;
+        children(e, &mut |child| clean &= reads(child, stored, size, constant));
+        clean
+    }
+    let mut index = 0;
+    while index < body.len() {
+        let Stmt::Store { place, ty, value, .. } = &body[index] else {
+            index += 1;
+            continue;
+        };
+        let (Some(stored), true) = (target(place), removable(place)) else {
+            index += 1;
+            continue;
+        };
+        let size = width(*ty);
+        let constant = value.as_int().map(|_| value.clone()).filter(|_| matches!(ty, Type::Int | Type::UnsignedInt));
+        let base = match &stored {
+            Target::Member(v, _) => Some(*v),
+            _ => None,
+        };
+        // (Tentatively: rewritten reads only stand if the store goes.)
+        let mut rest: Vec<Stmt> = Vec::new();
+        let mut dead = false;
+        for later in &body[index + 1..] {
+            let mut later = later.clone();
+            let clean = match &mut later {
+                Stmt::Store { place, ty, value, .. } => {
+                    let mut clean = reads(value, &stored, size, constant.as_ref());
+                    if let Place::Memory { base, index, .. } = place {
+                        clean &= reads(base, &stored, size, constant.as_ref());
+                        if let Some(index) = index {
+                            clean &= reads(index, &stored, size, constant.as_ref());
+                        }
+                    }
+                    if clean {
+                        match target(place) {
+                            Some(other) if other == stored && width(*ty) == size => {
+                                dead = true;
+                            }
+                            Some(other) if !overlaps(&stored, size, &other, width(*ty)) => {}
+                            _ => clean = false,
+                        }
+                    }
+                    clean
+                }
+                Stmt::Assign { variable, value } => Some(*variable) != base && reads(value, &stored, size, constant.as_ref()),
+                _ => false,
+            };
+            if !clean {
+                break;
+            }
+            rest.push(later);
+            if dead {
+                break;
+            }
+        }
+        if dead && std::env::var_os("MWCC_IRO_KEEP_DEAD_STORES").is_none() {
+            let count = rest.len();
+            body.splice(index..index + 1 + count, rest);
+        } else {
+            index += 1;
+        }
+    }
+}
