@@ -515,7 +515,8 @@ pub fn pointee_type(pointee: Pointee) -> Option<Type> {
         Pointee::StructPointer(element_size) => Type::StructPointer { element_size },
         Pointee::Float => Type::Float,
         Pointee::Double => Type::Double,
-        _ => return None,
+        Pointee::LongLong => Type::LongLong,
+        Pointee::UnsignedLongLong => Type::UnsignedLongLong,
     })
 }
 

@@ -112,24 +112,21 @@ impl Lowerer<'_, '_> {
                     self.emit_plain(Instruction::AddToZeroExtended { d: d_high, a: high });
                     return Ok((d_high, d_low));
                 }
-                let (a_high, a_low) = self.wide(left)?;
-                let (b_high, b_low) = self.wide(right)?;
+                let ((a_high, a_low), (b_high, b_low)) = self.wide_operands(left, right)?;
                 let (d_high, d_low) = (self.temporary(), self.temporary());
                 self.emit_plain(Instruction::AddCarrying { d: d_low, a: a_low, b: b_low });
                 self.emit_plain(Instruction::AddExtended { d: d_high, a: a_high, b: b_high });
                 Ok((d_high, d_low))
             }
             ExprKind::Binary(BinaryOp::Subtract, left, right) => {
-                let (a_high, a_low) = self.wide(left)?;
-                let (b_high, b_low) = self.wide(right)?;
+                let ((a_high, a_low), (b_high, b_low)) = self.wide_operands(left, right)?;
                 let (d_high, d_low) = (self.temporary(), self.temporary());
                 self.emit_plain(Instruction::SubtractFromCarrying { d: d_low, a: b_low, b: a_low });
                 self.emit_plain(Instruction::SubtractFromExtended { d: d_high, a: b_high, b: a_high });
                 Ok((d_high, d_low))
             }
             ExprKind::Binary(op @ (BinaryOp::BitAnd | BinaryOp::BitOr | BinaryOp::BitXor), left, right) => {
-                let (a_high, a_low) = self.wide(left)?;
-                let (b_high, b_low) = self.wide(right)?;
+                let ((a_high, a_low), (b_high, b_low)) = self.wide_operands(left, right)?;
                 let (d_high, d_low) = (self.temporary(), self.temporary());
                 let make = |d, s, b| match op {
                     BinaryOp::BitAnd => Instruction::And { a: d, s, b },
@@ -307,6 +304,18 @@ impl Lowerer<'_, '_> {
             ExprKind::Load { base, index: None, offset } => {
                 let (address, _) = self.base_expression(base)?;
                 let (address, displacement) = self.displacement(address, *offset)?;
+                let next = displacement.checked_add(4).ok_or_else(|| unsupported("a wide load past the displacement"))?;
+                let (high, _) = self.load(Type::Int, address, displacement, None, None)?;
+                let (low, _) = self.load(Type::Int, address, next, None, None)?;
+                Ok((high, low))
+            }
+            // (An indexed one adds the index to the base first.)
+            ExprKind::Load { base, index: Some(index), offset } if !super::toggle("MWCC_PCODE_NO_INDEXED_WIDE_LOADS") => {
+                let (pointer, _) = self.base_expression(base)?;
+                let (scaled, _) = self.expression(index)?;
+                let sum = self.temporary();
+                self.emit_plain(Instruction::Add { d: sum, a: pointer, b: scaled });
+                let (address, displacement) = self.displacement(sum, *offset)?;
                 let next = displacement.checked_add(4).ok_or_else(|| unsupported("a wide load past the displacement"))?;
                 let (high, _) = self.load(Type::Int, address, displacement, None, None)?;
                 let (low, _) = self.load(Type::Int, address, next, None, None)?;
@@ -497,9 +506,22 @@ impl Lowerer<'_, '_> {
     }
 
     /// `(a_lo ^ b_lo) | (a_hi ^ b_hi)` (recorded for a branch).
+    /// Both operands of a wide operation: a call's first (its result
+    /// returns in registers the other operand's loads would have to
+    /// survive).
+    fn wide_operands(&mut self, left: &Expr, right: &Expr) -> Compilation<((u32, u32), (u32, u32))> {
+        if super::contains_call(right) && !super::contains_call(left) && !super::toggle("MWCC_PCODE_WIDE_CALL_OPERAND_IN_ORDER") {
+            let r = self.wide(right)?;
+            let l = self.wide(left)?;
+            return Ok((l, r));
+        }
+        let l = self.wide(left)?;
+        let r = self.wide(right)?;
+        Ok((l, r))
+    }
+
     fn wide_difference(&mut self, left: &Expr, right: &Expr, record: bool) -> Compilation<u32> {
-        let (a_high, a_low) = self.wide(left)?;
-        let (b_high, b_low) = self.wide(right)?;
+        let ((a_high, a_low), (b_high, b_low)) = self.wide_operands(left, right)?;
         let (low, high) = (self.temporary(), self.temporary());
         self.emit_plain(Instruction::Xor { a: low, s: a_low, b: b_low });
         self.emit_plain(Instruction::Xor { a: high, s: a_high, b: b_high });
@@ -513,8 +535,7 @@ impl Lowerer<'_, '_> {
     /// `a`, `a > b` and `a <= b` `a` from `b`. Signed operands flip their
     /// high words' signs first.
     fn wide_borrow(&mut self, op: BinaryOp, left: &Expr, right: &Expr) -> Compilation<u32> {
-        let (mut l_high, l_low) = self.wide(left)?;
-        let (mut r_high, r_low) = self.wide(right)?;
+        let ((mut l_high, l_low), (mut r_high, r_low)) = self.wide_operands(left, right)?;
         let signed = left.ty != Type::UnsignedLongLong && right.ty != Type::UnsignedLongLong;
         if signed {
             let flipped = self.temporary();

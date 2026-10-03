@@ -41,6 +41,9 @@ pub struct Built {
 pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     passes::FLOAT_NEGATION_ALGEBRA.with(|flag| flag.set(unit.cancels_float_negations));
     let mut built = build_unoptimized(function, unit)?;
+    if unit.zero_wide_subtrahends && std::env::var_os("MWCC_IRO_NO_SHARED_SUBTRAHENDS").is_none() {
+        passes::shared_wide_subtrahends(&mut built.function.body);
+    }
     if std::env::var_os("MWCC_IRO_NO_SCALARIZE").is_none() {
         passes::scalarize(&mut built.function, unit.keeps_struct_stores);
     }
@@ -126,6 +129,10 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
     }
     if function.asm_body.is_some() || !function.inline_asm_blocks.is_empty() {
         return Err(unsupported("inline assembly"));
+    }
+    // (A local aligned past the frame's 8 bytes realigns the stack.)
+    if function.locals.iter().any(|local| !local.is_static && local.attribute_alignment.is_some_and(|align| align > 8)) {
+        return Err(unsupported("an over-aligned local (dynamic stack alignment)"));
     }
     if function.return_type != Type::Void && !is_value_type(function.return_type) && !is_wide(function.return_type) {
         return Err(unsupported(format!("return type {:?}", function.return_type)));

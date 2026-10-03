@@ -2999,6 +2999,60 @@ pub fn forward_single_uses(function: &mut Function) {
     }
 }
 
+/// GC/1.3-2.x subtract a sign-extended word with a zero high word, unless
+/// an earlier statement already extended the same word (CSE reuses that):
+/// `*o = (s64)n; return v - (s64)n;` subtracts the true extension.
+pub fn shared_wide_subtrahends(body: &mut [Stmt]) {
+    fn extended(e: &Expr, seen: &mut Vec<String>) {
+        if let ExprKind::Convert(word) = &e.kind {
+            if e.ty == Type::LongLong && !mwcc_iro::is_wide(word.ty) && !matches!(word.kind, ExprKind::Convert(_)) {
+                seen.push(format!("{word:?}"));
+            }
+        }
+        let mut copy = e.clone();
+        children(&mut copy, &mut |child| extended(child, seen));
+    }
+    fn restore(e: &mut Expr, seen: &[String]) {
+        if let ExprKind::Convert(unsigned) = &e.kind {
+            if e.ty == Type::LongLong && unsigned.ty == Type::UnsignedInt {
+                if let ExprKind::Convert(word) = &unsigned.kind {
+                    if !mwcc_iro::is_unsigned(word.ty) && seen.contains(&format!("{word:?}")) {
+                        let word = (**word).clone();
+                        *e = Expr { kind: ExprKind::Convert(Box::new(word)), ty: Type::LongLong };
+                        return;
+                    }
+                }
+            }
+        }
+        children(e, &mut |child| restore(child, seen));
+    }
+    let mut seen: Vec<String> = Vec::new();
+    for statement in body.iter_mut() {
+        if !seen.is_empty() {
+            for_each_expression(std::slice::from_mut(statement), &mut |e| restore(e, &seen));
+        }
+        match statement {
+            Stmt::Assign { .. } | Stmt::Store { .. } | Stmt::Eval(_) | Stmt::SetReturn(_) | Stmt::Return(_) => {
+                let mut copy = vec![statement.clone()];
+                for_each_expression(&mut copy, &mut |e| extended(e, &mut seen));
+                // (A word stored to a wide place extends there.)
+                if let Stmt::Store { ty: Type::LongLong, value, .. } = statement {
+                    if !mwcc_iro::is_wide(value.ty) && !mwcc_iro::is_unsigned(value.ty) {
+                        seen.push(format!("{value:?}"));
+                    }
+                }
+                // (An assignment changes what its variable extends to.)
+                if let Stmt::Assign { variable, .. } = statement {
+                    let name = format!("{:?}", ExprKind::Var(*variable));
+                    seen.retain(|key| !key.contains(&name));
+                }
+            }
+            // (Only straight-line code.)
+            _ => seen.clear(),
+        }
+    }
+}
+
 fn toggle_env(name: &str) -> bool {
     std::env::var_os(name).is_some()
 }
