@@ -328,10 +328,12 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
             unoptimized,
             fold_absolute_into_own_base: request.config.build.label.starts_with("GC/3.")
                 || request.config.build.label.starts_with("Wii/"),
+            // (Unscheduled, below -O4, the restores also precede it.)
             link_reload_after_float_restores: behavior.saved_float_epilogue_style
                 == mwcc_versions::SavedFloatEpilogueStyle::LinkReloadAfterFloatRestores
                 || request.config.build.label.starts_with("GC/3.")
-                || request.config.build.label.starts_with("Wii/"),
+                || request.config.build.label.starts_with("Wii/")
+                || (!behavior.schedule_latency_slots && !unoptimized && !early_frame && std::env::var_os("MWCC_PCODE_UNSCHEDULED_LINK_FIRST").is_none()),
             general_save_helper_minimum: behavior.general_save_helper_minimum,
             use_lmw_stmw: request.config.flags.use_lmw_stmw,
             early_frame: early_frame || patch_frame,
