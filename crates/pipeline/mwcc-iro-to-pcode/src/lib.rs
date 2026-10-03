@@ -5733,7 +5733,8 @@ impl Lowerer<'_, '_> {
                     // (Optimized, after the early builds, a computed word
                     // goes straight to its register too.)
                     _ if !pass
-                        && !self.unit.early_frame
+                        && (!self.unit.early_frame
+                            || (matches!(argument.kind, ExprKind::Load { .. } | ExprKind::Global(_)) && !toggle("MWCC_PCODE_EARLY_LOADED_ARGUMENT_TEMPORARIES")))
                         && !is_float(argument.ty)
                         && !plain_variable(argument)
                         // (A global's address too once another argument called.)
