@@ -227,7 +227,7 @@ pub fn run(function: &mut Function, branch_preserving: bool, reassociates_sums: 
         selects(function);
     }
     if enabled("STORES") {
-        stores(&mut function.body);
+        stores(&mut function.body, true);
     }
 
     if enabled("NARROWING") {
@@ -404,7 +404,7 @@ pub fn run_unoptimized(function: &mut Function) {
         for_each_expression(&mut function.body, &mut |expression| logical_constants(expression));
         constant_branches(&mut function.body);
     }
-    stores(&mut function.body);
+    stores(&mut function.body, false);
     if std::env::var_os("MWCC_IRO_NO_REASSOCIATE_OFFSETS").is_none() {
         for_each_expression(&mut function.body, &mut |expression| reassociate_offsets(expression));
     }
@@ -2148,13 +2148,22 @@ fn simple_condition(condition: &Expr) -> bool {
 
 /// A store keeps only its low bytes: integer conversions at least that wide
 /// are dead, and a literal stored narrow is its sign-extended low part.
-pub fn stores(body: &mut [Stmt]) {
+/// (`optimized`: the narrowed-shift and dead-mask rules apply.)
+pub fn stores(body: &mut [Stmt], optimized: bool) {
     for statement in body {
         match statement {
             Stmt::Store { ty, value, .. } => {
                 let stored = width(*ty);
                 while let ExprKind::Convert(operand) = &value.kind {
-                    if !(mwcc_iro::is_general_word(value.ty) && !matches!(value.ty, Type::Pointer(_) | Type::StructPointer { .. }))
+                    // (A narrowed right shift stays: it is one rotate-and-mask,
+                    // `(u8)(x >> 8)` -> `rlwinm 24,24,31`.)
+                    let narrowed_shift = optimized
+                        && is_narrow(value.ty)
+                        && matches!(&operand.kind, ExprKind::Binary(BinaryOp::ShiftRight, shifted, count)
+                            if count.as_int().is_some() && mwcc_iro::is_unsigned(shifted.ty))
+                        && std::env::var_os("MWCC_IRO_DEAD_SHIFT_NARROWING").is_none();
+                    if narrowed_shift
+                        || !(mwcc_iro::is_general_word(value.ty) && !matches!(value.ty, Type::Pointer(_) | Type::StructPointer { .. }))
                         || width(value.ty) < stored
                         // Extending a narrower value fills stored bytes.
                         || width(operand.ty) < stored
@@ -2169,19 +2178,28 @@ pub fn stores(body: &mut [Stmt]) {
                     let shift = 64 - 8 * stored;
                     *value = Expr::int((literal << shift) >> shift);
                 }
+                // (A mask keeping every stored bit is dead: `*p = b & 0xff`.)
+                if optimized && is_narrow(*ty) && std::env::var_os("MWCC_IRO_LIVE_STORE_MASKS").is_none() {
+                    let low = (1i64 << (8 * stored)) - 1;
+                    if let ExprKind::Binary(BinaryOp::BitAnd, left, right) = &value.kind {
+                        if right.as_int().is_some_and(|mask| mask & low == low) && !mwcc_iro::is_float(left.ty) {
+                            *value = (**left).clone();
+                        }
+                    }
+                }
             }
             Stmt::If { then_body, else_body, .. } => {
-                stores(then_body);
-                stores(else_body);
+                stores(then_body, optimized);
+                stores(else_body, optimized);
             }
             Stmt::Loop { body, step, effects, .. } => {
-                stores(body);
-                stores(step);
-                stores(effects);
+                stores(body, optimized);
+                stores(step, optimized);
+                stores(effects, optimized);
             }
             Stmt::Switch { arms, .. } => {
                 for arm in arms {
-                    stores(arm);
+                    stores(arm, optimized);
                 }
             }
             _ => {}
