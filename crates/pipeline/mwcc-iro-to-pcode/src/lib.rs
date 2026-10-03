@@ -1518,8 +1518,14 @@ impl Lowerer<'_, '_> {
             return self.return_wide(value);
         }
         // A truth value returned narrow is still masked to the type.
-        let truth = matches!(&value.kind, ExprKind::Binary(op, ..) if op.is_comparison())
-            || matches!(&value.kind, ExprKind::Unary(UnaryOp::LogicalNot, _));
+        // (Also through a conversion to the narrow type: `(u8)(a == 1)`,
+        // except a C++ `bool` on the early builds.)
+        let truth_kind = |e: &Expr| {
+            matches!(&e.kind, ExprKind::Binary(op, ..) if op.is_comparison())
+                || matches!(&e.kind, ExprKind::Unary(UnaryOp::LogicalNot, _))
+        };
+        let truth = truth_kind(value)
+            || (matches!(&value.kind, ExprKind::Convert(inner) if truth_kind(inner)) && !(self.unit.cxx && self.unit.early_frame) && !toggle("MWCC_PCODE_NO_CONVERTED_TRUTH"));
         // A `bool` result is already 0/1; other narrow results mask it.
         // (Or a value whose bounds fit the unsigned narrow type.)
         let bounded = is_unsigned_narrow(return_type) && !truth && !toggle("MWCC_PCODE_NO_BOUNDED_RETURNS") && {
@@ -3722,7 +3728,25 @@ impl Lowerer<'_, '_> {
         // when it is a field, else the right one).
         if op == BinaryOp::BitOr && !self.unoptimized {
             let refined = !toggle("MWCC_PCODE_OLD_INSERTS");
-            let insertion = match insert_field(left, refined) {
+            // (A rotation `(x << n) | (x >> 32 - n)` is no insert: GC/1.0-
+            // 1.2.5n rotate, later builds shift and `or`.)
+            let rotated = rotation(left, right).filter(|_| refined && toggle("MWCC_PCODE_ROTATION_INSERTS"));
+            if let Some((x, n)) = rotated {
+                if self.unit.early_frame {
+                    let (x, _) = self.expression(x)?;
+                    let d = self.result(target);
+                    self.emit_plain(Instruction::RotateAndMask { a: d, s: x, shift: n, begin: 0, end: 31 });
+                    return Ok((d, ty));
+                }
+            }
+            // (A shifted right operand is inserted into the left one.)
+            let shifted_right = refined
+                && matches!(right.kind, ExprKind::Binary(BinaryOp::ShiftLeft, ..))
+                && left.as_int().is_none()
+                && !matches!(left.kind, ExprKind::Binary(BinaryOp::ShiftRight | BinaryOp::BitAnd, ..))
+                && insert_field(right, true).is_some_and(|field| field_bits(field.2, field.3) & !known_zero(left, true) == 0)
+                && !toggle("MWCC_PCODE_LEFT_FIELD_FIRST");
+            let insertion = if rotated.is_some() { None } else { match insert_field(left, refined).filter(|_| !shifted_right) {
                 // (A constant base is `ori`/`oris`d instead.)
                 Some(field)
                     if field_bits(field.2, field.3) & !known_zero(right, refined) == 0
@@ -3733,18 +3757,18 @@ impl Lowerer<'_, '_> {
                 // (Only a narrow value, into a computed base.)
                 _ if refined
                     && left.as_int().is_none()
-                    && match &right.kind {
+                    && (shifted_right || match &right.kind {
                         ExprKind::Convert(_) => true,
                         ExprKind::Binary(BinaryOp::ShiftLeft, inner, _) => narrow_variable(inner).is_some() || matches!(inner.kind, ExprKind::Convert(_)),
                         _ => false,
-                    } =>
+                    }) =>
                 {
                     insert_field(right, true)
                         .filter(|field| field_bits(field.2, field.3) & !known_zero(left, true) == 0)
                         .map(|field| (field, left))
                 }
                 _ => None,
-            };
+            } };
             if let Some(((source, shift, begin, end), right)) = insertion {
                 // (A clean value inserted unshifted is an `or`.)
                 if refined
@@ -6467,4 +6491,21 @@ fn plain_variable(expression: &Expr) -> bool {
 thread_local! {
     /// The build bounds sums in narrowing conversions (GC/1.0-1.2.5n).
     static SUM_BOUNDS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// `(x << n) | (x >> (32 - n))` (either order) on one unsigned variable: x and n.
+fn rotation<'e>(left: &'e Expr, right: &'e Expr) -> Option<(&'e Expr, u8)> {
+    let shifts = |e: &'e Expr| match &e.kind {
+        ExprKind::Binary(op @ (BinaryOp::ShiftLeft | BinaryOp::ShiftRight), x, n) => Some((*op, x.as_ref(), n.as_int()?)),
+        _ => None,
+    };
+    let ((op_a, x_a, n_a), (op_b, x_b, n_b)) = (shifts(left)?, shifts(right)?);
+    if op_a == op_b || n_a + n_b != 32 || !matches!(x_a.kind, ExprKind::Var(_)) || format!("{:?}", x_a.kind) != format!("{:?}", x_b.kind) {
+        return None;
+    }
+    if !is_unsigned(x_a.ty) {
+        return None;
+    }
+    let left_count = if op_a == BinaryOp::ShiftLeft { n_a } else { n_b };
+    Some((x_a, left_count as u8))
 }
