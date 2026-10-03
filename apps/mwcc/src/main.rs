@@ -151,9 +151,15 @@ fn parse_invocation(arguments: &[String]) -> Invocation {
                 }
             }
             "-i" | "-I" | "-ir" | "-isystem" => {
+                let recursive = arguments[index] == "-ir";
                 index += 1;
                 if let Some(path) = arguments.get(index) {
                     invocation.include_paths.push(PathBuf::from(path));
+                    // `-ir`: the directory's subdirectories too (depth first,
+                    // in name order).
+                    if recursive {
+                        invocation.include_paths.extend(subdirectories(&PathBuf::from(path)));
+                    }
                 }
             }
             "-D" | "-d" => {
@@ -7359,4 +7365,21 @@ fn write_lowered_artifacts(
             object.len()
         ),
     );
+}
+
+/// Every directory below `root`, depth first in name order (`-ir`).
+fn subdirectories(root: &std::path::Path) -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    let Ok(entries) = std::fs::read_dir(root) else { return found };
+    let mut directories: Vec<PathBuf> = entries
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| path.is_dir())
+        .collect();
+    directories.sort();
+    for directory in directories {
+        found.push(directory.clone());
+        found.extend(subdirectories(&directory));
+    }
+    found
 }
