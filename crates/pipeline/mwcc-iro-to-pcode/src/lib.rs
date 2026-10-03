@@ -999,7 +999,10 @@ impl Lowerer<'_, '_> {
                 placed.push((general + 1, low));
                 general += 2;
             } else {
-                placed.push((general, self.expression(argument)?.0));
+                // (A loaded argument goes straight to its register.)
+                let direct = matches!(argument.kind, ExprKind::Load { .. }) && !toggle("MWCC_PCODE_TAIL_ARGUMENT_TEMPORARIES");
+                let value = if direct { self.expression_with_target(argument, Some(general))?.0 } else { self.expression(argument)?.0 };
+                placed.push((general, value));
                 general += 1;
             }
         }
