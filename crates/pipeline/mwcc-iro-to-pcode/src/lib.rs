@@ -4569,6 +4569,13 @@ impl Lowerer<'_, '_> {
                 let sum = self.temporary();
                 self.emit_plain(Instruction::Add { d: sum, a: sign, b: x });
                 self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: quotient, s: sum, shift: 1 });
+            } else if self.unit.early_frame && divisor > 0 && !toggle("MWCC_PCODE_EARLY_SEPARATE_QUOTIENT") {
+                // (GC/1.0-1.2.5n: in the quotient's register, `srawi q,x,k;
+                // addze q,q`.)
+                self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: quotient, s: x, shift: k });
+                let mut carry = PInstr::new(Instruction::AddToZeroExtended { d: quotient, a: quotient });
+                carry.flags.in_place = true;
+                self.emit(carry);
             } else {
                 // srawi t,x,k; addze q,t
                 let shifted = self.temporary();
