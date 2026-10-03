@@ -1122,8 +1122,9 @@ fn fold_absolute_displacements(pcode: &mut PCodeFunction, into_own_base: bool) {
                 index += 1;
                 continue;
             }
-            // (Read again before being redefined, or live out.)
-            let later_use = {
+            // (Read again before being redefined, or live out; not when the
+            // access itself redefines it.)
+            let later_use = !(access.defs(Class::General).contains(&address) && !toggle("MWCC_PCODE_FOLD_REDEFINED_ADDRESS_USE")) && {
                 let mut read = None;
                 for instruction in &block.instructions[at + 1..] {
                     if instruction.uses(Class::General).contains(&address) {
