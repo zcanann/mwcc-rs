@@ -119,6 +119,12 @@ pub fn finish(
             }
         }
     }
+    // (And a copy feeding a call with two or more word arguments before any
+    // other call: the argument's own copy, or the copy of a value passed in
+    // place; a cycle's final move out of r0 stays `mr`.)
+    if options.early_frame && !options.unoptimized && !toggle("MWCC_PCODE_NO_ARGUMENT_ADDI_COPIES") {
+        argument_addi_copies(&mut pcode);
+    }
     // Saved FPRs: the contiguous range from f31 down to the lowest used.
     // (Also FPRs assigned directly: `-O0` register variables.)
     let direct_float = pcode
@@ -1743,5 +1749,100 @@ fn remove_redundant_copies(pcode: &mut PCodeFunction) {
             position += 1;
             kept
         });
+    }
+}
+
+/// GC/1.0-1.2.5n: copies `mr d,s` whose value reaches a call with two or more
+/// word arguments (before any other call) take the `addi d,s,0` form.
+fn argument_addi_copies(pcode: &mut PCodeFunction) {
+    use mwcc_pcode::Class;
+    for block in &mut pcode.blocks {
+        let mut converted = Vec::new();
+        for (index, instruction) in block.instructions.iter().enumerate() {
+            let Instruction::Or { a: d, s, b } = instruction.instruction else { continue };
+            // (`addi d,0,0` would be `li d,0`: a copy out of r0 stays `mr`.)
+            if s != b || d == s || s == 0 {
+                continue;
+            }
+            // The next call, with neither register redefined before it.
+            let mut carriers = vec![d, s];
+            let mut variadic = false;
+            let mut feeds = false;
+            for (offset, later) in block.instructions[index + 1..].iter().enumerate() {
+                if matches!(later.instruction, Instruction::ConditionRegisterClear { .. } | Instruction::ConditionRegisterSet { .. }) {
+                    variadic = true;
+                }
+                if later.instruction.is_call() {
+                    let arguments: Vec<u32> = later
+                        .implicit_uses
+                        .iter()
+                        .filter(|register| register.class == Class::General)
+                        .map(|register| register.number)
+                        .collect();
+                    if arguments.len() < 2 {
+                        break;
+                    }
+                    // (An argument still holding an earlier call's result:
+                    // the copies are `mr`.)
+                    let call_result = {
+                        let before = &block.instructions[..index + 1 + offset];
+                        let definer = before.iter().rev().find(|i| i.defs(Class::General).contains(&3) || i.instruction.is_call());
+                        arguments.contains(&3) && definer.is_some_and(|i| i.instruction.is_call())
+                    };
+                    // (The variadic marker anywhere since the previous call.)
+                    let at = index + 1 + offset;
+                    let start = block.instructions[..at].iter().rposition(|i| i.instruction.is_call()).map_or(0, |p| p + 1);
+                    variadic |= block.instructions[start..at]
+                        .iter()
+                        .any(|i| matches!(i.instruction, Instruction::ConditionRegisterClear { .. } | Instruction::ConditionRegisterSet { .. }));
+                    // (An argument computed into its register — not a copy
+                    // nor a constant — keeps the copies `mr`.)
+                    let computed = arguments.iter().any(|&register| {
+                        block.instructions[start..at].iter().rev().find(|i| i.defs(Class::General).contains(&register)).is_some_and(|i| {
+                            !matches!(
+                                i.instruction,
+                                Instruction::Or { s, b, .. } if s == b
+                            ) && !matches!(i.instruction, Instruction::AddImmediate { a: 0, .. } | Instruction::AddImmediateShifted { a: 0, .. })
+                                && !(matches!(i.instruction, Instruction::AddImmediate { .. }) && i.relocation.is_some())
+                        })
+                    }) || later.implicit_uses.iter().filter(|register| register.class == Class::Float).any(|register| {
+                        // (A floating argument read from memory other than a
+                        // constant pool.)
+                        block.instructions[start..at].iter().rev().find(|i| i.defs(Class::Float).contains(&register.number)).is_some_and(|i| {
+                            !matches!(i.instruction, Instruction::FloatMove { .. }) && i.relocation.is_none()
+                        })
+                    });
+                    let computed = computed && !toggle("MWCC_PCODE_ADDI_COPIES_WITH_COMPUTED");
+                    let into_argument = arguments.contains(&d) && carriers.contains(&d);
+                    feeds = !computed
+                        && if into_argument {
+                            variadic || (s >= 14 && !call_result)
+                        } else {
+                            carriers.iter().any(|register| arguments.contains(register))
+                        };
+                    break;
+                }
+                // (A copy of the value into another register carries it.)
+                if let Instruction::Or { a: copy, s: from, b } = later.instruction {
+                    if from == b && carriers.contains(&from) {
+                        carriers.push(copy);
+                        continue;
+                    }
+                }
+                let defs = later.defs(Class::General);
+                carriers.retain(|register| !defs.contains(register));
+                if carriers.is_empty() {
+                    break;
+                }
+            }
+            if feeds {
+                converted.push(index);
+            }
+        }
+        for index in converted {
+            if let Instruction::Or { a, s, .. } = block.instructions[index].instruction {
+                block.instructions[index].instruction = Instruction::AddImmediate { d: a, a: s, immediate: 0 };
+            }
+        }
     }
 }
