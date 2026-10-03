@@ -219,6 +219,9 @@ pub fn run(function: &mut Function, branch_preserving: bool, reassociates_sums: 
     if enabled("MEMBER_INDEX_DISPLACEMENTS") {
         member_index_displacements(&mut function.body);
     }
+    if enabled("ROW_INDEX_SUMS") && reassociates_sums {
+        row_index_sums(&mut function.body);
+    }
     if enabled("IDIOMS") && !branch_preserving {
         let variables: Vec<Type> = function.variables.iter().map(|variable| variable.ty).collect();
         for_each_expression(&mut function.body, &mut |expression| idioms(expression, &variables));
@@ -3128,6 +3131,52 @@ thread_local! {
 /// A member array element (`p->words[i]`): MWCC adds the scaled index to the
 /// struct pointer and keeps the member offset as the displacement
 /// (`slwi; add; lwz 4(r)`), not `addi` then an indexed access.
+/// A row of a pointer's 2-D array (`p[i][j]`, `int p[][N]`): GC/1.x-2.x
+/// sum the row and column offsets and index the pointer with that
+/// (`add o,row,col; lwzx d,p,o`), not `(p + row)` indexed by the column.
+pub fn row_index_sums(body: &mut [Stmt]) {
+    fn rebase(base: &mut Box<Expr>, index: &mut Option<Box<Expr>>) {
+        let Some(column) = index.as_ref() else { return };
+        let ExprKind::Binary(BinaryOp::Add, pointer, row) = &base.kind else { return };
+        if !matches!(pointer.kind, ExprKind::Var(_))
+            || !pointer_like(pointer.ty)
+            || !matches!(&row.kind, ExprKind::Binary(BinaryOp::Multiply | BinaryOp::ShiftLeft, _, k) if k.as_int().is_some())
+        {
+            return;
+        }
+        let ty = row.ty;
+        let sum = Expr::binary(BinaryOp::Add, (**row).clone(), (**column).clone(), ty);
+        **base = (**pointer).clone();
+        *index = Some(Box::new(sum));
+    }
+    fn rewrite(expression: &mut Expr) {
+        children(expression, &mut |child| rewrite(child));
+        if let ExprKind::Load { base, index, .. } = &mut expression.kind {
+            rebase(base, index);
+        }
+    }
+    for statement in body.iter_mut() {
+        if let Stmt::Store { place: Place::Memory { base, index, .. }, .. } = statement {
+            rebase(base, index);
+        }
+        match statement {
+            Stmt::If { then_body, else_body, .. } => {
+                row_index_sums(then_body);
+                row_index_sums(else_body);
+            }
+            Stmt::Loop { body, step, effects, .. } => {
+                row_index_sums(body);
+                row_index_sums(step);
+                row_index_sums(effects);
+            }
+            Stmt::Counted { body, .. } => row_index_sums(body),
+            Stmt::Switch { arms, .. } => arms.iter_mut().for_each(|arm| row_index_sums(arm)),
+            _ => {}
+        }
+    }
+    for_each_expression(body, &mut |expression| rewrite(expression));
+}
+
 pub fn member_index_displacements(body: &mut [Stmt]) {
     fn rebase(base: &mut Box<Expr>, index: &mut Option<Box<Expr>>, offset: &mut i32) {
         if index.is_none() {
