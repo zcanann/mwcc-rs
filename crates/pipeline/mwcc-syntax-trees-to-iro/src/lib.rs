@@ -439,7 +439,7 @@ pub fn build_unoptimized(function: &ast::Function, unit: &Unit<'_>) -> Compilati
         body.extend(builder.statement(statement)?);
     }
     for guard in &function.guards {
-        let mut condition = promoted(builder.expression(&guard.condition)?);
+        let mut condition = promoted(builder.tested(&guard.condition)?);
         body.append(&mut builder.pending);
         // (Steps in the condition run before the branch; the tested value is
         // copied first when they change it.)
@@ -1083,6 +1083,16 @@ impl Builder<'_, '_> {
         }
     }
 
+    /// An expression a test reads directly (a compared or truth-tested
+    /// bit-field narrows to its unit at -O0).
+    fn tested(&mut self, expression: &Expression) -> Compilation<Expr> {
+        let outer = self.comparing_field;
+        self.comparing_field = matches!(expression, Expression::BitFieldRead { .. });
+        let result = self.expression(expression);
+        self.comparing_field = outer;
+        result
+    }
+
     /// `target = value` used as a value: the assignment is hoisted and the
     /// assigned value is read from a register.
     fn assignment_value(&mut self, target: &Expression, value: &Expression) -> Compilation<Expr> {
@@ -1293,7 +1303,7 @@ impl Builder<'_, '_> {
             Statement::If { condition, then_body, else_body } => {
                 let testing = matches!(condition, Expression::Assign { .. });
                 let outer = std::mem::replace(&mut self.testing_assignment, testing);
-                let condition = self.expression(condition);
+                let condition = self.tested(condition);
                 self.testing_assignment = outer;
                 Stmt::If {
                     condition: promoted(condition?),
@@ -1494,12 +1504,13 @@ impl Builder<'_, '_> {
             Expression::Binary { operator, left, right } => {
                 let op = binary_op(*operator);
                 let (left_source, right_source) = (left.as_ref(), right.as_ref());
-                let field = |e: &Expression| matches!(e, Expression::BitFieldRead { .. });
-                let outer = self.comparing_field;
-                self.comparing_field = op.is_comparison() && field(left_source);
-                let left = self.expression(left);
-                self.comparing_field = outer;
-                let left = left?;
+                // (A field compared with a literal, or truth-tested.)
+                let literal = |e: &Expression| matches!(e, Expression::IntegerLiteral(_));
+                let left = if (op.is_comparison() && literal(right_source)) || matches!(op, BinaryOp::LogicalAnd | BinaryOp::LogicalOr) {
+                    self.tested(left)?
+                } else {
+                    self.expression(left)?
+                };
                 let right = if matches!(op, BinaryOp::LogicalAnd | BinaryOp::LogicalOr) {
                     let mark = (self.pending.len(), self.post.len());
                     match self.guarded_expression(right) {
@@ -1527,6 +1538,8 @@ impl Builder<'_, '_> {
                         }
                         Err(error) => return Err(error),
                     }
+                } else if op.is_comparison() && literal(left_source) {
+                    self.tested(right)?
                 } else {
                     self.expression(right)?
                 };
@@ -1636,7 +1649,8 @@ impl Builder<'_, '_> {
                 Expr::binary(op, promoted(left), right, ty)
             }
             Expression::Unary { operator, operand } => {
-                let operand = promoted(self.expression(operand)?);
+                let operand = if *operator == UnaryOperator::LogicalNot { self.tested(operand)? } else { self.expression(operand)? };
+                let operand = promoted(operand);
                 match operator {
                     UnaryOperator::Negate => {
                         let ty = promote(operand.ty);
