@@ -62,6 +62,9 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     if std::env::var_os("MWCC_IRO_KEEP_UNREAD_STORES").is_none() {
         passes::remove_unread_frame_stores(&mut built.function);
     }
+    if std::env::var_os("MWCC_IRO_KEEP_UNREAD_CALL_RESULTS").is_none() {
+        passes::unread_call_results(&mut built.function);
+    }
     // (Without an explicit speed goal, -O3/-O4 count in CTR unrolled.)
     if unit.strength_reduction && !unit.branch_preserving && std::env::var_os("MWCC_IRO_NO_PARTIAL_UNROLL").is_none() {
         unroll::unroll_partially(&mut built.function, unit.unrolling);

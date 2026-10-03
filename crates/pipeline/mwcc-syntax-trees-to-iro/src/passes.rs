@@ -979,6 +979,51 @@ pub fn fold_frame_bases(function: &mut Function) {
 /// Stores into a frame object nothing reads (no load of it, its address
 /// never used as a value) are dead: they go, and with them its slot. An
 /// address held only by a variable nothing reads is no use.
+/// `v = f(...)` with `v` (a register local) never read is the call alone.
+pub fn unread_call_results(function: &mut Function) {
+    fn reads(body: &[Stmt], variable: VarId) -> bool {
+        let mut found = false;
+        let mut copy = body.to_vec();
+        for_each_expression(&mut copy, &mut |e| {
+            fn walk(e: &Expr, variable: VarId, found: &mut bool) {
+                if matches!(e.kind, ExprKind::Var(id) if id == variable) {
+                    *found = true;
+                }
+                let mut copy = e.clone();
+                children(&mut copy, &mut |child| walk(child, variable, found));
+            }
+            walk(e, variable, &mut found);
+        });
+        found
+    }
+    fn rewrite(body: &mut [Stmt], unread: &dyn Fn(VarId) -> bool) {
+        for statement in body.iter_mut() {
+            match statement {
+                Stmt::Assign { variable, value } if matches!(value.kind, ExprKind::Call { .. }) && unread(*variable) => {
+                    *statement = Stmt::Eval(value.clone());
+                }
+                Stmt::If { then_body, else_body, .. } => {
+                    rewrite(then_body, unread);
+                    rewrite(else_body, unread);
+                }
+                Stmt::Loop { body, step, .. } => {
+                    rewrite(body, unread);
+                    rewrite(step, unread);
+                }
+                Stmt::Counted { body, .. } => rewrite(body, unread),
+                Stmt::Switch { arms, .. } => arms.iter_mut().for_each(|arm| rewrite(arm, unread)),
+                _ => {}
+            }
+        }
+    }
+    let body = function.body.clone();
+    let variables = function.variables.clone();
+    let unread = |id: VarId| {
+        matches!(variables[id].kind, VariableKind::Local) && variables[id].frame.is_none() && !variables[id].volatile && !reads(&body, id)
+    };
+    rewrite(&mut function.body, &unread);
+}
+
 pub fn remove_unread_frame_stores(function: &mut Function) {
     // `reads[id]`: the variable's value, or the object's address, is used.
     fn expression(e: &Expr, reads: &mut [bool]) {
