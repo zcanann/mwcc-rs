@@ -2435,7 +2435,6 @@ impl Lowerer<'_, '_> {
                         && (std::ptr::eq(expression, self.memory_base as *const Expr)
                             || (std::ptr::eq(expression, self.stored_value as *const Expr)
                                 && !self.unoptimized
-                                && !global.is_function
                                 && !toggle("MWCC_PCODE_UNTIED_STORED_ADDRESSES"))
                             || (self.target_variable(target).is_some() && !toggle("MWCC_PCODE_UNTIED_VARIABLE_ADDRESSES")));
                     self.absolute_address_into(name, target, tied)
