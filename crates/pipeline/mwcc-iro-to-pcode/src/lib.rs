@@ -3827,6 +3827,7 @@ impl Lowerer<'_, '_> {
                         target => target,
                     };
                     let target = target.filter(|&d| d != x);
+                    let mark = self.pcode.register_count(Class::General);
                     // (A base that is itself an insert is built in its own
                     // register.)
                     let (base, _) = if toggle("MWCC_PCODE_NO_INSERT_BASE_TARGET")
@@ -3836,6 +3837,22 @@ impl Lowerer<'_, '_> {
                     } else {
                         self.expression_with_target(right, target)?
                     };
+                    // (A loaded base this insert just made takes the field
+                    // in place.)
+                    if target.is_none()
+                        && refined
+                        && base >= mark
+                        && !self.registers.contains(&Some(base))
+                        && matches!(unpromoted(right).kind, ExprKind::Load { .. })
+                        && !toggle("MWCC_PCODE_NO_INPLACE_INSERT")
+                    {
+                        self.common.retain(|_, entry| entry.0 != base);
+                        self.loaded_globals.retain(|_, entry| entry.0 != base);
+                        let mut insert = PInstr::new(Instruction::RotateAndMaskInsert { a: base, s: x, shift, begin, end });
+                        insert.flags.continues_web = true;
+                        self.emit(insert);
+                        return Ok((base, ty));
+                    }
                     let d = self.result(target);
                     if base != d {
                         self.emit_plain(Instruction::Or { a: d, s: base, b: base });
