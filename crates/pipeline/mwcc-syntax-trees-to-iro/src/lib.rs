@@ -1991,7 +1991,7 @@ impl Builder<'_, '_> {
             return Err(unsupported("call target of this type"));
         }
         let mut values = vec![target];
-        let calling = arguments.iter().any(|argument| format!("{argument:?}").contains("Call"));
+        let calling = arguments.iter().any(|argument| self.calls_outside_expansions(argument));
         self.calling_arguments += usize::from(calling);
         let evaluated: Compilation<()> = (|| {
             for argument in arguments {
@@ -2010,6 +2010,23 @@ impl Builder<'_, '_> {
         Ok(Expr { kind: ExprKind::Call { name: mwcc_iro::INDIRECT_CALL.to_owned(), arguments: values }, ty })
     }
 
+    /// Whether an argument calls a function MWCC does not expand inline
+    /// (an expansion's body runs before the statement either way).
+    fn calls_outside_expansions(&self, argument: &Expression) -> bool {
+        let listing = format!("{argument:?}");
+        if std::env::var_os("MWCC_IRO_EXPANSIONS_COUNT_AS_CALLS").is_some() {
+            return listing.contains("Call");
+        }
+        if listing.contains("CallThrough") || listing.contains("VirtualCall") {
+            return true;
+        }
+        listing.match_indices("Call { name: \"").any(|(at, head)| {
+            let rest = &listing[at + head.len()..];
+            let name = &rest[..rest.find('"').unwrap_or(0)];
+            !self.unit.inline_bodies.contains_key(name)
+        })
+    }
+
     /// A call MWCC expands inline: the arguments are assigned to the
     /// callee's parameters, its body (renumbered into this function's
     /// temporaries) runs before the calling statement, and the call's value
@@ -2022,7 +2039,12 @@ impl Builder<'_, '_> {
         // An expansion that is the returned value leaves its result in a
         // temporary (not a -O0 register variable).
         let direct_return = std::mem::take(&mut self.direct_return);
-        if self.guarded > 0 {
+        // (In call arguments too, when no argument of an enclosing call
+        // calls: the expansion then precedes the calls either way.)
+        let in_arguments = self.guarded == self.argument_guards
+            && self.calling_arguments == 0
+            && std::env::var_os("MWCC_IRO_NO_ARGUMENT_EXPANSIONS").is_none();
+        if self.guarded > 0 && !in_arguments {
             return Err(unsupported("inline expansion in a conditional operand"));
         }
         if callee.parameters.len() != arguments.len() {
@@ -2323,7 +2345,7 @@ impl Builder<'_, '_> {
                 let parameter_types = self.unit.call_parameter_types.get(name).cloned();
                 let mut values = Vec::with_capacity(arguments.len());
                 // (A step hoisted out of an argument stays ahead of no call.)
-                let calling = arguments.iter().any(|argument| format!("{argument:?}").contains("Call"));
+                let calling = arguments.iter().any(|argument| self.calls_outside_expansions(argument));
                 self.calling_arguments += usize::from(calling);
                 for (index, argument) in arguments.iter().enumerate() {
                     // A struct passed by value: a caller copy, by address.
