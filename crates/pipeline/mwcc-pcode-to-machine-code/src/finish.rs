@@ -58,6 +58,7 @@ pub fn finish(
 ) -> Compilation<MachineFunction> {
     prune_unreachable(&mut pcode);
     schedule::TWO_INTEGER_UNITS.with(|flag| flag.set(options.two_integer_units));
+    schedule::FREE_MARKERS.with(|flag| flag.set(options.early_frame && !toggle("MWCC_SCHED_MARKER_AT_CALL")));
     schedule::BASED.with(|flag| flag.set(options.based_disambiguation && std::env::var_os("MWCC_SCHED_NO_BASED").is_none()));
     schedule::FRAME_OBJECTS.with(|objects| *objects.borrow_mut() = pcode.frame_objects.clone());
     schedule::PRIVATE_FRAME_OBJECTS.with(|objects| *objects.borrow_mut() = pcode.private_frame_objects.clone());

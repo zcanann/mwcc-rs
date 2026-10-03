@@ -318,6 +318,11 @@ fn access_bytes(debug: &str) -> i16 {
 }
 
 thread_local! {
+    /// The variadic CR1 marker schedules like any instruction (GC/1.0-1.2.5n).
+    pub static FREE_MARKERS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+thread_local! {
     /// Accesses through one base register at disjoint offsets are
     /// independent (GC/3.x, Wii).
     pub static BASED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
@@ -372,8 +377,10 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
                     // Frame paired-single restores keep the epilogue's order.
                     || (matches!(instruction.instruction, Instruction::PairedSingleQuantizedLoad { a: 1, .. } | Instruction::PairedSingleQuantizedStore { a: 1, .. })
                         && std::env::var_os("MWCC_SCHED_PSQ_FREE").is_none())
-                    // The variadic CR1 marker stays at the call.
-                    || matches!(instruction.instruction, Instruction::ConditionRegisterClear { .. } | Instruction::ConditionRegisterSet { .. })
+                    // The variadic CR1 marker stays at the call (but moves
+                    // freely on the early builds).
+                    || (matches!(instruction.instruction, Instruction::ConditionRegisterClear { .. } | Instruction::ConditionRegisterSet { .. })
+                        && !FREE_MARKERS.with(|flag| flag.get()))
                     || (matches!(instruction.instruction, Instruction::AddImmediate { d: 1, a: 1, .. })
                         && std::env::var_os("MWCC_SCHED_POP_FREE").is_none()),
                 is_store: matches!(memory_of(instruction), Memory::Store(_)),
