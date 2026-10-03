@@ -5161,6 +5161,7 @@ impl Lowerer<'_, '_> {
             instruction.not_r0.push(base);
         }
         instruction.flags.compound = self.compound_store;
+        instruction.flags.nonvolatile_base = matches!(place, Place::Memory { base, .. } if self.shareable_pointer(base).is_some());
         instruction.relocation = relocation;
         instruction.displacement_symbol = self.store_displacement.take();
         if instruction.relocation.is_none() && instruction.displacement_symbol.is_none() && !self.unit.early_frame && !toggle("MWCC_PCODE_NO_GLOBAL_OBJECTS") {

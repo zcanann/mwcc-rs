@@ -64,6 +64,10 @@ enum ObjectKey {
     /// access offset, access bytes). Accesses to disjoint bytes of one
     /// object are independent.
     FrameBytes(i16, i16, i16),
+    /// A D-form access through a base register other than `r1`: (base,
+    /// offset, bytes). Disjoint bytes through one base are independent
+    /// (first pass, `based_disambiguation` builds).
+    Based(u32, i16, i16),
 }
 
 type ObjectKeyRef = ObjectKey;
@@ -214,6 +218,9 @@ fn memory_of(instruction: &PInstr) -> Memory {
                 _ => None,
             }
         }
+        (None, _) if BASED.with(|flag| flag.get()) && instruction.flags.nonvolatile_base && frame_offset(&name).is_none() => {
+            based_access(&name).map(|(base, offset)| ObjectKey::Based(base, offset, access_bytes(&name)))
+        }
         (None, _) => frame_offset(&name).map(|offset| {
             // An access inside a frame object belongs to that object.
             let start = FRAME_OBJECTS.with(|objects| {
@@ -250,6 +257,14 @@ fn may_alias(object: &Option<ObjectKey>, other: &Option<ObjectKey>) -> bool {
         }
         return start == other_start && offset < &(other_offset + other_bytes) && other_offset < &(offset + bytes);
     }
+    if let (Some(ObjectKey::Based(base, offset, bytes)), Some(ObjectKey::Based(other_base, other_offset, other_bytes))) = (object, other) {
+        if alias_all() || base != other_base {
+            return true;
+        }
+        return offset < &(other_offset + other_bytes) && other_offset < &(offset + bytes);
+    }
+    // (A based access is a pointer access to everything else.)
+    let (object, other) = (&unbased(object), &unbased(other));
     let object = &object.clone().map(ObjectKey::whole);
     let other = &other.clone().map(ObjectKey::whole);
     if alias_all() || object == other {
@@ -266,6 +281,14 @@ fn may_alias(object: &Option<ObjectKey>, other: &Option<ObjectKey>) -> bool {
         return false;
     }
     object.is_none() || other.is_none()
+}
+
+/// A based access as a plain pointer access.
+fn unbased(key: &Option<ObjectKey>) -> Option<ObjectKey> {
+    match key {
+        Some(ObjectKey::Based(..)) => None,
+        other => other.clone(),
+    }
 }
 
 impl ObjectKey {
@@ -292,6 +315,23 @@ fn access_bytes(debug: &str) -> i16 {
     } else {
         4
     }
+}
+
+thread_local! {
+    /// Accesses through one base register at disjoint offsets are
+    /// independent (GC/3.x, Wii).
+    pub static BASED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The base register and displacement of a non-`r1` D-form access.
+fn based_access(debug: &str) -> Option<(u32, i16)> {
+    let field = |name: &str| -> Option<&str> {
+        let at = debug.find(&format!(" {name}: "))? + name.len() + 3;
+        Some(debug[at..].split([',', ' ', '}']).next().unwrap_or(""))
+    };
+    let base: u32 = field("a")?.parse().ok()?;
+    let offset: i16 = field("offset")?.parse().ok()?;
+    (base != 1 && base != 0).then_some((base, offset))
 }
 
 /// The displacement of an `r1`-based D-form access, from its debug form.
@@ -413,7 +453,8 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
             Memory::Load(object) => {
                 for (later, later_memory_kind) in &later_memory {
                     if let Memory::Store(other) = later_memory_kind {
-                        if may_alias(object, other) {
+                        // (Through one base, only stores are disambiguated.)
+                        if may_alias(&unbased(object), &unbased(other)) {
                             edges.push((index, *later, latency));
                         }
                     }
@@ -429,7 +470,12 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
                     // address inside a known global.)
                     let tagged_stores = matches!(later_memory_kind, Memory::Store(_))
                         && (instructions[index].object.is_some() || instructions[*later].object.is_some());
-                    if may_alias(object, other) || tagged_stores {
+                    let aliased = if matches!(later_memory_kind, Memory::Store(_)) {
+                        may_alias(object, other)
+                    } else {
+                        may_alias(&unbased(object), &unbased(other))
+                    };
+                    if aliased || tagged_stores {
                         edges.push((index, *later, latency));
                     }
                 }

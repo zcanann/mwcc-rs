@@ -323,6 +323,7 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
             move_record: !request.config.build.label.starts_with("GC/3.") && !request.config.build.label.starts_with("Wii/"),
             delete_dead: behavior.optimization != mwcc_versions::Optimization::O0,
             two_integer_units: behavior.integer_select_style == mwcc_versions::IntegerSelectStyle::Branchless,
+            based_disambiguation: request.config.build.label.starts_with("GC/3.") || request.config.build.label.starts_with("Wii/"),
             unoptimized,
             fold_absolute_into_own_base: request.config.build.label.starts_with("GC/3.")
                 || request.config.build.label.starts_with("Wii/"),

@@ -81,6 +81,9 @@ pub struct InstructionFlags {
     /// definition without reading it (a carry-only `subfc` into the
     /// register the result later takes).
     pub continues_web: bool,
+    /// A store through a pointer that reaches no volatile storage (its
+    /// offsets disambiguate it from other such stores through the same base).
+    pub nonvolatile_base: bool,
 }
 
 /// One PCode instruction.
