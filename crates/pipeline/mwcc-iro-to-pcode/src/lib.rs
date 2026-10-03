@@ -3789,6 +3789,43 @@ impl Lowerer<'_, '_> {
     }
 
     fn signed_less(&mut self, p: u32, q: u32, target: Option<u32>) -> Compilation<(u32, Type)> {
+        // (GC/3.x and Wii fold a small constant operand into the `xor` and
+        // the `and`: `xori`, then `rlwinm`/`andi.`.)
+        let constant_of = |lowerer: &Self, register: u32| {
+            lowerer.constants.iter().find(|&(_, &r)| r == register).map(|(&value, _)| value).filter(|value| (0..=0x7fff).contains(value))
+        };
+        if self.unit.equality_subtracts_constant && self.unit.strength_reduction && !toggle("MWCC_PCODE_NO_IMMEDIATE_LESS") {
+            if let Some(k) = constant_of(self, q) {
+                let x = self.temporary();
+                self.emit_plain(Instruction::XorImmediate { a: x, s: p, immediate: k as u16 });
+                let s = self.temporary();
+                self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: s, s: x, shift: 1 });
+                let a = self.temporary();
+                let mask = k as u32;
+                let contiguous = mask != 0 && (mask >> mask.trailing_zeros()).wrapping_add(1).is_power_of_two();
+                if contiguous {
+                    let begin = mask.leading_zeros() as u8;
+                    let end = 31 - mask.trailing_zeros() as u8;
+                    self.emit_plain(Instruction::RotateAndMask { a, s: x, shift: 0, begin, end });
+                } else {
+                    self.emit_plain(Instruction::AndImmediateRecord { a, s: x, immediate: k as u16 });
+                }
+                let d = self.temporary();
+                self.emit_plain(Instruction::SubtractFrom { d, a, b: s });
+                return self.shift_out(d, 31, target);
+            }
+            if let Some(k) = constant_of(self, p) {
+                let x = self.temporary();
+                self.emit_plain(Instruction::XorImmediate { a: x, s: q, immediate: k as u16 });
+                let s = self.temporary();
+                self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: s, s: x, shift: 1 });
+                let a = self.temporary();
+                self.emit_plain(Instruction::And { a, s: x, b: q });
+                let d = self.temporary();
+                self.emit_plain(Instruction::SubtractFrom { d, a, b: s });
+                return self.shift_out(d, 31, target);
+            }
+        }
         let x = self.temporary();
         self.emit_plain(Instruction::Xor { a: x, s: q, b: p });
         let s = self.temporary();
