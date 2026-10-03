@@ -462,6 +462,7 @@ pub fn finish(
                     | Instruction::LoadByteZero { offset, .. }
                     | Instruction::LoadHalfwordAlgebraic { offset, .. }
                     | Instruction::LoadHalfwordZero { offset, .. } => *offset += frame_size,
+                    Instruction::AddImmediate { immediate, .. } => *immediate += frame_size,
                     _ => {}
                 }
             }

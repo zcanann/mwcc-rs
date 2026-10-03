@@ -353,6 +353,12 @@ pub enum IntrinsicOp {
     Synchronize,
     InstructionSynchronize,
     EnforceInOrderIo,
+    /// `__builtin_va_info(&ap)`: fill a va_list (the operand is its address).
+    VaInfo,
+    /// A variadic definition's caller argument area (`r1 + frame + 8`) and
+    /// register save area (`r1 + 8`) addresses (dummy operand).
+    VaIncoming,
+    VaSaveArea,
 }
 
 #[derive(Debug, Clone)]

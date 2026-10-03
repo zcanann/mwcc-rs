@@ -571,6 +571,14 @@ impl Lowerer<'_, '_> {
         let mut stack_incoming: Vec<(u32, Type, i16)> = Vec::new();
         // (The outgoing argument area comes first.)
         self.frame_cursor += outgoing_argument_bytes(&function.body);
+        // (A variadic definition saves r3-r10 and f1-f8 at r1+8.)
+        if self.unit.variadic {
+            if outgoing_argument_bytes(&function.body) > 0 {
+                return Err(unsupported("a variadic definition with stack arguments"));
+            }
+            self.frame_cursor = 8 + 96;
+            self.pcode.frame_objects.push((8, 104));
+        }
         for id in 0..function.parameter_count {
             let ty = function.variables[id].ty;
             if is_wide(ty) {
@@ -711,6 +719,22 @@ impl Lowerer<'_, '_> {
         self.pcode.referenced_general_parameters = (0..function.parameter_count)
             .filter(|&id| !is_float(function.variables[id].ty) && references(&function.body, id) > 0)
             .count();
+        if self.unit.variadic {
+            // `bne cr1,skip; stfd f1-f8,40..(r1); skip: stw r3-r10,8..(r1)`
+            let skip = self.new_label();
+            self.branch(Instruction::BranchConditionalForward { options: 4, condition_bit: 6, target: 0 }, skip);
+            for register in 1..=8u32 {
+                let mut save = PInstr::new(Instruction::StoreFloatDouble { s: register, a: 1, offset: 32 + 8 * register as i16 });
+                save.flags.side_effect = true;
+                self.emit(save);
+            }
+            self.place_label(skip);
+            for register in 3..=10u32 {
+                let mut save = PInstr::new(Instruction::StoreWord { s: register, a: 1, offset: 8 + 4 * (register as i16 - 3) });
+                save.flags.side_effect = true;
+                self.emit(save);
+            }
+        }
         for (virtual_register, physical) in wide_incoming {
             let mut copy = PInstr::new(Instruction::Or { a: virtual_register, s: physical, b: physical });
             copy.flags.entry_copy = true;
@@ -753,6 +777,9 @@ impl Lowerer<'_, '_> {
         let words = (0..self.function.parameter_count).filter(|&id| !is_float(self.function.variables[id].ty)).count();
         if words > 8 || outgoing_argument_bytes(&self.function.body) > 0 {
             return Err(unsupported("-O0 stack-passed arguments"));
+        }
+        if self.unit.variadic {
+            return Err(unsupported("a -O0 variadic definition"));
         }
         if self.function.variables.iter().any(|variable| is_wide(variable.ty)) || is_wide(self.function.return_type) {
             return Err(unsupported("-O0 wide values"));
@@ -1491,6 +1518,26 @@ impl Lowerer<'_, '_> {
                 ExprKind::Call { name, arguments } => self.call(name, arguments, Type::Void, None).map(|_| ()),
                 // A discarded value without effects (`(void)x;`).
                 ExprKind::Int(_) | ExprKind::Var(_) => Ok(()),
+                // `__builtin_va_info(&ap)`: the named register counts, the
+                // caller's argument area and the register save area.
+                ExprKind::Idiom(Idiom::Unary(IntrinsicOp::VaInfo, address)) => {
+                    let (a, _) = self.expression(address)?;
+                    let parameters = 0..self.function.parameter_count;
+                    let generals = parameters.clone().filter(|&id| !is_float(self.function.variables[id].ty)).count() as i64;
+                    let floats = parameters.filter(|&id| is_float(self.function.variables[id].ty)).count() as i64;
+                    let counts = self.temporary();
+                    self.load_constant(counts, (generals << 24) | (floats << 16))?;
+                    self.emit_based(Instruction::StoreWord { s: counts, a, offset: 0 }, a);
+                    let incoming = self.temporary();
+                    let mut addi = PInstr::new(Instruction::AddImmediate { d: incoming, a: 1, immediate: 8 });
+                    addi.displacement_symbol = Some("@@incoming".to_owned());
+                    self.emit(addi);
+                    self.emit_based(Instruction::StoreWord { s: incoming, a, offset: 4 }, a);
+                    let saved = self.temporary();
+                    self.emit_plain(Instruction::AddImmediate { d: saved, a: 1, immediate: 8 });
+                    self.emit_based(Instruction::StoreWord { s: saved, a, offset: 8 }, a);
+                    Ok(())
+                }
                 // A barrier: kept, in order against everything.
                 ExprKind::Idiom(Idiom::Unary(
                     op @ (IntrinsicOp::Synchronize | IntrinsicOp::InstructionSynchronize | IntrinsicOp::EnforceInOrderIo),
@@ -3430,6 +3477,16 @@ impl Lowerer<'_, '_> {
                 let d = self.result_for(ty, target);
                 self.emit_plain(Instruction::FloatAbsolute { d, b });
                 Ok((d, ty))
+            }
+            Idiom::Unary(IntrinsicOp::VaInfo, _) => Err(unsupported("a va_info value")),
+            Idiom::Unary(op @ (IntrinsicOp::VaIncoming | IntrinsicOp::VaSaveArea), _) => {
+                let d = self.result(target);
+                let mut addi = PInstr::new(Instruction::AddImmediate { d, a: 1, immediate: 8 });
+                if *op == IntrinsicOp::VaIncoming {
+                    addi.displacement_symbol = Some("@@incoming".to_owned());
+                }
+                self.emit(addi);
+                Ok((d, Type::Pointer(mwcc_iro::Pointee::Char)))
             }
             Idiom::Unary(IntrinsicOp::Synchronize | IntrinsicOp::InstructionSynchronize | IntrinsicOp::EnforceInOrderIo, _) => {
                 Err(unsupported("a barrier's value"))

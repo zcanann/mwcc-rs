@@ -176,7 +176,7 @@ fn lower_function_body(
     }
     // A variadic definition needs its register save area and va_list
     // support, which are not modeled.
-    if variadic_definitions.contains(&function.name) {
+    if variadic_definitions.contains(&function.name) && std::env::var_os("MWCC_PCODE_NO_VARIADIC_DEFINITIONS").is_some() {
         return Err(Diagnostic::error("PCode lowering: a variadic function definition (not yet supported)"));
     }
     // Whether MWCC expands a call inline: None (an ordinary call), or

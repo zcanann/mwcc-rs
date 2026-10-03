@@ -2325,6 +2325,34 @@ impl Builder<'_, '_> {
     }
 
     fn call(&mut self, name: &str, arguments: &[Expression], discarded: bool) -> Compilation<Expr> {
+        // A variadic definition's `__builtin_va_info(&ap)`.
+        if let ("__builtin_va_info", [list]) = (name, arguments) {
+            if !self.unit.variadic {
+                return Err(unsupported("__builtin_va_info outside a variadic definition"));
+            }
+            let address = self.expression(list)?;
+            // (Three words: the named register counts, the caller's argument
+            // area, the register save area.)
+            let parameters: Vec<Type> =
+                self.variables.iter().filter(|variable| variable.kind == VariableKind::Parameter).map(|variable| variable.ty).collect();
+            let generals = parameters.iter().filter(|&&ty| !is_float(ty)).count() as i64;
+            let floats = parameters.iter().filter(|&&ty| is_float(ty)).count() as i64;
+            let pointer = Type::Pointer(mwcc_iro::Pointee::Char);
+            let area = |op| Expr { kind: ExprKind::Idiom(Idiom::Unary(op, Box::new(Expr::int(0)))), ty: pointer };
+            for (offset, value) in [
+                (0, Expr::typed_int((generals << 24) | (floats << 16), Type::Int)),
+                (4, area(IntrinsicOp::VaIncoming)),
+                (8, area(IntrinsicOp::VaSaveArea)),
+            ] {
+                self.pending.push(Stmt::Store {
+                    place: Place::Memory { base: Box::new(address.clone()), index: None, offset },
+                    ty: if offset == 0 { Type::Int } else { pointer },
+                    value,
+                    compound: false,
+                });
+            }
+            return Ok(Expr::int(0));
+        }
         let direct_return = std::mem::take(&mut self.direct_return);
         // A call through a pointer variable (local, parameter or global).
         let pointer_variable = self.names.contains_key(name)
@@ -2376,6 +2404,14 @@ impl Builder<'_, '_> {
                     match parameter_types.as_ref().and_then(|types| types.get(index)).copied() {
                         Some(Type::Struct { size, align }) if !variadic || index < parameter_types.as_ref().map_or(0, Vec::len) => {
                             values.push(self.struct_argument(argument, size, align)?);
+                            continue;
+                        }
+                        // (A struct-array object (`va_list ap`) passed to a pointer
+                        // parameter decays to its address.)
+                        Some(Type::StructPointer { .. } | Type::Pointer(_))
+                            if self.struct_valued(argument) && std::env::var_os("MWCC_IRO_NO_STRUCT_DECAY").is_none() =>
+                        {
+                            values.push(self.address_of(argument)?);
                             continue;
                         }
                         _ if self.struct_valued(argument) => return Err(unsupported("struct argument without a struct parameter")),
