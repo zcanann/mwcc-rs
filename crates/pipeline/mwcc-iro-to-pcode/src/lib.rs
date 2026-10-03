@@ -1000,14 +1000,19 @@ impl Lowerer<'_, '_> {
                 general += 2;
             } else {
                 // (A loaded argument goes straight to its register.)
-                let direct = matches!(argument.kind, ExprKind::Load { .. }) && !toggle("MWCC_PCODE_TAIL_ARGUMENT_TEMPORARIES");
+                let direct = (matches!(argument.kind, ExprKind::Load { .. })
+                    || (!toggle("MWCC_PCODE_NO_TAIL_COMPUTED_TARGETS")
+                        && !plain_variable(argument)
+                        && argument.as_int().is_none()
+                        && !matches!(argument.kind, ExprKind::GlobalAddress(..) | ExprKind::LocalAddress(_) | ExprKind::StringAddress(_))))
+                    && !toggle("MWCC_PCODE_TAIL_ARGUMENT_TEMPORARIES");
                 let value = if direct { self.expression_with_target(argument, Some(general))?.0 } else { self.expression(argument)?.0 };
                 placed.push((general, value));
                 general += 1;
             }
         }
         for &(register, value) in &placed {
-            if value != register || !is_wide_call(call) {
+            if value != register {
                 self.emit_plain(Instruction::Or { a: register, s: value, b: value });
             }
         }
