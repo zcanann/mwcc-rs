@@ -644,7 +644,12 @@ impl Lowerer<'_, '_> {
                 None if early
                     && ((function.variables[id].initialized
                         && assignments(&function.body, id) <= 1)
-                        || references(&function.body, id) == assignments(&function.body, id)) =>
+                        || references(&function.body, id) == assignments(&function.body, id)
+                        // (Or set once and read once: propagated into its use.)
+                        || (assignments(&function.body, id) == 1
+                            && references(&function.body, id) == 2
+                            && propagated_into_next(&function.body, id)
+                            && !toggle("MWCC_PCODE_NO_EARLY_PROPAGATED_SLOTS"))) =>
                 {
                     let width = width(function.variables[id].ty);
                     self.frame_cursor = self.frame_cursor.div_ceil(width) * width + width;
@@ -5865,6 +5870,20 @@ fn makes_calls(body: &[Stmt]) -> bool {
         Stmt::Switch { value, arms, .. } => expression(value) || arms.iter().any(|arm| makes_calls(arm)),
         Stmt::Break | Stmt::Continue | Stmt::Goto(_) | Stmt::Label(_) => false,
     })
+}
+
+/// A top-level `v = value` (no call) read only by the next statement, which
+/// makes no call: MWCC propagates the value into that use.
+fn propagated_into_next(body: &[Stmt], variable: VarId) -> bool {
+    let Some(at) = body.iter().position(|statement| matches!(statement, Stmt::Assign { variable: assigned, .. } if *assigned == variable)) else {
+        return false;
+    };
+    let Stmt::Assign { value, .. } = &body[at] else { return false };
+    let Some(next) = body.get(at + 1) else { return false };
+    !format!("{value:?}").contains("Call {")
+        && !format!("{next:?}").contains("Call {")
+        && references(std::slice::from_ref(next), variable) == 1
+        && matches!(next, Stmt::Assign { .. } | Stmt::Store { .. } | Stmt::SetReturn(_) | Stmt::Return(_) | Stmt::Eval(_))
 }
 
 /// How many times the body reads or assigns `variable`.
