@@ -1701,7 +1701,10 @@ fn reassociate_sum(expression: &mut Expr) {
         }
         return;
     }
-    if x.as_var().is_some() {
+    // (Loads too: `(a->x + a->y) + a->z` = `a->x + (a->y + a->z)`.)
+    let loaded = |e: &Expr| matches!(e.kind, ExprKind::Load { .. } | ExprKind::Global(_))
+        && std::env::var_os("MWCC_IRO_NO_LOAD_REASSOCIATION").is_none();
+    if x.as_var().is_some() || (loaded(&x) && loaded(&y) && loaded(&right)) {
         *expression = Expr::binary(BinaryOp::Add, x, Expr::binary(BinaryOp::Add, y, right, ty), ty);
     } else if y.as_var().is_some() {
         *expression = Expr::binary(BinaryOp::Add, y, Expr::binary(BinaryOp::Add, x, right, ty), ty);
@@ -2996,17 +2999,23 @@ pub fn forward_single_uses(function: &mut Function) {
             && matches!(value.kind, ExprKind::Load { .. })
             && !toggle_env("MWCC_IRO_NO_FORWARDED_RMW_BASE");
         let uses = if through { 2 } else { 1 };
+        // (A value returned by the next statement, which only reads: loads
+        // reorder freely among themselves.)
+        let returned = matches!(&function.body[index + 1], Stmt::SetReturn(_) | Stmt::Return(Some(_)))
+            && reads_memory(&value)
+            && !format!("{:?}", function.body[index + 1]).contains("Call {")
+            && !toggle_env("MWCC_IRO_NO_FORWARD_INTO_RETURNS");
         let eligible = matches!(candidate.kind, VariableKind::Local)
             && candidate.frame.is_none()
             && !candidate.volatile
             && !candidate.raw
             && !format!("{value:?}").contains("Call {")
             // (Nor a read of memory past another: their order holds.)
-            && (through || !(reads_memory(&value) && reads_memory_in(&function.body[index + 1])))
+            && (through || returned || !(reads_memory(&value) && reads_memory_in(&function.body[index + 1])))
             && !value.mentions(variable)
             && reads(&function.body, variable) == uses
             && reads(std::slice::from_ref(&function.body[index + 1]), variable) == uses
-            && matches!(&function.body[index + 1], Stmt::Store { .. } | Stmt::Assign { .. } | Stmt::Eval(_))
+            && (returned || matches!(&function.body[index + 1], Stmt::Store { .. } | Stmt::Assign { .. } | Stmt::Eval(_)))
             && function.body.iter().filter(|s| matches!(s, Stmt::Assign { variable: v, .. } if *v == variable)).count() == 1;
         if !eligible {
             index += 1;
