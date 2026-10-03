@@ -668,3 +668,7 @@ impl Function {
         out
     }
 }
+
+/// The type a bit-field read gives its right-shift count literal (a marker:
+/// the count's type has no other meaning).
+pub const BIT_FIELD_SHIFT: Type = Type::UnsignedChar;

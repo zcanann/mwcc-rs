@@ -1625,7 +1625,8 @@ impl Builder<'_, '_> {
                 }
             }
             Expression::BitFieldRead { extracted, promoted_type, .. } => {
-                let value = self.expression(extracted)?;
+                let mut value = self.expression(extracted)?;
+                mark_bit_field_shift(&mut value);
                 converted(promoted(value), *promoted_type)
             }
             Expression::MemberAddress { base, offset, element, index_stride: None } => {
@@ -2598,3 +2599,15 @@ fn references_variable(body: &[Stmt], variable: VarId) -> bool {
     found
 }
 
+
+/// Marks a bit-field read's extraction: its right-shift count literal is
+/// typed `UnsignedChar` (see `mwcc_iro::BIT_FIELD_SHIFT`), so the lowering
+/// can extract the field as MWCC does.
+fn mark_bit_field_shift(expression: &mut Expr) {
+    match &mut expression.kind {
+        ExprKind::Binary(BinaryOp::ShiftRight, _, count) if count.as_int().is_some() => count.ty = mwcc_iro::BIT_FIELD_SHIFT,
+        ExprKind::Binary(_, left, _) => mark_bit_field_shift(left),
+        ExprKind::Convert(operand) => mark_bit_field_shift(operand),
+        _ => {}
+    }
+}

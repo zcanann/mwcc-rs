@@ -80,6 +80,7 @@ pub fn lower(
         memory_base: 0,
         addressing: false,
         returned: 0,
+        testing: 0,
         returning: false,
         homes: vec![None; function.variables.len()],
         loops: Vec::new(),
@@ -169,6 +170,8 @@ struct Lowerer<'a, 'u> {
     addressing: bool,
     /// The integer return value being lowered (by address).
     returned: usize,
+    /// Lowering a branch condition (its values are tested).
+    testing: usize,
     /// The binary operation being lowered is the return value.
     returning: bool,
     /// Frame home (`offset(r1)`) of a parameter kept in memory.
@@ -1711,7 +1714,16 @@ impl Lowerer<'_, '_> {
     // ------------------------------------------------------------ branches
 
     /// Branch to `label` when `condition` evaluates to `when`.
+    /// Branch to `label` when `condition` evaluates to `when` (its values
+    /// computed as tested ones).
     fn branch_on(&mut self, condition: &Expr, when: bool, label: Label) -> Compilation<()> {
+        self.testing += 1;
+        let result = self.branch_on_inner(condition, when, label);
+        self.testing -= 1;
+        result
+    }
+
+    fn branch_on_inner(&mut self, condition: &Expr, when: bool, label: Label) -> Compilation<()> {
         match &condition.kind {
             ExprKind::Binary(BinaryOp::LogicalAnd, left, right) => {
                 if when {
@@ -3772,6 +3784,30 @@ impl Lowerer<'_, '_> {
                 }
             }
             if let Some((operand, shift, begin, end)) = shift_mask(left, right) {
+                // (GC/1.0-1.2.5n extract a loaded bit-field value in place;
+                // not a tested one.)
+                if self.unit.early_frame
+                    && self.testing == 0
+                    && matches!(unpromoted(operand).kind, ExprKind::Load { .. })
+                    && matches!(&left.kind, ExprKind::Binary(BinaryOp::ShiftRight, _, count) if count.ty == mwcc_iro::BIT_FIELD_SHIFT)
+                    && !toggle("MWCC_PCODE_NO_INPLACE_FIELD")
+                {
+                    // (Only a register this load just made; the caches that
+                    // would reuse the loaded value forget it.)
+                    let mark = self.pcode.register_count(Class::General);
+                    let (a, _) = self.expression(operand)?;
+                    if a >= mark && !self.registers.contains(&Some(a)) {
+                        self.common.retain(|_, entry| entry.0 != a);
+                        self.loaded_globals.retain(|_, entry| entry.0 != a);
+                        let mut extract = PInstr::new(Instruction::RotateAndMask { a, s: a, shift, begin, end });
+                        extract.flags.continues_web = true;
+                        self.emit(extract);
+                        return Ok((a, ty));
+                    }
+                    let d = self.result(target);
+                    self.emit_plain(Instruction::RotateAndMask { a: d, s: a, shift, begin, end });
+                    return Ok((d, ty));
+                }
                 let (a, _) = self.expression(operand)?;
                 let d = self.result(target);
                 self.emit_plain(Instruction::RotateAndMask { a: d, s: a, shift, begin, end });
