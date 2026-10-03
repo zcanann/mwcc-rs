@@ -1623,7 +1623,10 @@ pub fn algebra(expression: &mut Expr) {
             (Some(0), None) => (op.mirror(), &**right),
             _ => (*op, &**left),
         };
-        let word = mwcc_iro::is_unsigned(value.ty) && !mwcc_iro::is_narrow(value.ty);
+        // (Or a zero-extended unsigned narrow value.)
+        let word = (mwcc_iro::is_unsigned(value.ty) && !mwcc_iro::is_narrow(value.ty))
+            || (matches!(&value.kind, ExprKind::Convert(inner) if matches!(inner.ty, Type::UnsignedChar | Type::UnsignedShort))
+                && std::env::var_os("MWCC_IRO_NO_NARROW_NONZERO").is_none());
         if word && (left.as_int() == Some(0)) != (right.as_int() == Some(0)) {
             match relation {
                 BinaryOp::Greater => *op = BinaryOp::NotEqual,
