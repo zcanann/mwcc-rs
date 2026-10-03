@@ -412,6 +412,32 @@ impl Lowerer<'_, '_> {
             self.load_constant(3, constant >> 32)?;
             return Ok(());
         }
+        // (A widened word: its low word copied first, the high one made in
+        // r3 from it.)
+        let word = match &value.kind {
+            ExprKind::Convert(inner) if !is_wide(inner.ty) => Some(inner.as_ref()),
+            _ if !is_wide(value.ty) => Some(value),
+            _ => None,
+        };
+        if let Some(inner) = word {
+            if is_general_word(promote(inner.ty)) && !is_narrow(inner.ty) && !toggle("MWCC_PCODE_WIDE_RETURN_HIGH_FIRST") {
+                // (A computed value lands in r4 itself.)
+                let (x, _) = if matches!(inner.kind, ExprKind::Var(_)) { self.expression(inner)? } else { self.expression_with_target(inner, Some(4))? };
+                // (GC/1.0-1.2.5n copy with `addi`.)
+                if x == 4 {
+                } else if self.unit.early_frame {
+                    self.emit_based(Instruction::AddImmediate { d: 4, a: x, immediate: 0 }, x);
+                } else {
+                    self.emit_plain(Instruction::Or { a: 4, s: x, b: x });
+                }
+                if !is_unsigned(promote(inner.ty)) {
+                    self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: 3, s: x, shift: 31 });
+                } else {
+                    self.load_constant(3, 0)?;
+                }
+                return Ok(());
+            }
+        }
         let (high, low) = self.wide(value)?;
         self.emit_plain(Instruction::Or { a: 4, s: low, b: low });
         self.emit_plain(Instruction::Or { a: 3, s: high, b: high });
