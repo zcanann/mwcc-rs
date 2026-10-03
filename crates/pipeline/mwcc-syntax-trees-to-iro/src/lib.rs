@@ -40,6 +40,7 @@ pub struct Built {
 /// Build the IR for `function` and run the IRO passes.
 pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     passes::FLOAT_NEGATION_ALGEBRA.with(|flag| flag.set(unit.cancels_float_negations));
+    passes::UNSIGNED_MAXIMA.with(|flag| flag.set(unit.forwards_stores));
     let mut built = build_unoptimized(function, unit)?;
     if unit.zero_wide_subtrahends && std::env::var_os("MWCC_IRO_NO_SHARED_SUBTRAHENDS").is_none() {
         passes::shared_wide_subtrahends(&mut built.function.body);
@@ -105,6 +106,7 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
 /// front end's literal folding, and every `return` leaves directly.
 pub fn build_unoptimized_compile(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     passes::FLOAT_NEGATION_ALGEBRA.with(|flag| flag.set(unit.cancels_float_negations));
+    passes::UNSIGNED_MAXIMA.with(|flag| flag.set(false));
     let mut built = build_unoptimized(function, unit)?;
     if unit.cancels_float_negations && std::env::var_os("MWCC_IRO_NO_FLOAT_NEGATIONS").is_none() {
         passes::float_negations(&mut built.function.body);

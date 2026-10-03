@@ -394,7 +394,7 @@ pub fn run_unoptimized(function: &mut Function) {
                     fold_wide(*op, left, right, expression.ty).map(|value| Expr::typed_int(value, expression.ty))
                 }
                 (Some(_), Some(_)) => fold_typed(*op, left, right).map(|value| Expr::typed_int(value, expression.ty)),
-                _ => None,
+                _ => trivial_comparison(*op, left, right, false).map(|value| Expr::typed_int(value, expression.ty)),
             },
             _ => None,
         };
@@ -450,7 +450,25 @@ fn logical_constants(expression: &mut Expr) {
     };
     if let Some(value) = folded {
         *expression = Expr::typed_int(value, expression.ty);
+        return;
     }
+    // (A constant that does not decide leaves the other operand's truth.)
+    if std::env::var_os("MWCC_IRO_NO_LOGICAL_IDENTITIES").is_some() {
+        return;
+    }
+    let other = match (left.as_int(), right.as_int()) {
+        (Some(_), None) => right,
+        (None, Some(_)) => left,
+        _ => return,
+    };
+    let truth = match &other.kind {
+        ExprKind::Binary(op, ..) if op.is_comparison() || matches!(op, BinaryOp::LogicalAnd | BinaryOp::LogicalOr) => (**other).clone(),
+        _ if mwcc_iro::is_general_word(other.ty) && !mwcc_iro::is_wide(other.ty) => {
+            Expr::binary(BinaryOp::NotEqual, (**other).clone(), Expr::typed_int(0, other.ty), expression.ty)
+        }
+        _ => return,
+    };
+    *expression = Expr { ty: expression.ty, ..truth };
 }
 
 // ---------------------------------------------------------------- unrolling
@@ -1277,6 +1295,11 @@ fn fold_once(expression: &Expr) -> Option<Expr> {
                 _ => e.clone(),
             };
             return Some(Expr { kind: ExprKind::Binary(*op, Box::new(wrap(left)), Box::new(wrap(right))), ty: expression.ty });
+        }
+    }
+    if let ExprKind::Binary(op, left, right) = &expression.kind {
+        if let Some(value) = trivial_comparison(*op, left, right, UNSIGNED_MAXIMA.with(|flag| flag.get())) {
+            return Some(Expr::typed_int(value, expression.ty));
         }
     }
     match &expression.kind {
@@ -3173,6 +3196,60 @@ fn reads_memory_in(statement: &Stmt) -> bool {
 thread_local! {
     /// Floating negations fold into sums (GC/1.x-2.x); set per build.
     pub static FLOAT_NEGATION_ALGEBRA: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    /// A comparison against an unsigned operand's largest value folds
+    /// (optimized GC/3.x and Wii); set per build.
+    pub static UNSIGNED_MAXIMA: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// A comparison an unsigned operand decides alone: against 0 (`u >= 0`,
+/// `u < 0`), and, with `maxima`, against its type's largest value (`u <= ~0u`).
+pub fn trivial_comparison(op: BinaryOp, left: &Expr, right: &Expr, maxima: bool) -> Option<i64> {
+    if std::env::var_os("MWCC_IRO_NO_TRIVIAL_COMPARISONS").is_some() {
+        return None;
+    }
+    // (The operand's largest value: an unsigned word, or a promoted
+    // unsigned narrow value.)
+    let largest = |e: &Expr| -> Option<i64> {
+        let ty = match &e.kind {
+            ExprKind::Convert(inner) if matches!(e.ty, Type::Int | Type::UnsignedInt) && matches!(inner.ty, Type::UnsignedChar | Type::UnsignedShort) => inner.ty,
+            _ => e.ty,
+        };
+        match ty {
+            Type::UnsignedInt => Some(0xffff_ffff),
+            Type::UnsignedShort => Some(0xffff),
+            Type::UnsignedChar => Some(0xff),
+            _ => None,
+        }
+    };
+    // (Constant on the right.)
+    let (op, value, constant) = match (left.as_int(), right.as_int()) {
+        (None, Some(constant)) => (op, left, constant),
+        (Some(constant), None) => (
+            match op {
+                BinaryOp::Less => BinaryOp::Greater,
+                BinaryOp::Greater => BinaryOp::Less,
+                BinaryOp::LessEqual => BinaryOp::GreaterEqual,
+                BinaryOp::GreaterEqual => BinaryOp::LessEqual,
+                _ => return None,
+            },
+            right,
+            constant,
+        ),
+        _ => return None,
+    };
+    let largest = largest(value)?;
+    if !speculable(value) {
+        return None;
+    }
+    // (A word's constant compares as its 32 bits.)
+    let constant = if largest == 0xffff_ffff { constant & 0xffff_ffff } else { constant };
+    match op {
+        BinaryOp::GreaterEqual if constant == 0 => Some(1),
+        BinaryOp::Less if constant == 0 => Some(0),
+        BinaryOp::LessEqual if maxima && constant == largest => Some(1),
+        BinaryOp::Greater if maxima && constant == largest => Some(0),
+        _ => None,
+    }
 }
 
 /// A member array element (`p->words[i]`): MWCC adds the scaled index to the

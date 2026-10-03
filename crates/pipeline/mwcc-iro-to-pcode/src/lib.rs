@@ -2035,7 +2035,10 @@ impl Lowerer<'_, '_> {
         let non_negative = right.as_int().map_or(is_unsigned_narrow(unpromoted(right).ty), |value| value >= 0);
         let unsigned = is_unsigned(promote(left_type))
             || is_unsigned(promote(right.ty))
-            || is_unsigned_narrow(unpromoted(left).ty) && non_negative;
+            || is_unsigned_narrow(unpromoted(left).ty)
+                && non_negative
+                // (Against a constant past a logical immediate: signed.)
+                && (right.as_int().is_none_or(|value| value <= 0xffff) || toggle("MWCC_PCODE_NARROW_WIDE_CONSTANTS_LOGICAL"));
         // A compare of a just-computed value with 0 is its record form.
         let equality = matches!(op, BinaryOp::Equal | BinaryOp::NotEqual);
         if right.as_int() == Some(0) && (!unsigned || equality) && early.is_none() && self.record_form(a) {
@@ -2049,6 +2052,22 @@ impl Lowerer<'_, '_> {
             }
             (Some(value), true) if u16::try_from(value).is_ok() => {
                 self.emit_plain(Instruction::CompareLogicalWordImmediate { a, immediate: value as u16 });
+            }
+            // (An unsigned equality with a wider constant subtracts its high
+            // half: `addis t,a,-hi; cmplwi t,lo`.)
+            // (Not a pointer's: `li; cmplw`.)
+            (Some(value), true)
+                if equality
+                    && early.is_none()
+                    && matches!(promote(left_type), Type::UnsignedInt)
+                    && !toggle("MWCC_PCODE_NO_EQUALITY_HIGH_HALVES") =>
+            {
+                let value = value as u32;
+                let high = self.temporary();
+                let mut addis = PInstr::new(Instruction::AddImmediateShifted { d: high, a, immediate: ((value >> 16) as u16 as i16).wrapping_neg() });
+                addis.not_r0.push(a);
+                self.emit(addis);
+                self.emit_plain(Instruction::CompareLogicalWordImmediate { a: high, immediate: value as u16 });
             }
             _ => {
                 let b = match early {
