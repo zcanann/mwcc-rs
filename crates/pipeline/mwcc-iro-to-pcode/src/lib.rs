@@ -5884,7 +5884,7 @@ impl Lowerer<'_, '_> {
         let escaping = self.escaping.clone();
         // (GC/1.0-1.2.5n keep a global's address value too.)
         // (Not an anchored one: its anchor is kept instead.)
-        let keep_addresses = self.unit.address_bases_across_calls && !toggle("MWCC_PCODE_NO_ADDRESSES_ACROSS_CALLS");
+        let keep_addresses = self.unit.early_frame && !toggle("MWCC_PCODE_NO_ADDRESSES_ACROSS_CALLS");
         let anchored: Vec<String> = self.anchored.keys().map(|name| format!("&@{name}")).collect();
         self.common.retain(|key, _| {
             (keep_anchors && key.starts_with("&@..."))

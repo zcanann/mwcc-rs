@@ -3606,3 +3606,164 @@ pub fn dead_stores(body: &mut Vec<Stmt>, removable: &dyn Fn(&Place) -> bool) {
         }
     }
 }
+
+/// GC/1.0-1.2.5n form a global's address once, on entry, when the function
+/// uses it as a memory base on both sides of a call: the address lives in
+/// a saved register for the whole function.
+pub fn hoist_call_spanning_addresses(function: &mut Function, eligible: &dyn Fn(&str) -> bool) {
+    // (Program-order events: a use of a global, as memory or not, or a call.)
+    enum Event {
+        Use(String, bool),
+        Call,
+    }
+    fn expression(e: &Expr, events: &mut Vec<Event>) {
+        match &e.kind {
+            ExprKind::Call { arguments, .. } => {
+                for argument in arguments {
+                    expression(argument, events);
+                }
+                events.push(Event::Call);
+                return;
+            }
+            ExprKind::Global(name) => events.push(Event::Use(name.clone(), true)),
+            ExprKind::Load { base, index, .. } => {
+                if let ExprKind::GlobalAddress(name) = &base.kind {
+                    events.push(Event::Use(name.clone(), true));
+                } else {
+                    expression(base, events);
+                }
+                if let Some(index) = index {
+                    expression(index, events);
+                }
+                return;
+            }
+            ExprKind::GlobalAddress(name) => events.push(Event::Use(name.clone(), false)),
+            _ => {}
+        }
+        let mut copy = e.clone();
+        children(&mut copy, &mut |child| expression(child, events));
+    }
+    fn statements(body: &[Stmt], events: &mut Vec<Event>) {
+        for statement in body {
+            match statement {
+                Stmt::Assign { value, .. } | Stmt::Eval(value) | Stmt::SetReturn(value) => expression(value, events),
+                Stmt::Return(Some(value)) => expression(value, events),
+                Stmt::Store { place, value, .. } => {
+                    expression(value, events);
+                    match place {
+                        Place::Global(name) => events.push(Event::Use(name.clone(), true)),
+                        Place::Memory { base, index, .. } => {
+                            if let ExprKind::GlobalAddress(name) = &base.kind {
+                                events.push(Event::Use(name.clone(), true));
+                            } else {
+                                expression(base, events);
+                            }
+                            if let Some(index) = index {
+                                expression(index, events);
+                            }
+                        }
+                    }
+                }
+                Stmt::If { condition, then_body, else_body } => {
+                    expression(condition, events);
+                    // (A branch that returns calls nothing the rest follows.)
+                    for arm in [then_body, else_body] {
+                        let mut inner = Vec::new();
+                        statements(arm, &mut inner);
+                        if matches!(arm.last(), Some(Stmt::Return(_))) {
+                            inner.retain(|event| !matches!(event, Event::Call));
+                        }
+                        events.extend(inner);
+                    }
+                }
+                Stmt::Loop { condition, body, step, effects, .. } => {
+                    if let Some(condition) = condition {
+                        expression(condition, events);
+                    }
+                    statements(body, events);
+                    statements(step, events);
+                    statements(effects, events);
+                }
+                Stmt::Counted { body, .. } => statements(body, events),
+                Stmt::Switch { value, arms, .. } => {
+                    expression(value, events);
+                    arms.iter().for_each(|arm| statements(arm, events));
+                }
+                _ => {}
+            }
+        }
+    }
+    if has_label(&function.body) {
+        return;
+    }
+    let mut events = Vec::new();
+    statements(&function.body, &mut events);
+    // A memory use, a call, then another use (or a use, a call, then a
+    // memory use).
+    let mut names: Vec<String> = Vec::new();
+    for (position, event) in events.iter().enumerate() {
+        let Event::Use(name, _) = event else { continue };
+        if names.contains(name) || !eligible(name) {
+            continue;
+        }
+        let uses: Vec<(usize, bool)> = events
+            .iter()
+            .enumerate()
+            .skip(position)
+            .filter_map(|(at, e)| match e {
+                Event::Use(other, memory) if other == name => Some((at, *memory)),
+                _ => None,
+            })
+            .collect();
+        let memory = uses.iter().any(|&(_, memory)| memory);
+        let spans = uses.windows(2).any(|pair| events[pair[0].0..pair[1].0].iter().any(|e| matches!(e, Event::Call)));
+        if memory && spans {
+            names.push(name.clone());
+        }
+    }
+    for name in names {
+        let ty = Type::Pointer(mwcc_iro::Pointee::Int);
+        let variable = function.add_temporary(ty);
+        let base = Expr { kind: ExprKind::Var(variable), ty };
+        fn rewrite(e: &mut Expr, name: &str, base: &Expr) {
+            match &mut e.kind {
+                ExprKind::GlobalAddress(other) if other == name => {
+                    *e = Expr { kind: base.kind.clone(), ty: e.ty };
+                    return;
+                }
+                ExprKind::Global(other) if other == name => {
+                    *e = Expr { kind: ExprKind::Load { base: Box::new(base.clone()), index: None, offset: 0 }, ty: e.ty };
+                    return;
+                }
+                _ => {}
+            }
+            children(e, &mut |child| rewrite(child, name, base));
+        }
+        fn places(body: &mut [Stmt], name: &str, base: &Expr) {
+            for statement in body {
+                match statement {
+                    Stmt::Store { place, .. } => {
+                        if matches!(place, Place::Global(other) if other == name) {
+                            *place = Place::Memory { base: Box::new(base.clone()), index: None, offset: 0 };
+                        }
+                    }
+                    Stmt::If { then_body, else_body, .. } => {
+                        places(then_body, name, base);
+                        places(else_body, name, base);
+                    }
+                    Stmt::Loop { body, step, effects, .. } => {
+                        places(body, name, base);
+                        places(step, name, base);
+                        places(effects, name, base);
+                    }
+                    Stmt::Counted { body, .. } => places(body, name, base),
+                    Stmt::Switch { arms, .. } => arms.iter_mut().for_each(|arm| places(arm, name, base)),
+                    _ => {}
+                }
+            }
+        }
+        places(&mut function.body, &name, &base);
+        for_each_expression(&mut function.body, &mut |e| rewrite(e, &name, &base));
+        function.body.insert(0, Stmt::Assign { variable, value: Expr { kind: ExprKind::GlobalAddress(name.clone()), ty } });
+    }
+}

@@ -1205,6 +1205,10 @@ fn fold_absolute_displacements(pcode: &mut PCodeFunction, into_own_base: bool) {
                 Instruction::StoreFloatDouble { s, a, offset: 0 } if a == address => {
                     Some(Instruction::StoreFloatDoubleWithUpdate { s, a, offset: 0 })
                 }
+                // (A word load too: `lis r; lwzu d,@l(r)`.)
+                Instruction::LoadWord { d, a, offset: 0 } if a == address && d != address && !toggle("MWCC_PCODE_NO_UPDATE_FIRST_LOADS") => {
+                    Some(Instruction::LoadWordWithUpdate { d, a, offset: 0 })
+                }
                 _ => None,
             };
             match (folded, updated) {
