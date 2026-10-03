@@ -5217,7 +5217,36 @@ impl Lowerer<'_, '_> {
         if !private {
             self.forget_loaded_globals(false);
             let escaping = self.escaping.clone();
-            self.common.retain(|key, _| !key.starts_with('*') || private_frame_key(key, &escaping));
+            // (GC/3.x: loads through the same non-volatile pointer at other
+            // bytes stay valid.)
+            let disjoint = match place {
+                Place::Memory { base, index: None, offset } if self.unit.forwards_stores && !toggle("MWCC_PCODE_NO_DISJOINT_LOAD_CACHE") => {
+                    self.shareable_pointer(base).map(|id| (id, *offset, mwcc_iro::width(ty) as i32))
+                }
+                _ => None,
+            };
+            self.common.retain(|key, _| {
+                if let Some((id, offset, bytes)) = disjoint {
+                    let mut parts = key.trim_start_matches('*').split(':');
+                    if let (Some(pointer), Some(at), Some(kind)) = (parts.next(), parts.next(), parts.next()) {
+                        if pointer.parse::<usize>().ok() == Some(id) {
+                            if let Ok(at) = at.parse::<i32>() {
+                                let size = match kind {
+                                    "word" | "Float" | "Int" | "UnsignedInt" => 4,
+                                    "Double" => 8,
+                                    "Short" | "UnsignedShort" => 2,
+                                    "Char" | "UnsignedChar" => 1,
+                                    _ => i32::MAX / 2,
+                                };
+                                if key.starts_with('*') && (at + size <= offset || offset + bytes <= at) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+                !key.starts_with('*') || private_frame_key(key, &escaping)
+            });
         } else if let Place::Memory { base, .. } = place {
             // (A private frame object's own known loads change.)
             if let ExprKind::LocalAddress(id) = base.kind {
