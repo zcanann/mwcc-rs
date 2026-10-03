@@ -4873,6 +4873,8 @@ impl Lowerer<'_, '_> {
                 Some(m) => m,
                 None => self.expression(&Expr::int(i64::from(magic)))?.0,
             };
+            // (GC/3.x numbers the sign before a product it adjusts at -O0.)
+            let early_sign = (self.unoptimized && self.unit.forwards_stores && (magic < 0 || shift > 0) && !toggle("MWCC_PCODE_O0_PRODUCT_FIRST")).then(|| self.temporary());
             let mut value = self.temporary();
             self.emit_plain(Instruction::MultiplyHighWord { d: value, a: m, b: x });
             // The product is adjusted in place.
@@ -4887,7 +4889,10 @@ impl Lowerer<'_, '_> {
                 self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: shifted, s: value, shift: shift as u8 });
                 value = shifted;
             }
-            let sign = self.temporary();
+            let sign = match early_sign {
+                Some(sign) => sign,
+                None => self.temporary(),
+            };
             self.emit_plain(Instruction::ShiftRightLogicalImmediate { a: sign, s: value, shift: 31 });
             self.emit_plain(Instruction::Add { d: quotient, a: value, b: sign });
         }
