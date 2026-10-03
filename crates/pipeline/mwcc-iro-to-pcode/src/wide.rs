@@ -311,8 +311,14 @@ impl Lowerer<'_, '_> {
             }
             // (An indexed one adds the index to the base first.)
             ExprKind::Load { base, index: Some(index), offset } if !super::toggle("MWCC_PCODE_NO_INDEXED_WIDE_LOADS") => {
-                let (pointer, _) = self.base_expression(base)?;
-                let (scaled, _) = self.expression(index)?;
+                // (The index first, but for GC/3.x and Wii.)
+                let (scaled, pointer) = if self.unit.tied_halves {
+                    let (pointer, _) = self.expression(base)?;
+                    (self.expression(index)?.0, pointer)
+                } else {
+                    let (scaled, _) = self.expression(index)?;
+                    (scaled, self.expression(base)?.0)
+                };
                 let sum = self.temporary();
                 self.emit_plain(Instruction::Add { d: sum, a: pointer, b: scaled });
                 let (address, displacement) = self.displacement(sum, *offset)?;
@@ -405,8 +411,14 @@ impl Lowerer<'_, '_> {
             }
             // (An indexed one adds the index to the base first.)
             Place::Memory { base, index: Some(index), offset } if !super::toggle("MWCC_PCODE_NO_INDEXED_WIDE_STORES") => {
-                let (pointer, _) = self.base_expression(base)?;
-                let (scaled, _) = self.expression(index)?;
+                // (The index first, but for GC/3.x and Wii.)
+                let (scaled, pointer) = if self.unit.tied_halves {
+                    let (pointer, _) = self.expression(base)?;
+                    (self.expression(index)?.0, pointer)
+                } else {
+                    let (scaled, _) = self.expression(index)?;
+                    (scaled, self.expression(base)?.0)
+                };
                 let sum = self.temporary();
                 self.emit_plain(Instruction::Add { d: sum, a: pointer, b: scaled });
                 let (address, displacement) = self.displacement(sum, *offset)?;
