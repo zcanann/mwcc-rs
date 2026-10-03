@@ -961,6 +961,25 @@ impl Lowerer<'_, '_> {
             [Stmt::SetReturn(call)] if call.ty == function.return_type => call,
             _ => return Ok(false),
         };
+        // (A floating value converted to unsigned: its runtime helper.)
+        let helper;
+        let call = match &call.kind {
+            ExprKind::Convert(operand)
+                if call.ty == Type::UnsignedInt && is_float(operand.ty) && !toggle("MWCC_PCODE_NO_FP2UNSIGNED_TAIL_CALLS") =>
+            {
+                let argument = if operand.ty == Type::Double {
+                    (**operand).clone()
+                } else {
+                    Expr { kind: ExprKind::Convert(operand.clone()), ty: Type::Double }
+                };
+                helper = Expr {
+                    kind: ExprKind::Call { name: "__cvt_fp2unsigned".to_string(), arguments: vec![argument] },
+                    ty: Type::UnsignedInt,
+                };
+                &helper
+            }
+            _ => call,
+        };
         let ExprKind::Call { arguments, .. } = &call.kind else { return Ok(false) };
         // (An argument that calls needs a frame: no sibling call.)
         if arguments.iter().any(|argument| format!("{:?}", argument.kind).contains("Call {")) {
@@ -985,14 +1004,25 @@ impl Lowerer<'_, '_> {
         if arguments.iter().filter(|argument| !is_float(argument.ty)).count() > 8 {
             return Err(unsupported("a tail call with stack arguments"));
         }
-        if arguments.iter().any(|argument| is_float(argument.ty)) || is_float(call.ty) {
+        let floating = arguments.iter().any(|argument| is_float(argument.ty));
+        if (floating || is_float(call.ty)) && toggle("MWCC_PCODE_NO_FLOAT_TAIL_CALLS") {
             return Err(unsupported("floating sibling call"));
         }
+        if floating && self.unit.variadic_callees.contains(name) {
+            return Err(unsupported("floating variadic sibling call"));
+        }
+        let mut floats: Vec<(u32, u32)> = Vec::new();
         // (A wide argument takes an odd-aligned pair.)
         let mut placed: Vec<(u32, u32)> = Vec::new();
         let mut general = FIRST_GENERAL_ARGUMENT;
         for argument in arguments {
-            if is_wide(argument.ty) {
+            if is_float(argument.ty) {
+                if floats.len() == 13 {
+                    return Err(unsupported("a tail call with floating stack arguments"));
+                }
+                let (value, _) = self.expression(argument)?;
+                floats.push((floats.len() as u32 + 1, value));
+            } else if is_wide(argument.ty) {
                 general += 1 - general % 2;
                 let (high, low) = self.wide(argument)?;
                 placed.push((general, high));
@@ -1016,6 +1046,11 @@ impl Lowerer<'_, '_> {
                 self.emit_plain(Instruction::Or { a: register, s: value, b: value });
             }
         }
+        for &(register, value) in &floats {
+            if value != register {
+                self.emit_plain(Instruction::FloatMove { d: register, b: value });
+            }
+        }
         if let Some(callee) = callee {
             let (address, _) = self.expression_with_target(callee, Some(12))?;
             if address != 12 {
@@ -1024,6 +1059,7 @@ impl Lowerer<'_, '_> {
             self.emit_plain(Instruction::MoveToCountRegister { s: 12 });
             let mut branch = PInstr::new(Instruction::BranchToCountRegister);
             branch.implicit_uses = placed.iter().map(|&(register, _)| Register::general(register)).collect();
+            branch.implicit_uses.extend(floats.iter().map(|&(register, _)| Register::float(register)));
             branch.implicit_uses.push(Register::general(12));
             self.emit(branch);
             self.start_block(false);
@@ -1039,6 +1075,7 @@ impl Lowerer<'_, '_> {
             target: RelocationTarget::External(name.clone()),
         });
         branch.implicit_uses = placed.iter().map(|&(register, _)| Register::general(register)).collect();
+        branch.implicit_uses.extend(floats.iter().map(|&(register, _)| Register::float(register)));
         self.emit(branch);
         self.start_block(false);
         Ok(())
