@@ -1034,8 +1034,20 @@ impl Lowerer<'_, '_> {
         let mut floats: Vec<(u32, u32)> = Vec::new();
         // (A wide argument takes an odd-aligned pair.)
         let mut placed: Vec<(u32, u32)> = Vec::new();
+        // (GC/3.x loads a loaded word after the copies.)
+        let mut late: Vec<(u32, &Expr)> = Vec::new();
         let mut general = FIRST_GENERAL_ARGUMENT;
         for argument in arguments {
+            if self.unit.forwards_stores
+                && !is_float(argument.ty)
+                && !is_wide(argument.ty)
+                && matches!(argument.kind, ExprKind::Load { .. })
+                && !toggle("MWCC_PCODE_EARLY_ARGUMENT_LOADS")
+            {
+                late.push((general, argument));
+                general += 1;
+                continue;
+            }
             if is_float(argument.ty) {
                 if floats.len() == 13 {
                     return Err(unsupported("a tail call with floating stack arguments"));
@@ -1070,6 +1082,13 @@ impl Lowerer<'_, '_> {
             if value != register {
                 self.emit_plain(Instruction::FloatMove { d: register, b: value });
             }
+        }
+        for (register, argument) in late {
+            let (value, _) = self.expression_with_target(argument, Some(register))?;
+            if value != register {
+                self.emit_plain(Instruction::Or { a: register, s: value, b: value });
+            }
+            placed.push((register, register));
         }
         if let Some(callee) = callee {
             let (address, _) = self.expression_with_target(callee, Some(12))?;
@@ -5686,7 +5705,16 @@ impl Lowerer<'_, '_> {
                     continue;
                 }
                 // A constant argument is loaded straight into its register.
+                // (GC/3.x loads a loaded word after the other arguments'
+                // copies.)
+                let late_load = self.unit.forwards_stores
+                    && !self.unoptimized
+                    && !pass
+                    && !is_float(argument.ty)
+                    && matches!(argument.kind, ExprKind::Load { .. })
+                    && !toggle("MWCC_PCODE_EARLY_ARGUMENT_LOADS");
                 values[index] = match argument.as_int() {
+                    _ if late_load => None,
                     Some(_) if !self.unoptimized => None,
                     None if string && !self.unoptimized && self.small_string(argument) => None,
                     _ if direct => {
