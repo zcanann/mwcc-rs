@@ -816,7 +816,19 @@ impl Builder<'_, '_> {
         if shift == 0 && width == bits {
             return Ok(vec![Stmt::Store { place, ty, value: assigned(value, ty), compound: false }]);
         }
-        let old = self.expression(storage)?;
+        // (A base that calls is evaluated once, for both the read and the
+        // write of the unit.)
+        let (place, old) = match place {
+            Place::Memory { base, index, offset } if format!("{place:?}").contains("Call {") => {
+                let ty_base = base.ty;
+                let id = self.temporary(ty_base);
+                self.pending.push(Stmt::Assign { variable: id, value: *base });
+                let base = Box::new(Expr { kind: ExprKind::Var(id), ty: ty_base });
+                let old = Expr { kind: ExprKind::Load { base: base.clone(), index: index.clone(), offset }, ty };
+                (Place::Memory { base, index, offset }, old)
+            }
+            place => (place, self.expression(storage)?),
+        };
         let begin = 31 - (shift + width - 1);
         let end = 31 - shift;
         let inserted = Expr {
