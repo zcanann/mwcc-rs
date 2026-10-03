@@ -73,6 +73,9 @@ pub struct InstructionFlags {
     pub in_order: bool,
     /// A parameter's copy out of its argument register on entry.
     pub entry_copy: bool,
+    /// A copy GC/1.0-1.2.5n emit as `addi d,s,0` (an address just formed,
+    /// copied into its argument register).
+    pub addi_copy: bool,
     /// The store of a compound update (`x op= v`).
     pub compound: bool,
     /// Part of a struct/image copy (expanded after prescheduling).

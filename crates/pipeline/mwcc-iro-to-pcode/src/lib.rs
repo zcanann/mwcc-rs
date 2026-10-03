@@ -5669,6 +5669,14 @@ impl Lowerer<'_, '_> {
             .map(|argument| !toggle("MWCC_PCODE_ARGUMENTS_IN_ORDER") && format!("{:?}", argument.kind).contains("Call {"))
             .collect();
         let mut values = vec![None; arguments.len()];
+        // (A global's address formed for this call, not reused.)
+        let fresh_addresses: Vec<bool> = arguments
+            .iter()
+            .map(|argument| match &argument.kind {
+                ExprKind::GlobalAddress(name) => !self.common.contains_key(&format!("&@{name}")),
+                _ => false,
+            })
+            .collect();
         // (A wide argument's register pair.)
         let mut wide_values: Vec<Option<(u32, u32)>> = vec![None; arguments.len()];
         // -O0 evaluates an argument without calls straight into its
@@ -5808,6 +5816,11 @@ impl Lowerer<'_, '_> {
             }
             match value {
                 Some(value) if value == register => {}
+                Some(value) if fresh_addresses[index] && self.unit.early_frame && !toggle("MWCC_PCODE_NO_ADDRESS_ADDI_COPIES") => {
+                    let mut copy = PInstr::new(Instruction::Or { a: register, s: value, b: value });
+                    copy.flags.addi_copy = true;
+                    self.emit(copy);
+                }
                 Some(value) => self.emit_plain(Instruction::Or { a: register, s: value, b: value }),
                 None => match arguments[index].as_int() {
                     Some(constant) => self.load_constant(register, constant)?,
@@ -5869,8 +5882,13 @@ impl Lowerer<'_, '_> {
         // (A section anchor stays live across the call.)
         let keep_anchors = !toggle("MWCC_PCODE_ANCHOR_AFTER_CALL");
         let escaping = self.escaping.clone();
+        // (GC/1.0-1.2.5n keep a global's address value too.)
+        // (Not an anchored one: its anchor is kept instead.)
+        let keep_addresses = self.unit.address_bases_across_calls && !toggle("MWCC_PCODE_NO_ADDRESSES_ACROSS_CALLS");
+        let anchored: Vec<String> = self.anchored.keys().map(|name| format!("&@{name}")).collect();
         self.common.retain(|key, _| {
             (keep_anchors && key.starts_with("&@..."))
+                || (keep_addresses && key.starts_with("&@") && !anchored.contains(key))
                 || (!key.starts_with('&') && !key.contains('@') && !key.starts_with('*'))
                 // (A frame object no pointer reaches survives the call.)
                 || private_frame_key(key, &escaping)

@@ -125,6 +125,16 @@ pub fn finish(
     if options.early_frame && !options.unoptimized && !toggle("MWCC_PCODE_NO_ARGUMENT_ADDI_COPIES") {
         argument_addi_copies(&mut pcode);
     }
+    // (And copies marked so when lowered.)
+    if options.early_frame {
+        for instruction in pcode.blocks.iter_mut().flat_map(|block| block.instructions.iter_mut()) {
+            if let (true, Instruction::Or { a, s, b }) = (instruction.flags.addi_copy, instruction.instruction.clone()) {
+                if s == b && s != 0 && a != s {
+                    instruction.instruction = Instruction::AddImmediate { d: a, a: s, immediate: 0 };
+                }
+            }
+        }
+    }
     // Saved FPRs: the contiguous range from f31 down to the lowest used.
     // (Also FPRs assigned directly: `-O0` register variables.)
     let direct_float = pcode
