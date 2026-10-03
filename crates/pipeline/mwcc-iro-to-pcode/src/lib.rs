@@ -104,6 +104,7 @@ pub fn lower(
         conversion_base: None,
         conversion_block: None,
         conversion_count: 0,
+        rounding_slots: Vec::new(),
         frame_cursor: 8,
         reserved_end: 0,
         escaped_frame_objects: Vec::new(),
@@ -216,6 +217,8 @@ struct Lowerer<'a, 'u> {
     conversion_base: Option<u32>,
     conversion_block: Option<usize>,
     conversion_count: u32,
+    /// Optimized GC/1.3-on float-to-integer slots, reused block by block.
+    rounding_slots: Vec<i16>,
     /// Next free byte of the local area (r1-relative).
     frame_cursor: u32,
     /// The end of an early frame's reservation when it holds no objects.
@@ -1194,8 +1197,9 @@ impl Lowerer<'_, '_> {
         Ok((adjusted, low))
     }
 
-    /// A fresh 8-byte, 8-aligned slot for an integer/floating conversion.
-    fn conversion_slot(&mut self) -> i16 {
+    /// A fresh 8-byte, 8-aligned slot for an integer/floating conversion
+    /// (`rounding`: a float-to-integer one).
+    fn conversion_slot(&mut self, rounding: bool) -> i16 {
         // -O0 reuses its conversion slots in each basic block (the k-th
         // conversion of a block takes the k-th slot).
         if self.unoptimized && !toggle("MWCC_PCODE_O0_FRESH_CONVERSION_SLOTS") {
@@ -1212,8 +1216,26 @@ impl Lowerer<'_, '_> {
             }
             return offset as i16;
         }
+        // (Optimized GC/1.3-on code reuses its float-to-integer slots the
+        // same way; integer-to-float ones are always fresh.)
+        let reused = rounding && !self.unit.early_frame && !toggle("MWCC_PCODE_FRESH_ROUNDING_SLOTS");
+        let k = if reused {
+            let block = self.current_block();
+            let k = if self.conversion_block == Some(block) { self.conversion_count } else { 0 };
+            self.conversion_block = Some(block);
+            self.conversion_count = k + 1;
+            if let Some(&slot) = self.rounding_slots.get(k as usize) {
+                return slot;
+            }
+            Some(k)
+        } else {
+            None
+        };
         let offset = self.frame_cursor.div_ceil(8) * 8;
         self.frame_cursor = offset + 8;
+        if k.is_some() {
+            self.rounding_slots.push(offset as i16);
+        }
         self.pcode.frame_objects.push((offset as i16, offset as i16 + 8));
         self.pcode.private_frame_objects.push(offset as i16);
         // (Its two words are stored independently.)
@@ -3140,7 +3162,7 @@ impl Lowerer<'_, '_> {
                     let wide = if signed { Type::Int } else { Type::UnsignedInt };
                     self.expression(&Expr { kind: ExprKind::Convert(Box::new(operand.clone())), ty: wide })?
                 };
-                let slot = self.conversion_slot();
+                let slot = self.conversion_slot(false);
                 if self.unoptimized {
                     if narrow_unsigned {
                         return Err(unsupported("narrow unsigned conversion at -O0"));
@@ -3206,7 +3228,7 @@ impl Lowerer<'_, '_> {
             // To a narrow type: as to int; the word is the raw narrow value.
             (from, to) if is_float(from) && is_narrow(to) && !toggle("MWCC_PCODE_NO_FLOAT_TO_NARROW") => {
                 let (source, _) = self.expression(operand)?;
-                let slot = self.conversion_slot();
+                let slot = self.conversion_slot(true);
                 let rounded = self.fresh(Type::Double);
                 self.emit_plain(Instruction::ConvertToIntegerWordZero { d: rounded, b: source });
                 self.emit_plain(Instruction::StoreFloatDouble { s: rounded, a: 1, offset: slot });
@@ -3217,7 +3239,7 @@ impl Lowerer<'_, '_> {
             (from, to) if is_float(from) && matches!(to, Type::Int) => {
                 // fctiwz; stfd; lwz the low word.
                 let (source, _) = self.expression(operand)?;
-                let slot = self.conversion_slot();
+                let slot = self.conversion_slot(true);
                 let rounded = self.fresh(Type::Double);
                 self.emit_plain(Instruction::ConvertToIntegerWordZero { d: rounded, b: source });
                 self.emit_plain(Instruction::StoreFloatDouble { s: rounded, a: 1, offset: slot });
