@@ -406,6 +406,29 @@ pub fn finish(
                 Instruction::BranchToLinkRegister;
         }
     }
+    // A conditional branch over a bare `blr` to the code right after it is
+    // the opposite conditional return (`ble L; blr; L:` -> `bgtlr`).
+    if frameless_exit && !toggle("MWCC_PCODE_NO_SKIPPED_RETURN") {
+        for block in 0..pcode.blocks.len().saturating_sub(2) {
+            let Some(Instruction::BranchConditionalForward { options, condition_bit, target }) =
+                pcode.blocks[block].instructions.last().map(|instruction| instruction.instruction.clone())
+            else {
+                continue;
+            };
+            let inverted = match options {
+                12 => 4,
+                4 => 12,
+                _ => continue,
+            };
+            let returns = matches!(pcode.blocks[block + 1].instructions.as_slice(),
+                [only] if matches!(only.instruction, Instruction::BranchToLinkRegister));
+            if returns && target == block + 2 {
+                pcode.blocks[block].instructions.last_mut().expect("branch").instruction =
+                    Instruction::BranchConditionalToLinkRegister { options: inverted, condition_bit };
+                pcode.blocks[block + 1].instructions.clear();
+            }
+        }
+    }
     let mut starts = Vec::with_capacity(pcode.blocks.len() + 1);
     let mut position = 0;
     for block in &pcode.blocks {
