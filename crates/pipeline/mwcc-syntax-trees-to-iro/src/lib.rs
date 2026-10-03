@@ -76,6 +76,14 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
         }
     }
     if unit.strength_reduction && std::env::var_os("MWCC_IRO_NO_STRENGTH_REDUCTION").is_none() {
+        strength::set_loop_addresses(
+            unit.globals
+                .iter()
+                .filter(|(_, global)| !global.small_data && !global.is_function)
+                .map(|(name, _)| name.clone())
+                .collect(),
+            unit.reassociates_sums,
+        );
         strength::strength_reduce(&mut built.function, !unit.branch_preserving, unit.unrolling);
         strength::remove_dead_inductions(&mut built.function);
         strength::remove_dead_counted_updates(&mut built.function);

@@ -143,7 +143,9 @@ fn statements(body: &mut Vec<Stmt>, function: &mut Function, fold_start: bool) {
             }
             Stmt::Loop { body: inner, .. } | Stmt::Counted { body: inner, .. } => {
                 inherit(&Vec::new());
-                statements(inner, function, fold_start)
+                LOOP_DEPTH.with(|depth| depth.set(depth.get() + 1));
+                statements(inner, function, fold_start);
+                LOOP_DEPTH.with(|depth| depth.set(depth.get() - 1));
             }
             Stmt::Switch { arms, .. } => {
                 inherit(&Vec::new());
@@ -197,6 +199,11 @@ fn statements(body: &mut Vec<Stmt>, function: &mut Function, fold_start: bool) {
             }
             _ => (Vec::new(), false),
         };
+        // (And the global addresses it still uses, ahead of those.)
+        let addresses = match &body[index] {
+            Stmt::Loop { .. } | Stmt::Counted { .. } => hoist_loop_addresses(&mut body[index], function),
+            _ => Vec::new(),
+        };
         let count = inits.len() + hoisted.len();
         // (Before the induction variable's own initialization when they
         // do not read it; hoisted constants before that.)
@@ -212,6 +219,7 @@ fn statements(body: &mut Vec<Stmt>, function: &mut Function, fold_start: bool) {
         }
         // (Right before the loop.)
         let loop_at = index + count;
+        let invariants: Vec<Stmt> = addresses.into_iter().chain(invariants).collect();
         let invariant_count = invariants.len();
         for (offset, invariant) in invariants.into_iter().enumerate() {
             body.insert(loop_at + offset, invariant);
@@ -1080,4 +1088,118 @@ pub fn remove_dead_counted_updates(function: &mut Function) {
     let mut body = std::mem::take(&mut function.body);
     walk(&mut body, &|_| false, false);
     function.body = body;
+}
+
+thread_local! {
+    /// The globals whose addresses loop code motion takes out of a loop
+    /// (absolute: neither small data nor functions), and whether a bare
+    /// address value goes too (GC/1.x-2.x; GC/3.x and Wii keep it).
+    static LOOP_ADDRESSES: std::cell::RefCell<(std::collections::HashSet<String>, bool)> =
+        std::cell::RefCell::new((std::collections::HashSet::new(), false));
+    static LOOP_DEPTH: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Set the globals [`hoist_loop_addresses`] takes out of loops.
+pub fn set_loop_addresses(names: std::collections::HashSet<String>, values: bool) {
+    LOOP_ADDRESSES.with(|cell| *cell.borrow_mut() = (names, values));
+}
+
+/// A global's address used in an outermost loop is computed once before it
+/// (`&g`, and `&g + k` before GC/3.x, as a memory base or a value).
+fn hoist_loop_addresses(statement: &mut Stmt, function: &mut Function) -> Vec<Stmt> {
+    if LOOP_DEPTH.with(|depth| depth.get()) > 0 || std::env::var_os("MWCC_IRO_NO_LOOP_ADDRESSES").is_some() {
+        return Vec::new();
+    }
+    struct Hoister<'a> {
+        names: &'a std::collections::HashSet<String>,
+        values: bool,
+        found: Vec<(String, Expr, VarId)>,
+        function: &'a mut Function,
+    }
+    impl Hoister<'_> {
+        fn replace(&mut self, e: &mut Expr) {
+            let key = format!("{e:?}");
+            let variable = match self.found.iter().find(|(k, ..)| *k == key) {
+                Some(&(_, _, variable)) => variable,
+                None => {
+                    let variable = self.function.add_temporary(e.ty);
+                    self.found.push((key, e.clone(), variable));
+                    variable
+                }
+            };
+            *e = Expr { kind: ExprKind::Var(variable), ty: e.ty };
+        }
+        fn hoisted(&self, e: &Expr) -> bool {
+            matches!(&e.kind, ExprKind::GlobalAddress(name) if self.names.contains(name))
+        }
+        fn expression(&mut self, e: &mut Expr, base: bool) {
+            if self.hoisted(e) {
+                if base || self.values {
+                    self.replace(e);
+                }
+                return;
+            }
+            match &mut e.kind {
+                ExprKind::Binary(BinaryOp::Add, left, right) if self.hoisted(left) && right.as_int().is_some() => {
+                    if self.values {
+                        self.replace(e);
+                    } else {
+                        self.replace(left);
+                    }
+                }
+                ExprKind::Load { base, index, .. } => {
+                    self.expression(base, true);
+                    if let Some(index) = index {
+                        self.expression(index, false);
+                    }
+                }
+                _ => crate::passes::children(e, &mut |child| self.expression(child, false)),
+            }
+        }
+        fn statements(&mut self, body: &mut [Stmt]) {
+            for statement in body {
+                match statement {
+                    Stmt::Assign { value, .. } | Stmt::Eval(value) | Stmt::SetReturn(value) => self.expression(value, false),
+                    Stmt::Return(Some(value)) => self.expression(value, false),
+                    Stmt::Store { place, value, .. } => {
+                        if let Place::Memory { base, index, .. } = place {
+                            self.expression(base, true);
+                            if let Some(index) = index {
+                                self.expression(index, false);
+                            }
+                        }
+                        self.expression(value, false);
+                    }
+                    Stmt::If { condition, then_body, else_body } => {
+                        self.expression(condition, false);
+                        self.statements(then_body);
+                        self.statements(else_body);
+                    }
+                    Stmt::Loop { condition, body, step, effects, .. } => {
+                        if let Some(condition) = condition {
+                            self.expression(condition, false);
+                        }
+                        self.statements(body);
+                        self.statements(step);
+                        self.statements(effects);
+                    }
+                    Stmt::Counted { body, .. } => self.statements(body),
+                    Stmt::Switch { value, arms, .. } => {
+                        self.expression(value, false);
+                        arms.iter_mut().for_each(|arm| self.statements(arm));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    LOOP_ADDRESSES.with(|cell| {
+        let (names, values) = &*cell.borrow();
+        if names.is_empty() {
+            return Vec::new();
+        }
+        let mut hoister = Hoister { names, values: *values, found: Vec::new(), function };
+        hoister.statements(std::slice::from_mut(statement));
+        hoister.found.into_iter().map(|(_, value, variable)| Stmt::Assign { variable, value }).collect()
+    })
 }
