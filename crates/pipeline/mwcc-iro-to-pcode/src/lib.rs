@@ -974,6 +974,14 @@ impl Lowerer<'_, '_> {
     /// `b callee` after marshaling the arguments of a call in tail position.
     fn tail_call(&mut self, call: &Expr) -> Compilation<()> {
         let ExprKind::Call { name, arguments } = &call.kind else { return Err(unsupported("tail call")) };
+        // (An indirect callee: its address first, the target through r12 and
+        // CTR, `bctr`.)
+        let (callee, arguments) = if name == mwcc_iro::INDIRECT_CALL {
+            let Some((callee, rest)) = arguments.split_first() else { return Err(unsupported("indirect tail call")) };
+            (Some(callee), rest)
+        } else {
+            (None, arguments.as_slice())
+        };
         if arguments.iter().filter(|argument| !is_float(argument.ty)).count() > 8 {
             return Err(unsupported("a tail call with stack arguments"));
         }
@@ -999,6 +1007,19 @@ impl Lowerer<'_, '_> {
             if value != register || !is_wide_call(call) {
                 self.emit_plain(Instruction::Or { a: register, s: value, b: value });
             }
+        }
+        if let Some(callee) = callee {
+            let (address, _) = self.expression_with_target(callee, Some(12))?;
+            if address != 12 {
+                self.emit_plain(Instruction::Or { a: 12, s: address, b: address });
+            }
+            self.emit_plain(Instruction::MoveToCountRegister { s: 12 });
+            let mut branch = PInstr::new(Instruction::BranchToCountRegister);
+            branch.implicit_uses = placed.iter().map(|&(register, _)| Register::general(register)).collect();
+            branch.implicit_uses.push(Register::general(12));
+            self.emit(branch);
+            self.start_block(false);
+            return Ok(());
         }
         // A variadic callee still gets its CR1 marker (no floating arguments).
         if self.unit.variadic_callees.contains(name) && !toggle("MWCC_PCODE_NO_TAIL_VARIADIC_MARKER") {
@@ -5873,6 +5894,8 @@ fn wide_constant(expression: &Expr) -> Option<(i16, i16)> {
 /// and no call anywhere else.
 fn only_tail_calls(body: &[Stmt], at_end: bool, return_type: Type) -> bool {
     let terminal_call = |call: &Expr| match &call.kind {
+        // (An indirect callee only as a frameless sibling call.)
+        ExprKind::Call { name, .. } if name == mwcc_iro::INDIRECT_CALL => false,
         ExprKind::Call { arguments, .. } => {
             !arguments.iter().any(|argument| contains_call(argument) || is_float(argument.ty))
                 && !is_float(call.ty)
