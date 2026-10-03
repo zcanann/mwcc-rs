@@ -4363,6 +4363,39 @@ impl Lowerer<'_, '_> {
                 if divisor < 0 || k == 0 {
                     return Err(unsupported("remainder by this power of two"));
                 }
+                // (GC/1.0-1.2.5n: x - (x / 2^k << k), `srawi; addze; slwi;
+                // subfc`.)
+                // (The quotient in place in one register.)
+                if self.unit.early_frame && !toggle("MWCC_PCODE_EARLY_ROTATED_REMAINDER") {
+                    let (x, _) = self.expression(left)?;
+                    let quotient = self.temporary();
+                    self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: quotient, s: x, shift: k });
+                    for instruction in [
+                        Instruction::AddToZeroExtended { d: quotient, a: quotient },
+                        Instruction::ShiftLeftImmediate { a: quotient, s: quotient, shift: k },
+                    ] {
+                        let mut step = PInstr::new(instruction);
+                        step.flags.in_place = true;
+                        self.emit(step);
+                    }
+                    let d = self.result(target);
+                    self.emit_plain(Instruction::SubtractFromCarrying { d, a: quotient, b: x });
+                    return Ok((d, ty));
+                }
+                // (`x % 2`: the low bit, sign-adjusted: `srwi s,x,31; clrlwi
+                // t,x,31; xor t,t,s; subf d,s,t`.)
+                if k == 1 && !toggle("MWCC_PCODE_ROTATED_REMAINDER_TWO") {
+                    let (x, _) = self.expression(left)?;
+                    let sign = self.temporary();
+                    self.emit_plain(Instruction::ShiftRightLogicalImmediate { a: sign, s: x, shift: 31 });
+                    let bit = self.temporary();
+                    self.emit_plain(Instruction::RotateAndMask { a: bit, s: x, shift: 0, begin: 31, end: 31 });
+                    let flipped = self.temporary();
+                    self.emit_plain(Instruction::Xor { a: flipped, s: bit, b: sign });
+                    let d = self.result(target);
+                    self.emit_plain(Instruction::SubtractFrom { d, a: sign, b: flipped });
+                    return Ok((d, ty));
+                }
                 // slwi t,x,32-k; srwi s,x,31; subf t,s,t; rotlwi t,t,k; add d,t,s
                 let (x, _) = self.expression(left)?;
                 let low = self.temporary();
