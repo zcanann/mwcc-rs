@@ -1443,7 +1443,19 @@ impl Builder<'_, '_> {
             (Some(_), None) if right.as_int() == Some(0) && std::env::var_os("MWCC_IRO_NO_ZERO_OFFSET_FOLD").is_none() => Ok(left),
             (Some(size), None) => {
                 let ty = left.ty;
-                Ok(Expr::binary(op, left, scale(promoted(right), size), ty))
+                let right = promoted(right);
+                // (A flattened row index `p + (i*K + j)`: the row first,
+                // `(p + i*K*S) + j*S`.)
+                if let (BinaryOp::Add, ExprKind::Binary(BinaryOp::Add, row, column)) = (op, &right.kind) {
+                    if let ExprKind::Binary(BinaryOp::Multiply, i, k) = &row.kind {
+                        if let Some(k) = k.as_int().filter(|_| size > 1 && std::env::var_os("MWCC_IRO_FLAT_ROW_SCALE").is_none()) {
+                            let rows = Expr::binary(BinaryOp::Multiply, (**i).clone(), Expr::int(k * i64::from(size)), promote(i.ty));
+                            let base = Expr::binary(BinaryOp::Add, left, rows, ty);
+                            return Ok(Expr::binary(BinaryOp::Add, base, scale((**column).clone(), size), ty));
+                        }
+                    }
+                }
+                Ok(Expr::binary(op, left, scale(right, size), ty))
             }
             (None, Some(size)) if op == BinaryOp::Add => {
                 let ty = right.ty;
