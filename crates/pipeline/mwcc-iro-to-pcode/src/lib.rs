@@ -1026,9 +1026,26 @@ impl Lowerer<'_, '_> {
             return Err(unsupported("switch (linear compare chains)"));
         }
         let in_place = self.unit.switch_style == 1;
-        let mut sorted: Vec<(i64, usize)> = cases.to_vec();
+        // (Cases compare as signed words: an unsigned case above INT_MAX
+        // wraps.)
+        let mut sorted: Vec<(i64, usize)> = cases
+            .iter()
+            .map(|&(value, arm)| match u32::try_from(value) {
+                Ok(word) if !toggle("MWCC_PCODE_NO_WRAPPED_CASES") => (i64::from(word as i32), arm),
+                _ => (value, arm),
+            })
+            .collect();
         sorted.sort_by_key(|&(value, _)| value);
-        if sorted.iter().any(|&(value, _)| i16::try_from(value).is_err() || i16::try_from(value + 1).is_err()) {
+        // (A case outside a 16-bit immediate compares with its constant in a
+        // register.)
+        let wide_cases = toggle("MWCC_PCODE_NO_WIDE_SWITCH_CASES");
+        if sorted.iter().any(|&(value, _)| {
+            if wide_cases {
+                i16::try_from(value).is_err() || i16::try_from(value + 1).is_err()
+            } else {
+                i32::try_from(value).is_err() || i32::try_from(value + 1).is_err()
+            }
+        }) {
             return Err(unsupported("switch case outside a 16-bit immediate"));
         }
         let exit = self.new_join_label();
@@ -1096,7 +1113,9 @@ impl Lowerer<'_, '_> {
             self.pending_tables.push((block, entries, offset));
             self.start_block(false);
         } else {
-            self.switch_node(&tree, x, i64::MIN, i64::MAX, &target)?;
+            // (Over the word's values.)
+            let (low, high) = if toggle("MWCC_PCODE_UNBOUNDED_SWITCH_TREE") { (i64::MIN, i64::MAX) } else { (i64::from(i32::MIN), i64::from(i32::MAX)) };
+            self.switch_node(&tree, x, low, high, &target)?;
         }
         let enclosing_next = self.loops.last().map_or(exit, |&(_, next)| next);
         self.loops.push((exit, enclosing_next));
@@ -1125,13 +1144,21 @@ impl Lowerer<'_, '_> {
             return Ok(());
         }
         // BO 12: branch if the bit is set; BO 4: if clear. cr0: lt 0, eq 2.
-        let compare = |selection: &mut Self, k: i64| {
-            selection.emit_plain(Instruction::CompareWordImmediate { a: x, immediate: k as i16 });
+        let compare = |selection: &mut Self, k: i64| -> Compilation<()> {
+            match i16::try_from(k) {
+                Ok(immediate) => selection.emit_plain(Instruction::CompareWordImmediate { a: x, immediate }),
+                Err(_) => {
+                    let constant = selection.temporary();
+                    selection.load_constant(constant, k)?;
+                    selection.emit_plain(Instruction::CompareWord { a: x, b: constant });
+                }
+            }
+            Ok(())
         };
         match tree.pivot(low, high) {
             SwitchPivot::Split(at) => {
                 // `cmpwi x,at; bge right` — values at or above `at` go right.
-                compare(self, at);
+                compare(self, at)?;
                 match tree.single(at, high) {
                     Some(right) => {
                         self.branch(Instruction::BranchConditionalForward { options: 4, condition_bit: 0, target: 0 }, target(right));
@@ -1147,7 +1174,7 @@ impl Lowerer<'_, '_> {
                 }
             }
             SwitchPivot::Equal(v, arm) => {
-                compare(self, v);
+                compare(self, v)?;
                 self.branch(Instruction::BranchConditionalForward { options: 12, condition_bit: 2, target: 0 }, target(Some(arm)));
                 let right = tree.single(v + 1, high);
                 let left = tree.single(low, v - 1);
