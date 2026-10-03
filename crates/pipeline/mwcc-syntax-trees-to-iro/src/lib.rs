@@ -66,7 +66,7 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     if unit.strength_reduction && !unit.branch_preserving && std::env::var_os("MWCC_IRO_NO_PARTIAL_UNROLL").is_none() {
         unroll::unroll_partially(&mut built.function, unit.unrolling);
         passes::for_each_expression(&mut built.function.body, &mut |expression| passes::fold(expression));
-        passes::displacements(&mut built.function.body);
+        passes::displacements(&mut built.function.body, unit.reassociates_sums);
     }
     if unit.strength_reduction && std::env::var_os("MWCC_IRO_NO_CONSTANT_PROPAGATION").is_none() {
         strength::propagate_constants(&mut built.function);

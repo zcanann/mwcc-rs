@@ -214,7 +214,7 @@ pub fn run(function: &mut Function, branch_preserving: bool, reassociates_sums: 
         for_each_expression(&mut function.body, &mut |expression| hoist_constants(expression, reassociates_sums));
     }
     if enabled("DISPLACEMENTS") {
-        displacements(&mut function.body);
+        displacements(&mut function.body, reassociates_sums || std::env::var_os("MWCC_IRO_DISTRIBUTED_INDEX_CONSTANTS").is_some());
     }
     if enabled("MEMBER_INDEX_DISPLACEMENTS") {
         member_index_displacements(&mut function.body);
@@ -411,7 +411,7 @@ pub fn run_unoptimized(function: &mut Function) {
     if std::env::var_os("MWCC_IRO_NO_REASSOCIATE_OFFSETS").is_none() {
         for_each_expression(&mut function.body, &mut |expression| reassociate_offsets(expression));
     }
-    displacements_with(&mut function.body, false);
+    displacements_with(&mut function.body, false, false);
     narrowing(function);
 }
 
@@ -705,14 +705,16 @@ pub fn constant_branches(body: &mut Vec<Stmt>) {
 
 /// A constant addend of an access's base pointer joins its displacement:
 /// `*(p - 8 + 2)` is `-24(p)`.
-pub fn displacements(body: &mut [Stmt]) {
-    displacements_with(body, std::env::var_os("MWCC_IRO_NO_INDEX_CONSTANT").is_none());
+/// (`distribute`: GC/1.x-2.x move an index's constant into the
+/// displacement; GC/3.x and Wii keep `(i + k) * size`.)
+pub fn displacements(body: &mut [Stmt], distribute: bool) {
+    displacements_with(body, distribute && std::env::var_os("MWCC_IRO_NO_INDEX_CONSTANT").is_none(), true);
 }
 
 /// Displacement folding; `distribute` also moves a scaled index's constant
 /// addend into the displacement (optimized builds only).
-pub fn displacements_with(body: &mut [Stmt], distribute: bool) {
-    fn absorb(base: &mut Box<Expr>, index: &mut Option<Box<Expr>>, offset: &mut i32, distribute: bool) {
+pub fn displacements_with(body: &mut [Stmt], distribute: bool, split: bool) {
+    fn absorb(base: &mut Box<Expr>, index: &mut Option<Box<Expr>>, offset: &mut i32, distribute: bool, split: bool) {
         // A constant index (an unrolled `p[k]`) is a displacement.
         if let Some(constant) = index.as_deref().and_then(Expr::as_int) {
             if let Ok(total) = i16::try_from(i64::from(*offset) + constant) {
@@ -757,7 +759,7 @@ pub fn displacements_with(body: &mut [Stmt], distribute: bool) {
                 let total = i64::from(*offset) + value;
                 let low = ((total + 0x8000) & 0xffff) - 0x8000;
                 let high = total - low;
-                if distribute
+                if split
                     && high != value
                     && i32::try_from(total).is_ok()
                     && std::env::var_os("MWCC_IRO_NO_SPLIT_DISPLACEMENTS").is_none()
@@ -772,35 +774,35 @@ pub fn displacements_with(body: &mut [Stmt], distribute: bool) {
             *base = inner.clone();
         }
     }
-    fn visit(expression: &mut Expr, distribute: bool) {
-        children(expression, &mut |child| visit(child, distribute));
+    fn visit(expression: &mut Expr, distribute: bool, split: bool) {
+        children(expression, &mut |child| visit(child, distribute, split));
         if let ExprKind::Load { base, index, offset } = &mut expression.kind {
-            absorb(base, index, offset, distribute);
+            absorb(base, index, offset, distribute, split);
         }
     }
     for statement in body.iter_mut() {
         match statement {
             Stmt::Store { place: mwcc_iro::Place::Memory { base, index, offset }, .. } => {
-                absorb(base, index, offset, distribute)
+                absorb(base, index, offset, distribute, split)
             }
             Stmt::If { then_body, else_body, .. } => {
-                displacements_with(then_body, distribute);
-                displacements_with(else_body, distribute);
+                displacements_with(then_body, distribute, split);
+                displacements_with(else_body, distribute, split);
             }
             Stmt::Loop { body, step, effects, .. } => {
-                displacements_with(body, distribute);
-                displacements_with(step, distribute);
-                displacements_with(effects, distribute);
+                displacements_with(body, distribute, split);
+                displacements_with(step, distribute, split);
+                displacements_with(effects, distribute, split);
             }
             Stmt::Switch { arms, .. } => {
                 for arm in arms {
-                    displacements_with(arm, distribute);
+                    displacements_with(arm, distribute, split);
                 }
             }
             _ => {}
         }
     }
-    for_each_expression(body, &mut |expression| visit(expression, distribute));
+    for_each_expression(body, &mut |expression| visit(expression, distribute, split));
 }
 
 /// Apply `rewrite` to every expression tree in `body` (statement roots).
