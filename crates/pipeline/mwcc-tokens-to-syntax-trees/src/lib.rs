@@ -418,6 +418,7 @@ pub fn parse_located_translation_unit_with_behavior_and_anonymous_namespace(
         plain_inline_asm_helpers: crate::shared::Shared::from(Vec::new()),
         struct_typedefs: crate::shared::Shared::from(asserted_aggregate_aliases),
         struct_pointer_typedefs: crate::shared::Shared::from(HashMap::new()),
+        struct_array_typedefs: crate::shared::Shared::from(std::collections::HashSet::new()),
         array_typedefs: crate::shared::Shared::from(HashMap::new()),
         array_typedef_rows: crate::shared::Shared::from(HashMap::new()),
         last_array_typedef_row: None,

@@ -910,6 +910,9 @@ pub(crate) struct Parser {
     /// `typedef`-declared struct-POINTER aliases (`typedef struct {…} *VecPtr;`)
     /// mapped to their struct tag — the alias itself is already a struct pointer.
     pub(crate) struct_pointer_typedefs: Shared<HashMap<String, String>>,
+    /// Typedefs of struct arrays (`typedef struct {...} __va_list[1];`):
+    /// a parameter of one is the decayed struct pointer.
+    pub(crate) struct_array_typedefs: Shared<std::collections::HashSet<String>>,
     /// `typedef`-declared array aliases (`typedef float Mtx[3][4];`) mapped to their
     /// element type, total element count, and INNER-dimension element count (the
     /// product of every dimension after the first; 1 for a 1-D typedef) — the row

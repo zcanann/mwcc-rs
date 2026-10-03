@@ -2317,6 +2317,7 @@ impl Parser {
                             self.advance();
                             self.parse_integer_constant()?;
                             self.expect(Token::BracketClose)?;
+                            self.struct_array_typedefs.insert(alias.clone());
                         }
                         // MWCC accepts a GNU attribute after the typedef alias,
                         // but unlike one before the alias it does not alter the
@@ -2403,16 +2404,24 @@ impl Parser {
                         || array_entry.is_some()
                         || function_pointer.is_some()
                     {
+                        let realiased_name = match self.peek() { Token::Identifier(name) => Some(name.clone()), _ => None };
                         self.advance(); // the existing alias
                         let alias = self.parse_identifier()?;
                         // An ARRAY declarator on the re-alias (`typedef _va_list_struct
                         // __va_list[1];` — wind_waker's stdarg spelling): the alias still
                         // resolves through the struct tag; a parameter decays to the
                         // struct pointer exactly like the bare struct typedef.
+                        let mut array = false;
                         while *self.peek() == Token::BracketOpen {
                             self.advance();
                             self.parse_integer_constant()?;
                             self.expect(Token::BracketClose)?;
+                            array = true;
+                        }
+                        // (An alias of a struct-array typedef is one too.)
+                        let realiased = realiased_name.as_ref().is_some_and(|name| self.struct_array_typedefs.contains(name));
+                        if array || realiased {
+                            self.struct_array_typedefs.insert(alias.clone());
                         }
                         self.expect(Token::Semicolon)?;
                         if let Some(tag) = struct_tag {
@@ -3485,6 +3494,15 @@ impl Parser {
                     }
                     let parameter_start = self.position;
                     let mut parameter_type = self.parse_type()?;
+                    // (A struct-array typedef parameter is the struct pointer.)
+                    if let Type::Struct { size, .. } = parameter_type {
+                        let arrayed = self.tokens[parameter_start..self.position]
+                            .iter()
+                            .any(|token| matches!(token, Token::Identifier(name) if self.struct_array_typedefs.contains(name)));
+                        if arrayed && *self.peek() != Token::Star && std::env::var_os("MWCC_STRUCT_ARRAY_PARAMETER_VALUES").is_none() {
+                            parameter_type = Type::StructPointer { element_size: size };
+                        }
+                    }
                     let parameter_is_register = self.tokens[parameter_start..self.position]
                         .iter()
                         .any(|token| matches!(token, Token::Identifier(word) if word == "register"));
