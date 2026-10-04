@@ -2697,7 +2697,23 @@ impl Lowerer<'_, '_> {
             ExprKind::Binary(op, left, right) if op.is_comparison() && (is_float(left.ty) || is_float(right.ty)) => {
                 self.float_comparison_value(*op, left, right, target)
             }
-            ExprKind::Binary(op, left, right) if is_float(ty) => self.float_binary(*op, left, right, ty, target),
+            ExprKind::Binary(op, left, right) if is_float(ty) => {
+                // (A repeated floating operation reuses its value too.)
+                // (Single precision only: a double may be rounded in place.)
+                let key = (!self.unoptimized && target.is_none() && ty == Type::Float && !toggle("MWCC_PCODE_NO_FLOAT_CSE"))
+                    .then(|| float_common_key(expression))
+                    .flatten();
+                if let Some((key, _)) = &key {
+                    if let Some(&(register, ty, _)) = self.common.get(key) {
+                        return Ok((register, ty));
+                    }
+                }
+                let result = self.float_binary(*op, left, right, ty, target)?;
+                if let Some((key, variables)) = key {
+                    self.common.insert(key, (result.0, result.1, variables));
+                }
+                Ok(result)
+            }
             ExprKind::Unary(UnaryOp::Negate, operand) if is_float(ty) => {
                 let (source, _) = self.expression(operand)?;
                 let d = self.result_for(ty, target);
@@ -7141,6 +7157,25 @@ fn unsigned_bound(expression: &Expr) -> Option<u64> {
 
 /// A key for a simple pure operation on variables and constants (IRO common
 /// subexpressions), with the variables it reads.
+/// `common_key` for a floating operation of variables and constants.
+fn float_common_key(expression: &Expr) -> Option<(String, Vec<VarId>)> {
+    let ExprKind::Binary(op, left, right) = &expression.kind else { return None };
+    if !matches!(op, BinaryOp::Add | BinaryOp::Subtract | BinaryOp::Multiply | BinaryOp::Divide) {
+        return None;
+    }
+    let mut variables = Vec::new();
+    let mut leaf = |e: &Expr| match &e.kind {
+        ExprKind::Var(id) => {
+            variables.push(*id);
+            Some(format!("v{id}"))
+        }
+        ExprKind::Float(value) => Some(format!("{:?}{:x}", e.ty, value.to_bits())),
+        _ => None,
+    };
+    let key = format!("float {:?} {op:?} {} {}", expression.ty, leaf(left)?, leaf(right)?);
+    Some((key, variables))
+}
+
 fn common_key(expression: &Expr) -> Option<(String, Vec<VarId>)> {
     fn leaf(e: &Expr, variables: &mut Vec<VarId>) -> Option<String> {
         match &e.kind {
