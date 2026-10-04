@@ -3851,7 +3851,7 @@ pub fn merge_successive_updates(body: &mut Vec<Stmt>) {
     // (`x = x + k` or `x = x - k`: the signed step.)
     fn step(statement: &Stmt) -> Option<(VarId, i64, Type)> {
         let Stmt::Assign { variable, value } = statement else { return None };
-        if !matches!(value.ty, Type::Int | Type::UnsignedInt) {
+        if !matches!(value.ty, Type::Int | Type::UnsignedInt) && !(pointer_like(value.ty) && !toggle_env("MWCC_IRO_NO_POINTER_UPDATE_MERGE")) {
             return None;
         }
         match &value.kind {
@@ -3866,7 +3866,9 @@ pub fn merge_successive_updates(body: &mut Vec<Stmt>) {
             (Some((variable, first, ty)), Some((next, second, _))) if variable == next => {
                 let total = i64::from((first + second) as i32);
                 let base = Expr { kind: ExprKind::Var(variable), ty };
-                body[index] = Stmt::Assign { variable, value: Expr::binary(BinaryOp::Add, base, Expr::typed_int(total, ty), ty) };
+                // (A pointer's step is a plain int.)
+                let step_ty = if pointer_like(ty) { Type::Int } else { ty };
+                body[index] = Stmt::Assign { variable, value: Expr::binary(BinaryOp::Add, base, Expr::typed_int(total, step_ty), ty) };
                 body.remove(index + 1);
             }
             _ => index += 1,
