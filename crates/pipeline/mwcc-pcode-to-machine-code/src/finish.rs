@@ -947,7 +947,10 @@ fn result_takes_r3(pcode: &mut PCodeFunction) {
     let block = &pcode.blocks[0];
     let Some(copy) = block.instructions.iter().rposition(|instruction| instruction.defs(general).contains(&3)) else { return };
     let Some((3, value)) = block.instructions[copy].copy(general) else { return };
-    if value < 32 || block.instructions.iter().any(|instruction| instruction.instruction.is_call()) {
+    // (Nor a tail call's argument.)
+    if value < 32
+        || block.instructions.iter().any(|instruction| instruction.instruction.is_call() || (matches!(instruction.instruction, Instruction::BranchExternal { .. }) && toggle("MWCC_PCODE_RESULT_R3_NO_TAIL_CALLS")))
+    {
         return;
     }
     // (r3 is not redefined before the copy, and v is defined once.)
@@ -958,8 +961,8 @@ fn result_takes_r3(pcode: &mut PCodeFunction) {
     let [defined] = definitions.as_slice() else { return };
     let defined = *defined;
     // (Only a loaded value the result copy alone reads.)
-    if !format!("{:?}", block.instructions[defined].instruction).starts_with("Load")
-        || (defined + 1..copy).any(|at| block.instructions[at].uses(general).contains(&value))
+    if (!format!("{:?}", block.instructions[defined].instruction).starts_with("Load") && toggle("MWCC_PCODE_RESULT_R3_LOADS_ONLY"))
+        || (defined + 1..block.instructions.len()).any(|at| at != copy && block.instructions[at].uses(general).contains(&value))
     {
         return;
     }
