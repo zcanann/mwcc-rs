@@ -41,6 +41,7 @@ pub struct Built {
 pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     passes::FLOAT_NEGATION_ALGEBRA.with(|flag| flag.set(unit.cancels_float_negations));
     passes::UNSIGNED_MAXIMA.with(|flag| flag.set(unit.forwards_stores));
+    passes::LOOP_FORWARDING.with(|flag| flag.set(!unit.strength_reduction && !unit.early_frame));
     passes::WIDE_UNROLLING.with(|flag| flag.set(unit.forwards_stores));
     passes::FILL_UNROLLING.with(|flag| flag.set(unit.fill_unrolling && std::env::var_os("MWCC_IRO_NO_PLAIN_FILL_UNROLLING").is_none()));
     let mut built = build_unoptimized(function, unit)?;

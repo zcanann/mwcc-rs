@@ -196,6 +196,7 @@ pub fn run(function: &mut Function, branch_preserving: bool, reassociates_sums: 
     }
     if std::env::var_os("MWCC_IRO_NO_SINGLE_USES").is_none() && !has_label(&function.body) {
         forward_single_uses(function);
+        forward_single_uses_in_loops(function);
     }
     // (Forwarding reasons in structured order: not across `goto`s.)
     if enabled("FORWARD") && !has_label(&function.body) {
@@ -3356,6 +3357,8 @@ fn reads_memory_in(statement: &Stmt) -> bool {
 thread_local! {
     /// Floating negations fold into sums (GC/1.x-2.x); set per build.
     pub static FLOAT_NEGATION_ALGEBRA: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+    /// Loop bodies forward single uses (no strength reduction: below -O3).
+    pub static LOOP_FORWARDING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Fills of constants unroll by their size alone (GC/3.x and Wii).
     pub static WIDE_UNROLLING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Those fills unroll without an explicit speed goal too.
@@ -3960,4 +3963,144 @@ pub fn straight_constants(function: &mut Function) {
         }
         // (A call may change nothing of these: register locals only.)
     }
+}
+
+/// Inside loop bodies too: a local assigned once in the whole function and
+/// read once, by the very next statement, takes its value there
+/// (`p = &a[i]; *p = v;` stores through `a + i*4`).
+pub fn forward_single_uses_in_loops(function: &mut Function) {
+    fn count_reads(body: &[Stmt], variable: VarId) -> usize {
+        let mut count = 0;
+        let mut copy = body.to_vec();
+        for_each_expression(&mut copy, &mut |e| {
+            fn walk(e: &Expr, variable: VarId, count: &mut usize) {
+                if matches!(e.kind, ExprKind::Var(id) | ExprKind::LocalAddress(id) if id == variable) {
+                    *count += 1;
+                }
+                let mut copy = e.clone();
+                children(&mut copy, &mut |child| walk(child, variable, count));
+            }
+            walk(e, variable, &mut count);
+        });
+        count
+    }
+    fn count_assignments(body: &[Stmt], variable: VarId) -> usize {
+        body.iter()
+            .map(|statement| match statement {
+                Stmt::Assign { variable: v, .. } => usize::from(*v == variable),
+                Stmt::If { then_body, else_body, .. } => count_assignments(then_body, variable) + count_assignments(else_body, variable),
+                Stmt::Loop { body, step, effects, .. } => {
+                    count_assignments(body, variable) + count_assignments(step, variable) + count_assignments(effects, variable)
+                }
+                Stmt::Counted { body, .. } => count_assignments(body, variable),
+                Stmt::Switch { arms, .. } => arms.iter().map(|arm| count_assignments(arm, variable)).sum(),
+                _ => 0,
+            })
+            .sum()
+    }
+    fn process(list: &mut Vec<Stmt>, inside: bool, snapshot: &[Stmt], variables: &[mwcc_iro::Variable]) {
+        for statement in list.iter_mut() {
+            match statement {
+                Stmt::If { then_body, else_body, .. } => {
+                    process(then_body, inside, snapshot, variables);
+                    process(else_body, inside, snapshot, variables);
+                }
+                Stmt::Loop { body, .. } | Stmt::Counted { body, .. } => process(body, true, snapshot, variables),
+                _ => {}
+            }
+        }
+        if !inside {
+            return;
+        }
+        let mut index = 0;
+        while index + 1 < list.len() {
+            let Stmt::Assign { variable, value } = &list[index] else {
+                index += 1;
+                continue;
+            };
+            let (variable, value) = (*variable, value.clone());
+            let candidate = &variables[variable];
+            // (The one reader later in this list; nothing between changes
+            // what the value reads.)
+            let reader = (index + 1..list.len()).find(|&at| count_reads(std::slice::from_ref(&list[at]), variable) > 0);
+            let clear = reader.is_some_and(|at| {
+                list[index + 1..at].iter().all(|between| {
+                    let simple = matches!(between, Stmt::Store { .. } | Stmt::Assign { .. } | Stmt::Eval(_));
+                    let assigns_operand = matches!(between, Stmt::Assign { variable: v, .. } if value.mentions(*v));
+                    let touches_memory = matches!(between, Stmt::Store { .. }) || format!("{between:?}").contains("Call {");
+                    simple && !assigns_operand && !(reads_memory(&value) && touches_memory)
+                })
+            });
+            let eligible = matches!(candidate.kind, VariableKind::Local)
+                && candidate.frame.is_none()
+                && !candidate.volatile
+                && !candidate.raw
+                && !format!("{value:?}").contains("Call {")
+                && !value.mentions(variable)
+                && clear
+                && reader.is_some_and(|at| {
+                    !(reads_memory(&value) && reads_memory_in(&list[at]))
+                        && matches!(&list[at], Stmt::Store { .. } | Stmt::Assign { .. } | Stmt::Eval(_))
+                        && count_reads(std::slice::from_ref(&list[at]), variable) == 1
+                })
+                && count_assignments(snapshot, variable) == 1
+                && count_reads(snapshot, variable) == 1;
+            if !eligible {
+                index += 1;
+                continue;
+            }
+            let at = reader.expect("eligible");
+            // (An address sum read as a store's base: its base part stays
+            // put and its index rides the store, `stwx`.)
+            if let (ExprKind::Binary(BinaryOp::Add, base_part, index_part), Stmt::Store { place: Place::Memory { base, index: None, offset: 0 }, value: stored, .. }) =
+                (&value.kind, &mut list[at])
+            {
+                if base.as_var() == Some(variable)
+                    && !stored.mentions(variable)
+                    && base_part.as_int().is_none()
+                    && index_part.as_int().is_none()
+                    && !toggle_env("MWCC_IRO_LOOP_FORWARD_WHOLE_ADDRESS")
+                {
+                    let (base_part, index_part) = ((**base_part).clone(), (**index_part).clone());
+                    if let Stmt::Store { place: Place::Memory { index, .. }, .. } = &mut list[at] {
+                        *index = Some(Box::new(index_part));
+                    }
+                    list[index] = Stmt::Assign { variable, value: Expr { ty: value.ty, ..base_part } };
+                    index += 1;
+                    continue;
+                }
+            }
+            substitute(std::slice::from_mut(&mut list[at]), variable, &value);
+            // (An address sum forwarded into a base indexes it: `stwx`.)
+            fn split(base: &mut Box<Expr>, index: &mut Option<Box<Expr>>) {
+                if index.is_some() {
+                    return;
+                }
+                if let ExprKind::Binary(BinaryOp::Add, left, right) = &base.kind {
+                    if right.as_int().is_none() && left.as_int().is_none() {
+                        let (left, right) = ((**left).clone(), (**right).clone());
+                        *base = Box::new(left);
+                        *index = Some(Box::new(right));
+                    }
+                }
+            }
+            fn loads(e: &mut Expr) {
+                if let ExprKind::Load { base, index, .. } = &mut e.kind {
+                    split(base, index);
+                }
+                children(e, &mut |child| loads(child));
+            }
+            if let Stmt::Store { place: Place::Memory { base, index, .. }, .. } = &mut list[at] {
+                split(base, index);
+            }
+            for_each_expression(std::slice::from_mut(&mut list[at]), &mut |e| loads(e));
+            list.remove(index);
+        }
+    }
+    if has_label(&function.body) || toggle_env("MWCC_IRO_NO_LOOP_SINGLE_USES") || !LOOP_FORWARDING.with(|flag| flag.get()) {
+        return;
+    }
+    let snapshot = function.body.clone();
+    let variables = function.variables.clone();
+    process(&mut function.body, false, &snapshot, &variables);
 }

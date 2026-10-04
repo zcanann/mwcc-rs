@@ -92,6 +92,8 @@ pub fn lower(
         contract,
         float_constants: HashMap::new(),
         loop_constants: Vec::new(),
+        loop_anchors: Vec::new(),
+        anchored_loop: None,
         compound_store: false,
         address_bases: Vec::new(),
         frame_offsets: vec![None; function.variables.len()],
@@ -200,6 +202,10 @@ struct Lowerer<'a, 'u> {
     /// Constants loaded before the enclosing loops (integer and floating),
     /// available throughout them.
     loop_constants: Vec<(Vec<(i64, u32)>, Vec<((u64, u8), u32)>)>,
+    /// Section anchors formed before an enclosing loop (loop code motion).
+    loop_anchors: Vec<Vec<(String, u32)>>,
+    /// The loop whose anchors were formed before the statement preceding it.
+    anchored_loop: Option<usize>,
     /// Lowering the store of a compound update.
     compound_store: bool,
     /// Constants loaded as the high half of a constant memory address.
@@ -311,6 +317,38 @@ impl Lowerer<'_, '_> {
             self.constants.extend(constants.iter().copied());
             self.float_constants.extend(float_constants.iter().copied());
         }
+        for anchors in &self.loop_anchors {
+            for (key, register) in anchors {
+                self.common.insert(key.clone(), (*register, Type::Pointer(mwcc_iro::Pointee::Int), Vec::new()));
+            }
+        }
+    }
+
+    /// The section anchors a loop's objects use are formed before it
+    /// (below -O3, where no strength reduction rebuilds the loop).
+    fn preload_loop_anchors(&mut self, parts: &[&[Stmt]]) -> Compilation<bool> {
+        if self.unoptimized || self.unit.strength_reduction || self.anchored.is_empty() || toggle("MWCC_PCODE_NO_LOOP_ANCHORS") {
+            return Ok(false);
+        }
+        let listing = format!("{parts:?}");
+        let mut anchors: Vec<&'static str> = Vec::new();
+        for (name, &anchor) in &self.anchored {
+            let used = listing.contains(&format!("GlobalAddress({name:?})")) || listing.contains(&format!("Global({name:?})"));
+            if used && !anchors.contains(&anchor) {
+                anchors.push(anchor);
+            }
+        }
+        if anchors.is_empty() {
+            return Ok(false);
+        }
+        anchors.sort_unstable();
+        let mut kept = Vec::new();
+        for anchor in anchors {
+            let register = self.anchor_register(anchor);
+            kept.push((format!("&@{anchor}"), register));
+        }
+        self.loop_anchors.push(kept);
+        Ok(true)
     }
 
     /// The floating constants a call-free loop uses, and the integer
@@ -1433,7 +1471,13 @@ impl Lowerer<'_, '_> {
             && !format!("{:?}", function.body).contains("LocalAddress")
             && only_tail_calls(&function.body, true, function.return_type);
         self.exit_label = self.new_label();
-        for statement in &function.body {
+        for (index, statement) in function.body.iter().enumerate() {
+            // (A loop's anchors are formed before its induction's start.)
+            if let (Stmt::Assign { value, .. }, Some(Stmt::Loop { body, step, effects, .. })) = (statement, function.body.get(index + 1)) {
+                if value.as_int().is_some() && self.preload_loop_anchors(&[body, step, effects])? {
+                    self.anchored_loop = Some(&function.body[index + 1] as *const Stmt as usize);
+                }
+            }
             self.statement(statement)?;
         }
         // The exit block: the epilogue is generated here after coloring.
@@ -1548,6 +1592,12 @@ impl Lowerer<'_, '_> {
                     && effects.is_empty()
                     && condition.as_ref().is_some_and(|condition| initially_true(condition, &known));
                 let preloaded = self.preload_loop_constants(&[body, step, effects], condition.as_ref())?;
+                let anchored = if self.anchored_loop == Some(statement as *const Stmt as usize) {
+                    self.anchored_loop = None;
+                    true
+                } else {
+                    self.preload_loop_anchors(&[body, step, effects])?
+                };
                 if *test_first && condition.is_some() && !first_test_true {
                     self.jump(test);
                 }
@@ -1574,6 +1624,9 @@ impl Lowerer<'_, '_> {
                 }
                 if preloaded {
                     self.loop_constants.pop();
+                }
+                if anchored {
+                    self.loop_anchors.pop();
                 }
                 self.place_label(exit);
                 Ok(())
