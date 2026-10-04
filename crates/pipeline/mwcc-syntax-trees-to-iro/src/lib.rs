@@ -1117,6 +1117,17 @@ impl Builder<'_, '_> {
                     hoisted.insert(position, Stmt::Assign { variable: id, value });
                 }
             }
+            // (The stepped value is computed where the step was.)
+            if std::env::var_os("MWCC_IRO_STEP_VALUES_LATE").is_none() {
+                if let Stmt::Store { value, .. } = &mut step {
+                    if matches!(value.kind, ExprKind::Binary(..)) {
+                        let ty = value.ty;
+                        let id = self.temporary(ty);
+                        let computed = std::mem::replace(value, Expr { kind: ExprKind::Var(id), ty });
+                        hoisted.insert(position, Stmt::Assign { variable: id, value: computed });
+                    }
+                }
+            }
             moved.insert(0, step);
         }
         moved.append(after);
