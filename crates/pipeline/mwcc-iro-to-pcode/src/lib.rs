@@ -327,7 +327,10 @@ impl Lowerer<'_, '_> {
     /// The section anchors a loop's objects use are formed before it
     /// (below -O3, where no strength reduction rebuilds the loop).
     fn preload_loop_anchors(&mut self, parts: &[&[Stmt]]) -> Compilation<bool> {
-        if self.unoptimized || self.unit.strength_reduction || self.anchored.is_empty() || toggle("MWCC_PCODE_NO_LOOP_ANCHORS") {
+        // (With strength reduction, only before GC/3.x and after the early
+        // builds; there the function entry forms them.)
+        let reduced = self.unit.strength_reduction && (self.unit.forwards_stores || self.unit.early_frame);
+        if self.unoptimized || reduced || self.anchored.is_empty() || toggle("MWCC_PCODE_NO_LOOP_ANCHORS") {
             return Ok(false);
         }
         let listing = format!("{parts:?}");
@@ -1471,6 +1474,21 @@ impl Lowerer<'_, '_> {
             && !format!("{:?}", function.body).contains("LocalAddress")
             && only_tail_calls(&function.body, true, function.return_type);
         self.exit_label = self.new_label();
+        // (With strength reduction before GC/3.x, the anchors any top-level
+        // loop uses are formed on entry and kept throughout.)
+        if self.unit.strength_reduction && !self.unit.forwards_stores && !self.unit.early_frame && !toggle("MWCC_PCODE_NO_ENTRY_ANCHORS") {
+            let loops: Vec<&[Stmt]> = function
+                .body
+                .iter()
+                .filter_map(|statement| match statement {
+                    Stmt::Loop { body, .. } | Stmt::Counted { body, .. } => Some(body.as_slice()),
+                    _ => None,
+                })
+                .collect();
+            if !loops.is_empty() {
+                self.preload_loop_anchors(&loops)?;
+            }
+        }
         for (index, statement) in function.body.iter().enumerate() {
             // (A loop's anchors are formed before its induction's start.)
             if let (Stmt::Assign { value, .. }, Some(Stmt::Loop { body, step, effects, .. })) = (statement, function.body.get(index + 1)) {

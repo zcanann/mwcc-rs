@@ -164,10 +164,37 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
         }
     }
     if unit.strength_reduction && std::env::var_os("MWCC_IRO_NO_STRENGTH_REDUCTION").is_none() {
+        // (Not an object reached through its section's anchor: three or
+        // more of one section in the function, before GC/3.x; the anchor
+        // is formed outside the loop instead.)
+        let listing = format!("{:?}", built.function.body);
+        let referenced = |name: &str| listing.contains(&format!("Global({name:?})")) || listing.contains(&format!("GlobalAddress({name:?})"));
+        let mut per_anchor: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+        for (name, global) in unit.globals.iter() {
+            if let Some(anchor) = global.anchor {
+                if !global.small_data && referenced(name) {
+                    *per_anchor.entry(anchor).or_default() += 1;
+                }
+            }
+        }
+        let anchored = |global: &mwcc_iro::GlobalInfo| {
+            !unit.forwards_stores
+                && !unit.early_frame
+                && global.anchor.is_some_and(|anchor| per_anchor.get(anchor).copied().unwrap_or(0) >= 3)
+                && std::env::var_os("MWCC_IRO_HOIST_ANCHORED_ADDRESSES").is_none()
+        };
+        strength::ANCHORED.with(|names| {
+            *names.borrow_mut() = unit
+                .globals
+                .iter()
+                .filter(|(name, global)| !global.small_data && anchored(global) && referenced(name))
+                .map(|(name, _)| name.clone())
+                .collect()
+        });
         strength::set_loop_addresses(
             unit.globals
                 .iter()
-                .filter(|(_, global)| !global.small_data && !global.is_function)
+                .filter(|(_, global)| !global.small_data && !global.is_function && !anchored(global))
                 .map(|(name, _)| name.clone())
                 .collect(),
             unit.reassociates_sums,

@@ -983,8 +983,12 @@ fn reduce_loop_offsets(
             if bases.iter().any(|(key, _)| *key == cursor.key) {
                 continue;
             }
+            // (An object reached through its section's anchor keeps its
+            // address in place: the anchor is formed outside the loop.)
+            let anchored = matches!(&cursor.base.kind, ExprKind::GlobalAddress(name) if ANCHORED.with(|names| names.borrow().contains(name)));
             let base = match cursor.base.kind {
                 ExprKind::Var(_) => cursor.base.clone(),
+                _ if anchored => cursor.base.clone(),
                 _ => {
                     let variable = function.add_temporary(cursor.base.ty);
                     function.variables[variable].name = format!("@cursor{variable}");
@@ -1052,6 +1056,8 @@ fn reduce_loop_offsets(
 }
 
 thread_local! {
+    /// Globals reached through a section anchor (before GC/3.x).
+    pub static ANCHORED: std::cell::RefCell<std::collections::HashSet<String>> = std::cell::RefCell::new(std::collections::HashSet::new());
     /// While set: (base key, stride) → (base, offset variable): addresses
     /// rewrite to `base + offset` instead of a cursor.
     static OFFSETS: std::cell::RefCell<Vec<(String, i64, Expr, VarId)>> = const { std::cell::RefCell::new(Vec::new()) };
