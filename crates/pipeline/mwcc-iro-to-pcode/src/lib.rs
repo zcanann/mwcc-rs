@@ -5927,8 +5927,31 @@ impl Lowerer<'_, '_> {
                     && !is_float(argument.ty)
                     && matches!(argument.kind, ExprKind::Load { .. })
                     && !toggle("MWCC_PCODE_EARLY_ARGUMENT_LOADS");
+                // (A global's address not already formed goes straight to
+                // its register after the copies too, unless a frame
+                // address is also passed.)
+                let late_address = !self.unoptimized
+                    && !pass
+                    && matches!(&argument.kind, ExprKind::GlobalAddress(name) if !self.common.contains_key(&format!("&@{name}")))
+                    && !arguments.iter().any(|other| matches!(other.kind, ExprKind::LocalAddress(_)))
+                    && !self.unit.early_frame
+                    // (Only when another argument passes the parameter that
+                    // arrived in this argument's register.)
+                    && arguments.iter().any(|other| {
+                        other.as_var().is_some_and(|id| {
+                            id < self.function.parameter_count
+                                && !is_float(self.function.variables[id].ty)
+                                && !is_wide(self.function.variables[id].ty)
+                                && FIRST_GENERAL_ARGUMENT
+                                    + (0..id)
+                                        .filter(|&earlier| !is_float(self.function.variables[earlier].ty) && !is_wide(self.function.variables[earlier].ty))
+                                        .count() as u32
+                                    == registers[index]
+                        })
+                    })
+                    && !toggle("MWCC_PCODE_EARLY_ADDRESS_ARGUMENTS");
                 values[index] = match argument.as_int() {
-                    _ if late_load => None,
+                    _ if late_load || late_address => None,
                     Some(_) if !self.unoptimized => None,
                     None if string && !self.unoptimized && self.small_string(argument) => None,
                     _ if direct => {
