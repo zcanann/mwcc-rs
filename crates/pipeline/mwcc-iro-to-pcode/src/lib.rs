@@ -2182,6 +2182,8 @@ impl Lowerer<'_, '_> {
     fn value_bits(&self, expression: &Expr) -> u32 {
         match &expression.kind {
             ExprKind::Var(id) => self.variable_bits.get(id).copied().unwrap_or(u32::MAX),
+            // (A raw narrow value is not extended yet: any bits.)
+            ExprKind::Convert(operand) if self.is_raw(operand) => u32::MAX,
             ExprKind::Convert(operand)
                 if matches!(operand.ty, Type::Int | Type::UnsignedInt) && matches!(expression.ty, Type::Int | Type::UnsignedInt) =>
             {
@@ -4667,7 +4669,15 @@ impl Lowerer<'_, '_> {
                 && insert_field(right, true).is_some_and(|field| field_bits(field.2, field.3) & !known_zero(left, true) == 0)
                 && !toggle("MWCC_PCODE_NO_SHIFTED_LEFT_BASE");
             let shifted_right = shifted_right || shifted_left;
-            let insertion = if rotated.is_some() { None } else { match insert_field(left, refined).filter(|_| !shifted_right) {
+            // (GC/1.0-1.2.5n insert a masked right field into a cleared left
+            // value: `(old & ~m) | (v & m)` is `clrrwi old; rlwimi old,v`.)
+            let cleared_left = refined
+                && self.unit.early_frame
+                && rotated.is_none()
+                && matches!(&left.kind, ExprKind::Binary(BinaryOp::BitAnd, _, mask) if mask.as_int().is_some())
+                && insert_field(right, refined).is_some_and(|field| field_bits(field.2, field.3) & !known_zero(left, refined) == 0)
+                && !toggle("MWCC_PCODE_EARLY_FIELD_LEFT_INSERT");
+            let insertion = if rotated.is_some() { None } else if cleared_left { insert_field(right, refined).map(|field| (field, left)) } else { match insert_field(left, refined).filter(|_| !shifted_right) {
                 // (A constant base is `ori`/`oris`d instead.)
                 Some(field)
                     if field_bits(field.2, field.3) & !known_zero(right, refined) == 0
