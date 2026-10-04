@@ -94,6 +94,7 @@ pub fn lower(
         loop_constants: Vec::new(),
         loop_anchors: Vec::new(),
         anchored_loop: None,
+        global_load_guard: false,
         compound_store: false,
         address_bases: Vec::new(),
         frame_offsets: vec![None; function.variables.len()],
@@ -206,6 +207,8 @@ struct Lowerer<'a, 'u> {
     loop_anchors: Vec<Vec<(String, u32)>>,
     /// The loop whose anchors were formed before the statement preceding it.
     anchored_loop: Option<usize>,
+    /// Lowering a global member load the cache did not hold.
+    global_load_guard: bool,
     /// Lowering the store of a compound update.
     compound_store: bool,
     /// Constants loaded as the high half of a constant memory address.
@@ -1407,8 +1410,21 @@ impl Lowerer<'_, '_> {
         }
         let low = offset as i16;
         let high = i16::try_from((offset - i32::from(low)) >> 16).map_err(|_| unsupported("large member offset"))?;
+        // (Reused while the base, a value no variable holds, is known.)
+        let key = format!("&addis{base}+{high}");
+        let shared = !self.unoptimized
+            && !self.registers.contains(&Some(base))
+            && !toggle("MWCC_PCODE_NO_HIGH_OFFSET_REUSE");
+        if shared {
+            if let Some(&(register, _, _)) = self.common.get(&key) {
+                return Ok((register, low));
+            }
+        }
         let adjusted = self.temporary();
         self.emit_based(Instruction::AddImmediateShifted { d: adjusted, a: base, immediate: high }, base);
+        if shared {
+            self.common.insert(key, (adjusted, Type::Pointer(mwcc_iro::Pointee::Int), Vec::new()));
+        }
         Ok((adjusted, low))
     }
 
@@ -2786,6 +2802,31 @@ impl Lowerer<'_, '_> {
                 let (high, low) = split_address(base.as_int().expect("checked") + i64::from(*offset))?;
                 let a = self.address_high(high)?;
                 self.load(ty, a, low, None, target)
+            }
+            // A non-volatile global's member loaded again before a store or
+            // call reuses the first load.
+            ExprKind::Load { base, index: None, offset }
+                if !self.unoptimized
+                    && !self.global_load_guard
+                    && global_member_key(base, *offset, ty, self.unit).is_some()
+                    && !toggle("MWCC_PCODE_NO_GLOBAL_MEMBER_LOAD_CSE") =>
+            {
+                let key = global_member_key(base, *offset, ty, self.unit).expect("checked");
+                let variable = self.target_variable(target);
+                if variable.is_none() {
+                    if let Some(&(register, ty, _)) = self.common.get(&key) {
+                        return Ok((register, ty));
+                    }
+                }
+                self.global_load_guard = true;
+                self.target = target;
+                let result = self.expression_body(expression);
+                self.global_load_guard = false;
+                let result = result?;
+                if result.0 >= 32 {
+                    self.common.insert(key, (result.0, result.1, variable.into_iter().collect()));
+                }
+                Ok(result)
             }
             // A load through a pointer to non-volatile storage is reused
             // until a store or call (or the pointer changes).
@@ -7248,6 +7289,25 @@ fn bit_field_extraction(expression: &Expr) -> bool {
         ExprKind::Convert(operand) => bit_field_extraction(operand),
         _ => false,
     }
+}
+
+/// The cache key of a non-volatile global's member load (`&g`, or `&g + k`
+/// as the base).
+fn global_member_key(base: &Expr, offset: i32, ty: Type, unit: &Unit<'_>) -> Option<String> {
+    let (name, extra) = match &base.kind {
+        ExprKind::GlobalAddress(name) => (name, 0),
+        ExprKind::Binary(BinaryOp::Add, left, right) => match (&left.kind, right.as_int()) {
+            (ExprKind::GlobalAddress(name), Some(k)) => (name, k),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let global = unit.globals.get(name)?;
+    if global.is_volatile || global.is_function || global.fixed_address.is_some() {
+        return None;
+    }
+    let kind = format!("{ty:?}");
+    Some(format!("*G{name}:{}:{kind}:{}", i64::from(offset) + extra, mwcc_iro::width(ty)))
 }
 
 fn load_key(pointer: VarId, offset: i32, ty: Type) -> String {
