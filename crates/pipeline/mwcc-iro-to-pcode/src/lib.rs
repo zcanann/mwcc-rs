@@ -2028,7 +2028,7 @@ impl Lowerer<'_, '_> {
         if !self.unoptimized
             && !fits
             && value.ty == Type::Char
-            && !is_narrow(return_type)
+            && (!is_narrow(return_type) || (matches!(return_type, Type::Short | Type::UnsignedShort) && !toggle("MWCC_PCODE_NO_SHORT_INPLACE_EXTSB")))
             && matches!(value.kind, ExprKind::Load { .. } | ExprKind::Global(_))
             && self.is_raw(value)
             && std::env::var_os("MWCC_PCODE_NO_INPLACE_EXTSB").is_none()
