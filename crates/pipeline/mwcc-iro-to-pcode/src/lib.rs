@@ -91,6 +91,7 @@ pub fn lower(
         unoptimized,
         memory_base: 0,
         memory_offset: 0,
+        address_operand: 0,
         stored_value: 0,
         addressing: false,
         returned: 0,
@@ -191,6 +192,8 @@ struct Lowerer<'a, 'u> {
     memory_base: usize,
     /// The displacement of the access `memory_base` is the base of.
     memory_offset: i32,
+    /// The global address operand of the sum forming a memory base.
+    address_operand: usize,
     /// The value being stored (an address in it keeps its halves tied on
     /// GC/3.x).
     stored_value: usize,
@@ -2713,6 +2716,7 @@ impl Lowerer<'_, '_> {
                     // (Also an address assigned to a variable.)
                     let tied = self.unit.tied_halves
                         && (std::ptr::eq(expression, self.memory_base as *const Expr)
+                            || std::ptr::eq(expression, self.address_operand as *const Expr)
                             || (std::ptr::eq(expression, self.stored_value as *const Expr)
                                 && !self.unoptimized
                                 && !toggle("MWCC_PCODE_UNTIED_STORED_ADDRESSES"))
@@ -4806,6 +4810,12 @@ impl Lowerer<'_, '_> {
             && !toggle("MWCC_PCODE_NO_INTEGER_NEED_ORDER");
         let need_first = need_order && self.unoptimized;
         let early = if index_first || calls_first || subtrahend_first || need_first { Some(self.expression(right)?.0) } else { None };
+        // (A global's address added to form a memory base keeps its halves
+        // in one register on GC/3.x.)
+        let outer_operand = std::mem::replace(
+            &mut self.address_operand,
+            if addressing && op == BinaryOp::Add && !toggle("MWCC_PCODE_UNTIED_INDEXED_ADDRESSES") { left as *const Expr as usize } else { 0 },
+        );
         // (GC/1.0-1.2.5n mask a loaded byte in its destination: `lbz r3;
         // clrlwi r3,r3,31`.)
         let in_place = self.unit.early_frame
@@ -4817,7 +4827,9 @@ impl Lowerer<'_, '_> {
             && matches!(unpromoted(left).kind, ExprKind::Load { .. } | ExprKind::Global(_))
             && matches!(unpromoted(left).ty, Type::UnsignedChar)
             && !toggle("MWCC_PCODE_EARLY_MASK_TEMPORARY");
-        let (a, _) = if in_place { self.expression_with_target(left, target)? } else { self.expression(left)? };
+        let left_value = if in_place { self.expression_with_target(left, target) } else { self.expression(left) };
+        self.address_operand = outer_operand;
+        let (a, _) = left_value?;
         // GC/3.x: `x * (2^n ± 1)` = `(x << n) ± x`; `x * (1 - 2^n)` = `x - (x << n)`.
         let shift_add = (op == BinaryOp::Multiply && self.unit.shift_add_multiply)
             .then(|| right.as_int())
