@@ -5997,7 +5997,12 @@ impl Lowerer<'_, '_> {
                 }
                 // (Optimized, a string's address too: in order, or with the
                 // constants when it is in small data.)
+                // (Not on the early builds when variables are copied too:
+                // there it is formed like any address, before the copies.)
                 let string = matches!(argument.kind, ExprKind::StringAddress(_))
+                    && !(self.unit.early_frame
+                        && arguments.iter().any(|other| plain_variable(other))
+                        && !toggle("MWCC_PCODE_EARLY_STRING_ARGUMENTS_DIRECT"))
                     && !toggle("MWCC_PCODE_STRING_ARGUMENT_TEMPORARY");
                 let direct = (self.unoptimized || string)
                     && !pass
