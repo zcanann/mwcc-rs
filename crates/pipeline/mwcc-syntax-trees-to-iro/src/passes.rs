@@ -3015,7 +3015,12 @@ fn word_identities(op: BinaryOp, left: &Expr, right: &Expr, ty: Type) -> Option<
             Some(Expr::binary(BinaryOp::ShiftRight, (**x).clone(), right.clone(), ty))
         }
         // `x - (k << 16)` is `addis x,-k`.
-        (BinaryOp::Subtract, _, ExprKind::Int(k)) if *k as u32 & 0xffff == 0 && *k as u32 != 0 && *k as i32 != i32::MIN => {
+        // (Any constant past an immediate: `addis; addi` of `-k`.)
+        (BinaryOp::Subtract, _, ExprKind::Int(k))
+            if (*k as u32 & 0xffff == 0 || (i16::try_from(*k as i32).is_err() && !toggle_env("MWCC_IRO_WIDE_SUBTRAHENDS_SUBTRACT")))
+                && *k as u32 != 0
+                && *k as i32 != i32::MIN =>
+        {
             Some(Expr::binary(BinaryOp::Add, left.clone(), Expr::typed_int(i64::from((*k as i32).wrapping_neg()), ty), ty))
         }
         (BinaryOp::Equal | BinaryOp::NotEqual, ExprKind::Int(_), _) if right.as_int().is_none() => {
