@@ -2018,7 +2018,9 @@ impl Lowerer<'_, '_> {
             && !format!("{value:?}").contains("Call {")
             && value.ty == return_type
             && !toggle("MWCC_PCODE_NO_DIRECT_RETURNS");
-        let direct = (self.unoptimized || computed).then_some(3);
+        // (So is a constant.)
+        let constant = value.as_int().is_some() && !toggle("MWCC_PCODE_NO_DIRECT_CONSTANT_RETURNS");
+        let direct = (self.unoptimized || computed || constant).then_some(3);
         // A returned signed byte load extends in place (`lbz r3; extsb r3,r3`).
         if !self.unoptimized
             && !fits
