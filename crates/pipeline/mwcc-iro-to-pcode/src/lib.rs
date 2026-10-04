@@ -6651,6 +6651,14 @@ fn references_weighted(body: &[Stmt], variable: VarId, base: usize) -> usize {
                 // (A compound update's address is computed once: its load
                 // already counted the base.)
                 let compound = compound_place_key(place, value).is_some() && !toggle("MWCC_PCODE_O0_COMPOUND_BASE_TWICE");
+                // (A bit-field insert reloads its pointer like a plain read.)
+                if let (true, ExprKind::Idiom(Idiom::Insert { base: inserted, value: field, .. })) = (compound, &value.kind) {
+                    if let (ExprKind::Load { base: address, index: None, .. }, Place::Memory { index: None, .. }) = (&inserted.kind, place) {
+                        if as_base(address) > 0 && !toggle("MWCC_PCODE_O0_INSERT_BASE_WEIGHT") {
+                            return 1 + expression(field, variable);
+                        }
+                    }
+                }
                 expression(value, variable)
                     + match place {
                         Place::Memory { base: address, index, .. } if as_base(address) > 0 => {
