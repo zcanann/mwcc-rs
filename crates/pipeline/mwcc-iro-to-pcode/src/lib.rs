@@ -1625,7 +1625,32 @@ impl Lowerer<'_, '_> {
                     self.statement(statement)?;
                 }
                 self.place_if_targeted(next);
-                for statement in step {
+                // (Unscheduled, a reduced loop's trailing cursor steps go
+                // between the test's compare and its branch.)
+                let latch_from = if !self.unit.schedules
+                    && effects.is_empty()
+                    && condition.as_ref().is_some_and(|condition| {
+                        matches!(&condition.kind, ExprKind::Binary(op, left, _) if op.is_comparison() && !is_wide(left.ty) && !is_float(left.ty))
+                    })
+                    && !toggle("MWCC_PCODE_NO_LATCH_STEPS")
+                {
+                    let condition = condition.as_ref().expect("checked");
+                    let mut from = step.len();
+                    while from > 0 {
+                        match &step[from - 1] {
+                            Stmt::Assign { variable, .. }
+                                if self.function.variables[*variable].name.starts_with("@cursor") && !condition.mentions(*variable) =>
+                            {
+                                from -= 1
+                            }
+                            _ => break,
+                        }
+                    }
+                    from
+                } else {
+                    step.len()
+                };
+                for statement in &step[..latch_from] {
                     self.statement(statement)?;
                 }
                 self.loops.pop();
@@ -1637,6 +1662,14 @@ impl Lowerer<'_, '_> {
                 match condition {
                     // A loop never repeated (`do ... while (0)`) has no test.
                     Some(condition) if condition.as_int() == Some(0) => {}
+                    Some(Expr { kind: ExprKind::Binary(op, left, right), .. }) if latch_from < step.len() => {
+                        let (bit, true_when_set) = self.compare(*op, left, right)?;
+                        for statement in &step[latch_from..] {
+                            self.statement(statement)?;
+                        }
+                        let options = if true_when_set { 12 } else { 4 };
+                        self.branch(Instruction::BranchConditionalForward { options, condition_bit: bit, target: 0 }, top);
+                    }
                     Some(condition) => self.branch_on(condition, true, top)?,
                     None => self.jump(top),
                 }

@@ -979,6 +979,7 @@ fn reduce_loop_offsets(
         // Hoisted bases (a register variable serves as its own), then one
         // offset per stride.
         let mut bases: Vec<(String, Expr)> = Vec::new();
+        let first_base_init = inits.len();
         for cursor in &discovered {
             if bases.iter().any(|(key, _)| *key == cursor.key) {
                 continue;
@@ -1014,7 +1015,13 @@ fn reduce_loop_offsets(
                     mwcc_iro::Type::Int,
                 ),
             };
-            inits.push(Stmt::Assign { variable, value: start });
+            // (Unscheduled, the offsets start before the hoisted bases.)
+            if COUNT_LAST.with(|flag| flag.get()) && std::env::var_os("MWCC_IRO_UNSCHEDULED_BASES_FIRST").is_none() {
+                let at = first_base_init + offsets.len();
+                inits.insert(at, Stmt::Assign { variable, value: start });
+            } else {
+                inits.push(Stmt::Assign { variable, value: start });
+            }
             offsets.push((cursor.stride, variable));
             let advance = Stmt::Assign {
                 variable,
