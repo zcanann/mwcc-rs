@@ -180,7 +180,9 @@ fn statements(body: &mut Vec<Stmt>, function: &mut Function, fold_start: bool) {
             if (!hoisted.is_empty() || std::env::var_os("MWCC_IRO_COUNT_WITH_HOISTS_ONLY").is_none()) && count.as_int().is_some() {
                 let ty = count.ty;
                 let variable = function.add_temporary(ty);
-                hoisted.insert(0, Stmt::Assign { variable, value: count.clone() });
+                // (Unscheduled, after the hoisted constants.)
+                let at = if COUNT_LAST.with(|flag| flag.get()) { hoisted.len() } else { 0 };
+                hoisted.insert(at, Stmt::Assign { variable, value: count.clone() });
                 *count = Expr { kind: ExprKind::Var(variable), ty };
             }
         }
@@ -251,6 +253,9 @@ fn statements(body: &mut Vec<Stmt>, function: &mut Function, fold_start: bool) {
 }
 
 thread_local! {
+    /// A count register loop's count follows the hoisted constants (no
+    /// scheduling: below -O4).
+    pub static COUNT_LAST: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// Constants known on entry to the statement list being walked.
     static KNOWN: std::cell::RefCell<Vec<(VarId, i64)>> = const { std::cell::RefCell::new(Vec::new()) };
     /// Constants known before the loop being reduced.

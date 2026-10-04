@@ -166,6 +166,7 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
                 .collect(),
             unit.reassociates_sums,
         );
+        strength::COUNT_LAST.with(|flag| flag.set(!unit.schedules && std::env::var_os("MWCC_IRO_UNSCHEDULED_COUNT_FIRST").is_none()));
         strength::strength_reduce(&mut built.function, !unit.branch_preserving, unit.unrolling);
         strength::remove_dead_inductions(&mut built.function);
         strength::remove_dead_counted_updates(&mut built.function);
