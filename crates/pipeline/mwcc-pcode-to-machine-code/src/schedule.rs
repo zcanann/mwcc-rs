@@ -570,6 +570,14 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
                     chosen = Some(candidate);
                     continue;
                 };
+                // (Early epilogue code waits for ready body code.)
+                let epilogue = (instructions[candidate].flags.epilogue, instructions[best].flags.epilogue);
+                if epilogue.0 != epilogue.1 {
+                    if !epilogue.0 {
+                        chosen = Some(candidate);
+                    }
+                    continue;
+                }
                 // (A copy expanded after this pass comes after other code.)
                 let copies = (instructions[candidate].flags.block_copy, instructions[best].flags.block_copy);
                 if copies.0 != copies.1 && std::env::var_os("MWCC_SCHED_EARLY_COPIES").is_none() {

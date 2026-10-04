@@ -87,6 +87,9 @@ pub struct InstructionFlags {
     /// A store through a pointer that reaches no volatile storage (its
     /// offsets disambiguate it from other such stores through the same base).
     pub nonvolatile_base: bool,
+    /// Epilogue code that issues only when no body code is ready
+    /// (GC/1.0-1.2.5n).
+    pub epilogue: bool,
 }
 
 /// One PCode instruction.

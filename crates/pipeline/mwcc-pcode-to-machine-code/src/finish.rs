@@ -396,6 +396,21 @@ pub fn finish(
             }
         }
     }
+    // (GC/1.0-1.2.5n: the epilogue fills only what the body code before it
+    // leaves idle.)
+    // (Not when it restores saved GPRs: then the LR reload leads.)
+    if epilogue_length > 0
+        && options.early_frame
+        && options.schedule
+        && (float_frame.generals.is_empty() || toggle("MWCC_PCODE_EARLY_RESTORING_EPILOGUE_WAITS"))
+        && !toggle("MWCC_PCODE_EARLY_EPILOGUE_PRIORITY")
+    {
+        let instructions = &mut pcode.blocks.last_mut().expect("exit block").instructions;
+        let start = instructions.len() - epilogue_length;
+        for instruction in &mut instructions[start..] {
+            instruction.flags.epilogue = true;
+        }
+    }
     // Blocks that received frame code are rescheduled; the first pass's order
     // stands elsewhere.
     if options.schedule && !toggle("MWCC_PCODE_NO_FINAL_SCHEDULE") {
