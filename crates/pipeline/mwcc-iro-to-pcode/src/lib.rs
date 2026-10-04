@@ -6921,6 +6921,14 @@ fn max_value(expression: &Expr) -> Option<u64> {
             Some(max_value(left).or_else(|| unsigned_bound(left))? >> right.as_int()?)
         }
         ExprKind::Binary(op, ..) if op.is_comparison() => Some(1),
+        // (A conversion between words keeps its operand's bound.)
+        ExprKind::Convert(operand)
+            if matches!(operand.ty, Type::Int | Type::UnsignedInt)
+                && matches!(expression.ty, Type::Int | Type::UnsignedInt)
+                && !toggle("MWCC_PCODE_NO_WORD_CONVERSION_BOUNDS") =>
+        {
+            max_value(operand)
+        }
         // (GC/1.0-1.2.5n: a small sum of bounded values.)
         ExprKind::Binary(BinaryOp::Add, left, right) if SUM_BOUNDS.with(|flag| flag.get()) && !toggle("MWCC_PCODE_NO_SUM_BOUNDS") => {
             let sum = max_value(left)?.checked_add(max_value(right)?)?;
