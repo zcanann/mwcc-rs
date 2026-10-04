@@ -175,7 +175,9 @@ fn replace_fields(body: Vec<Stmt>, id: VarId, map: &HashMap<i32, VarId>, keep: b
 /// no sign-mask idioms and keep two-way assignments as branches.
 pub fn run(function: &mut Function, branch_preserving: bool, reassociates_sums: bool, unrolling: bool) {
     let enabled = |name: &str| std::env::var_os(format!("MWCC_IRO_NO_{name}")).is_none();
-    if enabled("UNROLL") && !branch_preserving && unrolling {
+    let fills = FILL_UNROLLING.with(|flag| flag.get());
+    if enabled("UNROLL") && !branch_preserving && (unrolling || fills) {
+        FILLS_ONLY.with(|flag| flag.set(!unrolling));
         unroll(&mut function.body);
         merge_constant_updates(&mut function.body);
     }
@@ -574,7 +576,7 @@ fn unrolled(before: &Stmt, statement: &Stmt) -> Option<(VarId, Vec<Stmt>)> {
         })
         .count() as i64;
     let fill = wide && fills > 0 && fills == steps && fills + steps == body.len() as i64 && std::env::var_os("MWCC_IRO_NO_WIDE_FILL_UNROLLING").is_none();
-    if direction < 0 && !fill {
+    if (direction < 0 || FILLS_ONLY.with(|flag| flag.get())) && !fill {
         return None;
     }
     if fill {
@@ -3338,6 +3340,10 @@ thread_local! {
     pub static FLOAT_NEGATION_ALGEBRA: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
     /// Fills of constants unroll by their size alone (GC/3.x and Wii).
     pub static WIDE_UNROLLING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Those fills unroll without an explicit speed goal too.
+    pub static FILL_UNROLLING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Only fills unroll (no explicit speed goal).
+    static FILLS_ONLY: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
     /// A comparison against an unsigned operand's largest value folds
     /// (optimized GC/3.x and Wii); set per build.
     pub static UNSIGNED_MAXIMA: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };

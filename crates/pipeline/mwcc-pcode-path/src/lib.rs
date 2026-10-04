@@ -258,6 +258,9 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
         zero_wide_subtrahends: request.config.build.label.starts_with("GC/1.3") || request.config.build.label.starts_with("GC/2."),
         unrolling: matches!(behavior.optimization, mwcc_versions::Optimization::O3 | mwcc_versions::Optimization::O4)
             && request.config.flags.explicit_speed_goal,
+        fill_unrolling: matches!(behavior.optimization, mwcc_versions::Optimization::O3 | mwcc_versions::Optimization::O4)
+            && (request.config.build.label.starts_with("GC/3.") || request.config.build.label.starts_with("Wii/"))
+            && request.config.flags.optimization_goal != mwcc_versions::OptimizationGoal::Size,
         reassociates_sums: !request.config.build.label.starts_with("GC/3.") && !request.config.build.label.starts_with("Wii/"),
         cancels_float_negations: !request.config.build.label.starts_with("GC/3.") && !request.config.build.label.starts_with("Wii/"),
         steps_after_pointer_stores: request.config.build.label.starts_with("GC/3.") || request.config.build.label.starts_with("Wii/"),

@@ -126,6 +126,9 @@ pub struct Unit<'a> {
     /// Loop unrolling and pointer cursors (`-O3,p`/`-O4,p`: an explicit
     /// speed goal).
     pub unrolling: bool,
+    /// Constant fills unroll fully at any optimized level but `,s`
+    /// (GC/3.x and Wii).
+    pub fill_unrolling: bool,
     /// GC/3.x and Wii test a promoted unsigned narrow value signed (`cmpwi`)
     /// unless it needed extending; earlier builds test it logically.
     pub signed_promoted_truth: bool,
