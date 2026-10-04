@@ -36,6 +36,15 @@ fn unsupported(what: impl Into<String>) -> Diagnostic {
     Diagnostic::error(format!("PCode lowering: {} (not yet supported)", what.into()))
 }
 
+/// Whether an extended narrow `from` value already holds a `to` value: a
+/// narrower type whose whole range `to` holds (`u8` as `s16`).
+fn narrow_fits(from: Type, to: Type) -> bool {
+    is_narrow(to)
+        && is_narrow(from)
+        && mwcc_iro::width(from) < mwcc_iro::width(to)
+        && (is_unsigned_narrow(from) || !is_unsigned_narrow(to))
+}
+
 /// Lower `function` to PCode. `returns_through_variable`: every return
 /// assigns one return variable copied to r3 at the exit (MWCC's single
 /// return point) — the source returns from more than its final value.
@@ -1997,7 +2006,12 @@ impl Lowerer<'_, '_> {
             ExprKind::Convert(inner) if halfword_truth && truth_kind(inner) => &**inner,
             _ => value,
         };
-        let fits = (mwcc_syntax_trees_to_iro_fits(value, return_type) || bounded || (halfword_truth && self.unit.forwards_stores))
+        // (An extended narrower load fits a narrow type holding its range.)
+        let narrower = matches!(value.kind, ExprKind::Load { .. } | ExprKind::Global(_))
+            && value.ty != Type::Char
+            && narrow_fits(value.ty, return_type)
+            && !toggle("MWCC_PCODE_NO_NARROW_FITS");
+        let fits = (mwcc_syntax_trees_to_iro_fits(value, return_type) || bounded || narrower || (halfword_truth && self.unit.forwards_stores))
             && !(truth && is_narrow(return_type) && !self.unit.returns_bool && !(halfword_truth && self.unit.forwards_stores) && std::env::var_os("MWCC_PCODE_TRUTH_FITS").is_none());
         // (A narrow parameter returned as a wider narrow type is extended
         // as it arrived.)
@@ -2033,7 +2047,7 @@ impl Lowerer<'_, '_> {
         let constant = value.as_int().is_some() && !toggle("MWCC_PCODE_NO_DIRECT_CONSTANT_RETURNS");
         let direct = (self.unoptimized || computed || constant).then_some(3);
         // A returned signed byte load extends in place (`lbz r3; extsb r3,r3`).
-        if !self.unoptimized
+        if (!self.unoptimized || !toggle("MWCC_PCODE_O0_NO_INPLACE_EXTSB"))
             && !fits
             && value.ty == Type::Char
             && (!is_narrow(return_type) || (matches!(return_type, Type::Short | Type::UnsignedShort) && !toggle("MWCC_PCODE_NO_SHORT_INPLACE_EXTSB")))
@@ -2041,9 +2055,12 @@ impl Lowerer<'_, '_> {
             && self.is_raw(value)
             && std::env::var_os("MWCC_PCODE_NO_INPLACE_EXTSB").is_none()
         {
-            let (register, _) = self.expression(value)?;
+            // (-O0, which coalesces nothing, loads into r3 itself.)
+            let (register, _) = if self.unoptimized { self.expression_with_target(value, Some(3))? } else { self.expression(value)? };
             self.emit_plain(Instruction::ExtendSignByte { a: register, s: register });
-            self.emit_plain(Instruction::Or { a: 3, s: register, b: register });
+            if register != 3 {
+                self.emit_plain(Instruction::Or { a: 3, s: register, b: register });
+            }
             return Ok(());
         }
         // The final instruction targets r3: the conversion when there is one.
@@ -3141,11 +3158,7 @@ impl Lowerer<'_, '_> {
         let extend_as = if is_narrow(to) && is_narrow(from) && raw && mwcc_iro::width(from) < mwcc_iro::width(to) {
             // A raw narrower value extends as itself (`s8` to `s16`: extsb).
             Some(from)
-        } else if is_narrow(to)
-            && is_narrow(from)
-            && mwcc_iro::width(from) < mwcc_iro::width(to)
-            && (is_unsigned_narrow(from) || !is_unsigned_narrow(to))
-            && !toggle("MWCC_PCODE_NO_NARROW_FITS")
+        } else if narrow_fits(from, to) && !toggle("MWCC_PCODE_NO_NARROW_FITS")
         {
             // (An extended narrower value already fits a type holding its
             // whole range: `u8` as `s16`.)
