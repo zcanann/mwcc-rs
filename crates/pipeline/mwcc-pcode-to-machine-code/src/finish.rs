@@ -784,7 +784,18 @@ fn propagate_physical_copies(pcode: &mut PCodeFunction) -> bool {
 fn fold_constant_lows(pcode: &mut PCodeFunction) {
     use mwcc_pcode::Class;
     let live_out = general_live_out(pcode);
+    // (Not in a loop, between a back edge's target and source: the
+    // address formed there is kept.)
+    let back_edges: Vec<(usize, usize)> = pcode
+        .blocks
+        .iter()
+        .enumerate()
+        .flat_map(|(from, block)| block.successors.iter().filter(move |&&to| to <= from).map(move |&to| (to, from)))
+        .collect();
     for (number, block) in pcode.blocks.iter_mut().enumerate() {
+        if back_edges.iter().any(|&(head, tail)| head <= number && number <= tail) && !toggle("MWCC_PCODE_FOLD_LOOP_CONSTANT_LOWS") {
+            continue;
+        }
         let mut index = 1;
         while index + 1 < block.instructions.len() {
             let (t, low) = match (&block.instructions[index - 1].instruction, &block.instructions[index].instruction) {
