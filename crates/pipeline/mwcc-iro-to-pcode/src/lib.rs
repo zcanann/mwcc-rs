@@ -3160,7 +3160,8 @@ impl Lowerer<'_, '_> {
         to: Type,
         target: Option<u32>,
     ) -> Compilation<(u32, Type)> {
-        let zero_extended_load = raw && from == Type::Char && to == Type::UnsignedChar;
+        // (-O0 masks it anyway.)
+        let zero_extended_load = raw && from == Type::Char && to == Type::UnsignedChar && !(self.unoptimized && !toggle("MWCC_PCODE_O0_UNMASKED_BYTES"));
         let extend_as = if is_narrow(to) && is_narrow(from) && raw && mwcc_iro::width(from) < mwcc_iro::width(to) {
             // A raw narrower value extends as itself (`s8` to `s16`: extsb).
             Some(from)

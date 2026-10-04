@@ -247,6 +247,11 @@ pub fn run(function: &mut Function, branch_preserving: bool, reassociates_sums: 
 /// Promotions a later narrowing discards: under a conversion to (or a store
 /// of) a narrow type, low-bit operations need no extended operands, so a
 /// promoted narrow value at least that wide is used as it is.
+thread_local! {
+    /// -O0: a shifted narrow value is promoted (extended) first.
+    pub static EXTENDED_SHIFT_OPERANDS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 pub fn narrowing(function: &mut Function) {
     let variables: Vec<Type> = function.variables.iter().map(|variable| variable.ty).collect();
     narrowing_in(&mut function.body, function.return_type, &variables);
@@ -275,7 +280,7 @@ fn narrowing_in(body: &mut [Stmt], return_type: Type, variables: &[Type]) {
                         | BinaryOp::BitOr
                         | BinaryOp::BitXor
                         | BinaryOp::ShiftLeft
-                ) =>
+                ) && !(*op == BinaryOp::ShiftLeft && EXTENDED_SHIFT_OPERANDS.with(std::cell::Cell::get)) =>
             {
                 strip(left, bytes);
                 // A shift amount is not a low-bit operand.
@@ -2365,7 +2370,13 @@ pub fn stores(body: &mut [Stmt], optimized: bool) {
                         && matches!(&operand.kind, ExprKind::Binary(BinaryOp::ShiftRight, shifted, count)
                             if count.as_int().is_some() && mwcc_iro::is_unsigned(shifted.ty))
                         && std::env::var_os("MWCC_IRO_DEAD_SHIFT_NARROWING").is_none();
+                    // (-O0 converts between narrow types before storing.)
+                    let narrow_to_narrow = !optimized
+                        && is_narrow(value.ty)
+                        && is_narrow(operand.ty)
+                        && std::env::var_os("MWCC_IRO_O0_DEAD_NARROW_CONVERSIONS").is_none();
                     if narrowed_shift
+                        || narrow_to_narrow
                         || !(mwcc_iro::is_general_word(value.ty) && !matches!(value.ty, Type::Pointer(_) | Type::StructPointer { .. }))
                         || width(value.ty) < stored
                         // Extending a narrower value fills stored bytes.

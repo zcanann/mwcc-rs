@@ -216,15 +216,20 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
 pub fn build_unoptimized_compile(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     passes::FLOAT_NEGATION_ALGEBRA.with(|flag| flag.set(unit.cancels_float_negations));
     passes::UNSIGNED_MAXIMA.with(|flag| flag.set(false));
-    let mut built = build_unoptimized(function, unit)?;
+    NARROW_ASSIGNMENTS_CONVERT.with(|flag| flag.set(std::env::var_os("MWCC_IRO_O0_UNCONVERTED_ASSIGNMENTS").is_none()));
+    let built = build_unoptimized(function, unit);
+    NARROW_ASSIGNMENTS_CONVERT.with(|flag| flag.set(false));
+    let mut built = built?;
     if unit.cancels_float_negations && std::env::var_os("MWCC_IRO_NO_FLOAT_NEGATIONS").is_none() {
         passes::float_negations(&mut built.function.body);
     }
+    passes::EXTENDED_SHIFT_OPERANDS.with(|flag| flag.set(std::env::var_os("MWCC_IRO_O0_NARROW_SHIFTS").is_none()));
     passes::run_unoptimized(&mut built.function);
     if !unit.branch_preserving && std::env::var_os("MWCC_IRO_NO_BIT_TESTS").is_none() {
         passes::bit_tests(&mut built.function.body);
         passes::narrowing(&mut built.function);
     }
+    passes::EXTENDED_SHIFT_OPERANDS.with(|flag| flag.set(false));
 
     built.returns_through_variable = false;
     Ok(built)
@@ -1238,7 +1243,13 @@ impl Builder<'_, '_> {
             }
         }
         let (place, ty) = self.place(target)?;
-        let value = self.expression(value)?;
+        let mut value = self.expression(value)?;
+        // (-O0 converts an assigned constant as it is built.)
+        if NARROW_ASSIGNMENTS_CONVERT.with(std::cell::Cell::get) {
+            if let Some(constant) = value.as_int().and_then(|constant| folded_constant(constant, ty)) {
+                value = Expr { kind: ExprKind::Int(constant), ty };
+            }
+        }
         // A narrow integer target stores the raw value; reading the
         // assignment's value converts it.
         if is_narrow(ty) && !is_float(value.ty) && is_value_type(value.ty) && !is_narrow(value.ty) {
@@ -1870,16 +1881,7 @@ impl Builder<'_, '_> {
                 let operand = self.expression(operand)?;
                 // (A constant converts to an integer type as it is built.)
                 if let Some(value) = operand.as_int().filter(|_| std::env::var_os("MWCC_IRO_NO_CONSTANT_CASTS").is_none()) {
-                    let folded = match *target_type {
-                        Type::Char => Some(i64::from(value as i8)),
-                        Type::UnsignedChar => Some(i64::from(value as u8)),
-                        Type::Short => Some(i64::from(value as i16)),
-                        Type::UnsignedShort => Some(i64::from(value as u16)),
-                        Type::Int => Some(i64::from(value as i32)),
-                        Type::UnsignedInt => Some(i64::from(value as u32)),
-                        _ => None,
-                    };
-                    if let Some(folded) = folded {
+                    if let Some(folded) = folded_constant(value, *target_type) {
                         return Ok(Expr { kind: ExprKind::Int(folded), ty: *target_type });
                     }
                 }
@@ -2846,10 +2848,47 @@ pub fn promoted(e: Expr) -> Expr {
 
 /// A value assigned or stored as `ty`: a narrow value promotes to a word;
 /// a floating value (or destination) converts.
+thread_local! {
+    /// -O0: a value assigned to a narrow variable or object of another type
+    /// converts to it first (`extsh`), but for `x += k`.
+    static NARROW_ASSIGNMENTS_CONVERT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// An integer constant converted to an integer type.
+fn folded_constant(value: i64, ty: Type) -> Option<i64> {
+    match ty {
+        Type::Char => Some(i64::from(value as i8)),
+        Type::UnsignedChar => Some(i64::from(value as u8)),
+        Type::Short => Some(i64::from(value as i16)),
+        Type::UnsignedShort => Some(i64::from(value as u16)),
+        Type::Int => Some(i64::from(value as i32)),
+        Type::UnsignedInt => Some(i64::from(value as u32)),
+        _ => None,
+    }
+}
+
 fn assigned(value: Expr, ty: Type) -> Expr {
     if is_float(ty) || is_float(value.ty) {
         converted(value, ty)
     } else if is_narrow(ty) {
+        if NARROW_ASSIGNMENTS_CONVERT.with(std::cell::Cell::get) && value.ty != ty && is_value_type(value.ty) {
+            if let Some(constant) = value.as_int().and_then(|constant| folded_constant(constant, ty)) {
+                return Expr { kind: ExprKind::Int(constant), ty };
+            }
+            let stepped = matches!(&value.kind, ExprKind::Binary(BinaryOp::Add | BinaryOp::Subtract, _, step) if step.as_int().is_some());
+            // (A promotion of a value of the type itself is that value.)
+            if let ExprKind::Convert(operand) = &value.kind {
+                if operand.ty == ty {
+                    return (**operand).clone();
+                }
+            }
+            // (A mask keeping exactly the type's bits is its conversion.)
+            let full_mask = matches!(&value.kind, ExprKind::Binary(BinaryOp::BitAnd, _, mask)
+                if mwcc_iro::is_unsigned_narrow(ty) && mask.as_int() == Some((1i64 << (8 * mwcc_iro::width(ty))) - 1));
+            if !stepped && !full_mask {
+                return Expr { kind: ExprKind::Convert(Box::new(value)), ty };
+            }
+        }
         value
     } else {
         promoted(value)
