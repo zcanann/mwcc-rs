@@ -4084,7 +4084,7 @@ impl Lowerer<'_, '_> {
         let unsigned = is_unsigned(promote(left_type)) || is_unsigned(promote(right.ty));
         let small = |value: i64| i16::try_from(value).is_ok() && i16::try_from(-value).is_ok();
         if self.unit.branch_preserving {
-            return self.early_comparison_value(op, p, right, unsigned, target);
+            return self.early_comparison_value(op, p, left, right, unsigned, target);
         }
         // Forms against constants that need no second register.
         match (op, constant, unsigned) {
@@ -4192,15 +4192,24 @@ impl Lowerer<'_, '_> {
         &mut self,
         op: BinaryOp,
         p: u32,
+        left: &Expr,
         right: &Expr,
         unsigned: bool,
         target: Option<u32>,
     ) -> Compilation<(u32, Type)> {
         use BinaryOp::*;
         let small = |value: i64| i16::try_from(value).is_ok() && i16::try_from(-value).is_ok();
+        // (A single-bit test `(x & m) == m` subtracts m: `addi t,b,-m`.)
+        let bit_test = op == Equal
+            && matches!(&unpromoted(left).kind, ExprKind::Binary(BinaryOp::BitAnd, _, mask)
+                if mask.as_int().is_some_and(|m| m > 0 && (m as u64).is_power_of_two() && right.as_int() == Some(m)))
+            && !toggle("MWCC_PCODE_EARLY_BIT_TEST_SUBFIC");
         if matches!(op, Equal | NotEqual) {
             let difference = self.temporary();
             match right.as_int() {
+                Some(value) if bit_test && small(value) => {
+                    self.emit_based(Instruction::AddImmediate { d: difference, a: p, immediate: -(value as i16) }, p)
+                }
                 Some(0) => self.emit_plain(Instruction::Negate { d: difference, a: p }),
                 Some(value) if small(value) => {
                     self.emit_plain(Instruction::SubtractFromImmediate { d: difference, a: p, immediate: value as i16 })

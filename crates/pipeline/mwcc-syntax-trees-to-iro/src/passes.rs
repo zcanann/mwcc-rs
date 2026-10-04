@@ -252,6 +252,11 @@ thread_local! {
     pub static EXTENDED_SHIFT_OPERANDS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
+thread_local! {
+    /// `(x & 1) == 1` folds to `x & 1` (after GC/1.2.5n).
+    pub static EQUALITY_BIT_FOLDS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
 pub fn narrowing(function: &mut Function) {
     let variables: Vec<Type> = function.variables.iter().map(|variable| variable.ty).collect();
     narrowing_in(&mut function.body, function.return_type, &variables);
@@ -1587,9 +1592,11 @@ fn fold_once(expression: &Expr) -> Option<Expr> {
             Some(value)
         }
         ExprKind::Binary(op, left, right) => {
-            // `(x & 1) == 1` and `(x & 1) != 0` are `x & 1`.
+            // `(x & 1) == 1` and `(x & 1) != 0` are `x & 1` (not on
+            // GC/1.0-1.2.5n).
             if let ExprKind::Binary(BinaryOp::BitAnd, _, mask) = &left.kind {
                 if mask.as_int() == Some(1)
+                    && EQUALITY_BIT_FOLDS.with(std::cell::Cell::get)
                     && (*op == BinaryOp::Equal && right.as_int() == Some(1)
                         || *op == BinaryOp::NotEqual && right.as_int() == Some(0))
                 {
