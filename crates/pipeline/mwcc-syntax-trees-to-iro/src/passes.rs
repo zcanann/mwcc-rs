@@ -435,11 +435,62 @@ pub fn run_unoptimized(function: &mut Function) {
         constant_branches(&mut function.body);
     }
     stores(&mut function.body, false);
-    if std::env::var_os("MWCC_IRO_NO_REASSOCIATE_OFFSETS").is_none() {
+    if std::env::var_os("MWCC_IRO_O0_REASSOCIATE_OFFSETS").is_some() {
         for_each_expression(&mut function.body, &mut |expression| reassociate_offsets(expression));
     }
     displacements_with(&mut function.body, false, false);
+    if std::env::var_os("MWCC_IRO_O0_DISPLACED_COPIES").is_none() {
+        indexed_copies(&mut function.body);
+    }
     narrowing(function);
+}
+
+/// -O0: a struct copied from or to `p + x` at displacement `d` has its
+/// address formed whole, `p + (x + d)`.
+fn indexed_copies(body: &mut [Stmt]) {
+    fn fold(base: &mut Box<Expr>, offset: &mut i32) {
+        if *offset == 0 {
+            return;
+        }
+        let ExprKind::Binary(BinaryOp::Add, pointer, x) = &base.kind else { return };
+        if !pointer_like(pointer.ty) || pointer_like(x.ty) || x.as_int().is_some() {
+            return;
+        }
+        let index_ty = x.ty;
+        let index = Expr::binary(BinaryOp::Add, (**x).clone(), Expr::typed_int(i64::from(*offset), index_ty), index_ty);
+        let ty = base.ty;
+        *base = Box::new(Expr::binary(BinaryOp::Add, (**pointer).clone(), index, ty));
+        *offset = 0;
+    }
+    fn visit(expression: &mut Expr) {
+        children(expression, &mut visit);
+        if matches!(expression.ty, Type::Struct { .. }) {
+            if let ExprKind::Load { base, index: None, offset } = &mut expression.kind {
+                fold(base, offset);
+            }
+        }
+    }
+    for statement in body.iter_mut() {
+        match statement {
+            Stmt::Store { place: mwcc_iro::Place::Memory { base, index: None, offset }, ty: Type::Struct { .. }, .. } => fold(base, offset),
+            Stmt::If { then_body, else_body, .. } => {
+                indexed_copies(then_body);
+                indexed_copies(else_body);
+            }
+            Stmt::Loop { body, step, effects, .. } => {
+                indexed_copies(body);
+                indexed_copies(step);
+                indexed_copies(effects);
+            }
+            Stmt::Switch { arms, .. } => {
+                for arm in arms {
+                    indexed_copies(arm);
+                }
+            }
+            _ => {}
+        }
+    }
+    for_each_expression(body, &mut visit);
 }
 
 /// `(p + x) + k` is `p + (x + k)`: a constant offset rides the index
@@ -885,6 +936,22 @@ pub fn displacements_with(body: &mut [Stmt], distribute: bool, split: bool) {
             };
             *offset = i32::from(total);
             *base = inner.clone();
+        }
+        // (-O0: a displacement after an index's constant joins it,
+        // `p + (x + k)` at `d` is `p + (x + (k + d))`.)
+        if !split && !distribute && *offset != 0 && std::env::var_os("MWCC_IRO_O0_SEPARATE_INDEX_DISPLACEMENTS").is_none() {
+            if let ExprKind::Binary(BinaryOp::Add, pointer, ix) = &base.kind {
+                if pointer_like(pointer.ty) && !pointer_like(ix.ty) {
+                    if let ExprKind::Binary(BinaryOp::Add, x, k) = &ix.kind {
+                        if let (Some(k), None) = (k.as_int(), x.as_int()) {
+                            let index = Expr::binary(BinaryOp::Add, (**x).clone(), Expr::typed_int(k + i64::from(*offset), ix.ty), ix.ty);
+                            let ty = base.ty;
+                            *base = Box::new(Expr::binary(BinaryOp::Add, (**pointer).clone(), index, ty));
+                            *offset = 0;
+                        }
+                    }
+                }
+            }
         }
     }
     fn visit(expression: &mut Expr, distribute: bool, split: bool) {

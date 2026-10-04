@@ -1982,6 +1982,18 @@ impl Builder<'_, '_> {
                 let address = self.aggregate_address(base)?;
                 let ty = pointee_type(*element).and_then(pointer_to).unwrap_or(Type::Pointer(*element));
                 let index = self.expression(index)?;
+                // (-O0: a variable row takes the member offset into its
+                // index, `p + (i*s + k)`.)
+                if self.unit.unoptimized
+                    && *offset != 0
+                    && index.as_int().is_none()
+                    && std::env::var_os("MWCC_IRO_O0_MEMBER_ROWS_DISPLACED").is_none()
+                {
+                    let scaled = scale(promoted(index), *stride);
+                    let index_ty = scaled.ty;
+                    let indexed = Expr::binary(BinaryOp::Add, scaled, Expr::typed_int(i64::from(*offset), index_ty), index_ty);
+                    return Ok(Expr::binary(BinaryOp::Add, Expr { ty, ..address }, indexed, ty));
+                }
                 let row = Expr::binary(BinaryOp::Add, Expr { ty, ..address }, scale(promoted(index), *stride), ty);
                 if *offset == 0 {
                     row
