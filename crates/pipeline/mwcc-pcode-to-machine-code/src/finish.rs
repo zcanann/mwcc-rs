@@ -941,10 +941,24 @@ fn result_takes_r3(pcode: &mut PCodeFunction) {
     use mwcc_pcode::Class;
     let general = Class::General;
     let exit = pcode.blocks.len().saturating_sub(1);
-    if exit != 1 || !pcode.blocks[exit].instructions.is_empty() {
+    if exit == 0 || !pcode.blocks[exit].instructions.is_empty() {
         return;
     }
-    let block = &pcode.blocks[0];
+    let single = exit == 1;
+    for number in 0..exit {
+        let block = &pcode.blocks[number];
+        let into_exit = block.successors.contains(&exit) || (number + 1 == exit && block.successors.is_empty());
+        if !into_exit || (!single && toggle("MWCC_PCODE_RESULT_R3_ONE_BLOCK")) {
+            continue;
+        }
+        result_takes_r3_in(pcode, number);
+    }
+}
+
+fn result_takes_r3_in(pcode: &mut PCodeFunction, number: usize) {
+    use mwcc_pcode::Class;
+    let general = Class::General;
+    let block = &pcode.blocks[number];
     let Some(copy) = block.instructions.iter().rposition(|instruction| instruction.defs(general).contains(&3)) else { return };
     let Some((3, value)) = block.instructions[copy].copy(general) else { return };
     // (Nor a tail call's argument.)
@@ -966,12 +980,29 @@ fn result_takes_r3(pcode: &mut PCodeFunction) {
     {
         return;
     }
+    // (In a later block, the parameter's own copy out of r3 just stays
+    // uncoalesced when it is read after the value.)
+    if number > 0 {
+        let entry_copy = pcode.blocks[0]
+            .instructions
+            .iter()
+            .position(|instruction| matches!(instruction.copy(general), Some((p, 3)) if p >= 32));
+        if let Some(at) = entry_copy {
+            let Some((parameter, _)) = pcode.blocks[0].instructions[at].copy(general) else { return };
+            let read_late = (defined + 1..copy).any(|index| pcode.blocks[number].instructions[index].uses(general).contains(&parameter));
+            let redefined = pcode.blocks.iter().flat_map(|block| &block.instructions).filter(|instruction| instruction.defs(general).contains(&parameter)).count() != 1;
+            if read_late && !redefined {
+                pcode.blocks[0].instructions[at].flags.coalesce_disabled = true;
+            }
+        }
+        return;
+    }
     let late_reads: Vec<usize> = (defined + 1..copy).filter(|&at| block.instructions[at].uses(general).contains(&3)).collect();
     if late_reads.is_empty() {
         return;
     }
     let aside = pcode.fresh(general);
-    let block = &mut pcode.blocks[0];
+    let block = &mut pcode.blocks[number];
     for &at in &late_reads {
         let instruction = &mut block.instructions[at];
         rename_use(instruction, 3, aside);
