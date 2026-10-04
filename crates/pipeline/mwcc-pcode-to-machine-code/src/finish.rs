@@ -104,6 +104,9 @@ pub fn finish(
     if options.early_frame && !options.unoptimized && !toggle("MWCC_PCODE_NO_CONSTANT_LOW_FOLDS") {
         fold_constant_lows(&mut pcode);
     }
+    if !options.unoptimized && !toggle("MWCC_PCODE_NO_PRE_INCREMENT_ACCESSES") {
+        pre_increment_accesses(&mut pcode);
+    }
     // (GC/1.0-1.2.5n fold the sum once colored: not with r0 as its base.)
     if options.early_frame && !options.unoptimized && !toggle("MWCC_PCODE_NO_EARLY_INDEXED_SUMS") {
         fold_indexed_loads(&mut pcode, true);
@@ -793,6 +796,50 @@ fn propagate_physical_copies(pcode: &mut PCodeFunction) -> bool {
 /// A copy `mr v,rN` that stayed (v outlives rN): after scheduling, uses of
 /// `v` in its block read rN until either is redefined. (Not a `v` used in
 /// other blocks or across a call.)
+/// `addi p,p,k; l*/st* x,0(p)` is the update form `l*u/st*u x,k(p)` (`*++p`).
+fn pre_increment_accesses(pcode: &mut PCodeFunction) {
+    use mwcc_pcode::Class;
+    for block in &mut pcode.blocks {
+        let mut index = 0;
+        while index + 1 < block.instructions.len() {
+            let (p, k) = match block.instructions[index].instruction {
+                Instruction::AddImmediate { d, a, immediate } if d == a && d > 1 && block.instructions[index].relocation.is_none() => (d, immediate),
+                _ => {
+                    index += 1;
+                    continue;
+                }
+            };
+            let Some(at) = (index + 1..block.instructions.len()).find(|&at| {
+                let instruction = &block.instructions[at];
+                instruction.uses(Class::General).contains(&p) || instruction.defs(Class::General).contains(&p)
+            }) else {
+                index += 1;
+                continue;
+            };
+            let access = &block.instructions[at];
+            let only_base = access.uses(Class::General).iter().filter(|&&register| register == p).count() == 1
+                && access.relocation.is_none()
+                && access.displacement_symbol.is_none();
+            let updated = match access.instruction {
+                Instruction::LoadWord { d, a, offset: 0 } if a == p && d != p => Some(Instruction::LoadWordWithUpdate { d, a, offset: k }),
+                Instruction::LoadHalfwordZero { d, a, offset: 0 } if a == p && d != p => Some(Instruction::LoadHalfZeroWithUpdate { d, a, offset: k }),
+                Instruction::LoadByteZero { d, a, offset: 0 } if a == p && d != p => Some(Instruction::LoadByteZeroWithUpdate { d, a, offset: k }),
+                Instruction::StoreWord { s, a, offset: 0 } if a == p && s != p => Some(Instruction::StoreWordWithUpdate { s, a, offset: k }),
+                Instruction::StoreHalfword { s, a, offset: 0 } if a == p && s != p => Some(Instruction::StoreHalfwordWithUpdate { s, a, offset: k }),
+                Instruction::StoreByte { s, a, offset: 0 } if a == p && s != p => Some(Instruction::StoreByteWithUpdate { s, a, offset: k }),
+                _ => None,
+            };
+            match updated {
+                Some(instruction) if only_base => {
+                    block.instructions[at].instruction = instruction;
+                    block.instructions.remove(index);
+                }
+                _ => index += 1,
+            }
+        }
+    }
+}
+
 /// GC/1.0-1.2.5n: `lis t,h; addi t,t,l; <access> k(t)` folds the low half
 /// into the access (`k+l(t)`) when nothing reads `t` after it and the
 /// access stores, or loads at 0 or into another register.
