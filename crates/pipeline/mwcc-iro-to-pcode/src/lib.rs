@@ -2080,6 +2080,21 @@ impl Lowerer<'_, '_> {
         }
         // The final instruction targets r3: the conversion when there is one.
         let converts = !fits && is_narrow(return_type) && value.ty != return_type;
+        // (`(u8)(x >> n)` returned is one rotate, as converted explicitly.)
+        if converts
+            && !self.unoptimized
+            && is_unsigned_narrow(return_type)
+            && matches!(&value.kind, ExprKind::Binary(BinaryOp::ShiftRight, x, n)
+                if x.ty == Type::UnsignedInt && n.as_int().is_some_and(|n| (1..32).contains(&n)))
+            && !toggle("MWCC_PCODE_NO_RETURNED_NARROW_ROTATE")
+        {
+            let converted = Expr { kind: ExprKind::Convert(Box::new(value.clone())), ty: return_type };
+            let (register, _) = self.expression_with_target(&converted, direct)?;
+            if register != 3 {
+                self.emit_plain(Instruction::Or { a: 3, s: register, b: register });
+            }
+            return Ok(());
+        }
         let raw = self.is_raw(value) || parameter;
         let outer = std::mem::replace(&mut self.returned, if converts { 0 } else { value as *const Expr as usize });
         let lowered = self.expression_with_target(value, if converts { None } else { direct });
