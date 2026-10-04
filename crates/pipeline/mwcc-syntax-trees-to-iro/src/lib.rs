@@ -1868,6 +1868,21 @@ impl Builder<'_, '_> {
             }
             Expression::Cast { target_type, operand } if is_value_type(*target_type) || is_wide(*target_type) => {
                 let operand = self.expression(operand)?;
+                // (A constant converts to an integer type as it is built.)
+                if let Some(value) = operand.as_int().filter(|_| std::env::var_os("MWCC_IRO_NO_CONSTANT_CASTS").is_none()) {
+                    let folded = match *target_type {
+                        Type::Char => Some(i64::from(value as i8)),
+                        Type::UnsignedChar => Some(i64::from(value as u8)),
+                        Type::Short => Some(i64::from(value as i16)),
+                        Type::UnsignedShort => Some(i64::from(value as u16)),
+                        Type::Int => Some(i64::from(value as i32)),
+                        Type::UnsignedInt => Some(i64::from(value as u32)),
+                        _ => None,
+                    };
+                    if let Some(folded) = folded {
+                        return Ok(Expr { kind: ExprKind::Int(folded), ty: *target_type });
+                    }
+                }
                 Expr { kind: ExprKind::Convert(Box::new(operand)), ty: *target_type }
             }
             Expression::Member { base, offset, member_type, index_stride } => {
