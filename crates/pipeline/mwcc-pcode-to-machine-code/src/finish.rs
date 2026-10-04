@@ -91,6 +91,11 @@ pub fn finish(
     if !options.unoptimized && !options.fold_absolute_into_own_base && !toggle("MWCC_PCODE_LATE_STORE_FOLD") {
         fold_absolute_stores(&mut pcode);
     }
+    // (GC/3.x: the result takes r3 and a parameter still read after it is
+    // computed is copied aside on entry.)
+    if options.fold_absolute_into_own_base && !options.unoptimized && !toggle("MWCC_PCODE_NO_RESULT_TAKES_R3") {
+        result_takes_r3(&mut pcode);
+    }
     let colors = coloring::color(&mut pcode, options.delete_dead)?;
     dump(&pcode, "AFTER REGISTER COLORING");
     if !options.early_frame && !options.unoptimized && !toggle("MWCC_PCODE_NO_MOVE_RECORD") {
@@ -925,6 +930,83 @@ fn fold_constant_lows(pcode: &mut PCodeFunction) {
                 }
                 _ => index += 1,
             }
+        }
+    }
+}
+
+/// A one-block function whose result `mr r3,v` follows reads of the
+/// parameter in r3 made after v is defined: those reads take a copy of r3
+/// made on entry, so v coalesces into r3.
+fn result_takes_r3(pcode: &mut PCodeFunction) {
+    use mwcc_pcode::Class;
+    let general = Class::General;
+    let exit = pcode.blocks.len().saturating_sub(1);
+    if exit != 1 || !pcode.blocks[exit].instructions.is_empty() {
+        return;
+    }
+    let block = &pcode.blocks[0];
+    let Some(copy) = block.instructions.iter().rposition(|instruction| instruction.defs(general).contains(&3)) else { return };
+    let Some((3, value)) = block.instructions[copy].copy(general) else { return };
+    if value < 32 || block.instructions.iter().any(|instruction| instruction.instruction.is_call()) {
+        return;
+    }
+    // (r3 is not redefined before the copy, and v is defined once.)
+    if block.instructions[..copy].iter().any(|instruction| instruction.defs(general).contains(&3)) {
+        return;
+    }
+    let definitions: Vec<usize> = (0..copy).filter(|&at| block.instructions[at].defs(general).contains(&value)).collect();
+    let [defined] = definitions.as_slice() else { return };
+    let defined = *defined;
+    // (Only a loaded value the result copy alone reads.)
+    if !format!("{:?}", block.instructions[defined].instruction).starts_with("Load")
+        || (defined + 1..copy).any(|at| block.instructions[at].uses(general).contains(&value))
+    {
+        return;
+    }
+    let late_reads: Vec<usize> = (defined + 1..copy).filter(|&at| block.instructions[at].uses(general).contains(&3)).collect();
+    if late_reads.is_empty() {
+        return;
+    }
+    let aside = pcode.fresh(general);
+    let block = &mut pcode.blocks[0];
+    for &at in &late_reads {
+        let instruction = &mut block.instructions[at];
+        rename_use(instruction, 3, aside);
+        // (A base must not be r0.)
+        if memory_base(&instruction.instruction) == Some(aside) && !instruction.not_r0.contains(&aside) {
+            instruction.not_r0.push(aside);
+        }
+    }
+    let mut entry = PInstr::new(Instruction::Or { a: aside, s: 3, b: 3 });
+    entry.flags.entry_copy = true;
+    entry.flags.coalesce_disabled = true;
+    // (Just before the value it frees r3 for.)
+    block.instructions.insert(defined, entry);
+}
+
+/// The base register of a load or store.
+fn memory_base(instruction: &Instruction) -> Option<u32> {
+    use Instruction::*;
+    match *instruction {
+        LoadWord { a, .. } | LoadByteZero { a, .. } | LoadHalfwordZero { a, .. } | LoadHalfwordAlgebraic { a, .. }
+        | LoadFloatSingle { a, .. } | LoadFloatDouble { a, .. } | StoreWord { a, .. } | StoreByte { a, .. }
+        | StoreHalfword { a, .. } | StoreFloatSingle { a, .. } | StoreFloatDouble { a, .. } | LoadWordIndexed { a, .. }
+        | LoadByteZeroIndexed { a, .. } | LoadHalfwordZeroIndexed { a, .. } | LoadHalfwordAlgebraicIndexed { a, .. }
+        | StoreWordIndexed { a, .. } | StoreByteIndexed { a, .. } | StoreHalfwordIndexed { a, .. } => Some(a),
+        _ => None,
+    }
+}
+
+/// Rename the general register `from` where `instruction` reads it.
+fn rename_use(instruction: &mut PInstr, from: u32, to: u32) {
+    mwcc_vreg::for_each_register(&mut instruction.instruction, |role, class, field| {
+        if role == mwcc_vreg::RegisterRole::Use && class == mwcc_pcode::Class::General && *field == from {
+            *field = to;
+        }
+    });
+    for register in &mut instruction.not_r0 {
+        if *register == from {
+            *register = to;
         }
     }
 }
