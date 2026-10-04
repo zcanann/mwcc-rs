@@ -712,6 +712,9 @@ pub(super) fn expand_expression(
         Expression::IndexedUpdateValue { value } => Expression::IndexedUpdateValue {
             value: Box::new(recurse(value, active, changed, value_body_substitutions)),
         },
+        Expression::InlineResult { value } => Expression::InlineResult {
+            value: Box::new(recurse(value, active, changed, value_body_substitutions)),
+        },
         Expression::Dereference { pointer } => Expression::Dereference {
             pointer: Box::new(recurse(pointer, active, changed, value_body_substitutions)),
         },

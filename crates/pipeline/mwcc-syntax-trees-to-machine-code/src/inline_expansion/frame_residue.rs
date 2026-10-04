@@ -383,7 +383,7 @@ fn expression_contains_call(expression: &Expression) -> bool {
         | Expression::BitFieldRead {
             extracted: operand, ..
         }
-        | Expression::IndexedUpdateValue { value: operand }
+        | Expression::IndexedUpdateValue { value: operand } | Expression::InlineResult { value: operand }
         | Expression::Dereference { pointer: operand }
         | Expression::AddressOf { operand }
         | Expression::PostStep {
@@ -430,7 +430,7 @@ fn expression_contains_memory_mutation(expression: &Expression) -> bool {
         | Expression::BitFieldRead {
             extracted: operand, ..
         }
-        | Expression::IndexedUpdateValue { value: operand }
+        | Expression::IndexedUpdateValue { value: operand } | Expression::InlineResult { value: operand }
         | Expression::Dereference { pointer: operand }
         | Expression::AddressOf { operand }
         | Expression::PostStep {

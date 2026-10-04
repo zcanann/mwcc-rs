@@ -312,7 +312,7 @@ fn analyze_expression(
         }
         Expression::Unary { operand, .. }
         | Expression::Cast { operand, .. }
-        | Expression::IndexedUpdateValue { value: operand }
+        | Expression::IndexedUpdateValue { value: operand } | Expression::InlineResult { value: operand }
         | Expression::Dereference { pointer: operand }
         | Expression::AddressOf { operand }
         | Expression::PostStep {

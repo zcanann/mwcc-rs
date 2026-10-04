@@ -93,7 +93,7 @@ fn scalar_expression(expression: &Expression, function: &Function) -> bool {
         }
         Expression::Unary { operand, .. }
         | Expression::Cast { operand, .. }
-        | Expression::IndexedUpdateValue { value: operand } => scalar_expression(operand, function),
+        | Expression::IndexedUpdateValue { value: operand } | Expression::InlineResult { value: operand } => scalar_expression(operand, function),
         Expression::Binary { left, right, .. } => {
             scalar_expression(left, function) && scalar_expression(right, function)
         }
@@ -130,7 +130,7 @@ pub(super) fn captures_names(
             }
             Expression::Unary { operand, .. }
             | Expression::Cast { operand, .. }
-            | Expression::IndexedUpdateValue { value: operand } => expression(operand, names),
+            | Expression::IndexedUpdateValue { value: operand } | Expression::InlineResult { value: operand } => expression(operand, names),
             _ => false,
         }
     }

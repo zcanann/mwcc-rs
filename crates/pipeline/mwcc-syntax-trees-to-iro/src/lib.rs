@@ -1897,6 +1897,25 @@ impl Builder<'_, '_> {
             }
             Expression::AddressOf { operand } => self.address_of(operand)?,
             // Provenance wrappers: the value is the wrapped expression.
+            // (-O0 holds an inlined call's value in a register variable of
+            // its own.)
+            Expression::InlineResult { value } => {
+                let built = self.expression(value)?;
+                if self.unit.unoptimized
+                    && self.guarded == 0
+                    && is_value_type(built.ty)
+                    && built.as_int().is_none()
+                    && std::env::var_os("MWCC_IRO_O0_UNHELD_INLINE_RESULTS").is_none()
+                {
+                    let ty = built.ty;
+                    let id = self.variables.len() + self.temporaries.len();
+                    self.temporaries.push(Variable { name: format!("@i{id}"), ty, kind: VariableKind::Local, frame: None, initialized: false, raw: false, volatile: false });
+                    self.pending.push(Stmt::Assign { variable: id, value: built });
+                    Expr { kind: ExprKind::Var(id), ty }
+                } else {
+                    built
+                }
+            }
             Expression::IndexedUpdateValue { value } => {
                 let built = self.expression(value)?;
                 // (A floating `x += k` keeps its operands in source order.)
@@ -3007,7 +3026,7 @@ fn addresses_taken(function: &ast::Function, early: bool) -> std::collections::H
                 expression(left, out);
                 expression(right, out);
             }
-            Expression::IndexedUpdateValue { value } => expression(value, out),
+            Expression::IndexedUpdateValue { value } | Expression::InlineResult { value } => expression(value, out),
             Expression::PostStep { target, .. } => expression(target, out),
             _ => {}
         }

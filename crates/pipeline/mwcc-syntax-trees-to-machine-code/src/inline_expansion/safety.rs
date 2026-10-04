@@ -1384,7 +1384,7 @@ pub(super) fn expression_use_count(expression: &Expression, name: &str) -> usize
         | Expression::BitFieldRead {
             extracted: operand, ..
         }
-        | Expression::IndexedUpdateValue { value: operand }
+        | Expression::IndexedUpdateValue { value: operand } | Expression::InlineResult { value: operand }
         | Expression::Dereference { pointer: operand }
         | Expression::AddressOf { operand }
         | Expression::PostStep {
@@ -1622,7 +1622,7 @@ fn expression_modifies_or_escapes<const MODIFIED: bool>(expression: &Expression,
         | Expression::BitFieldRead {
             extracted: operand, ..
         }
-        | Expression::IndexedUpdateValue { value: operand }
+        | Expression::IndexedUpdateValue { value: operand } | Expression::InlineResult { value: operand }
         | Expression::Dereference { pointer: operand } => {
             expression_modifies_or_escapes::<MODIFIED>(operand, name)
         }
@@ -1697,7 +1697,7 @@ fn expression_mentions(expression: &Expression, name: &str) -> bool {
         | Expression::BitFieldRead {
             extracted: operand, ..
         }
-        | Expression::IndexedUpdateValue { value: operand }
+        | Expression::IndexedUpdateValue { value: operand } | Expression::InlineResult { value: operand }
         | Expression::Dereference { pointer: operand }
         | Expression::AddressOf { operand }
         | Expression::PostStep {

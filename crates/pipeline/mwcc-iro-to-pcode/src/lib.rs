@@ -976,6 +976,12 @@ impl Lowerer<'_, '_> {
                 next_saved_float -= 1;
                 next_saved_float + 1
             } else {
+                // (An inlined call's value past the saved registers is an
+                // ordinary temporary.)
+                if next_saved < 14 && function.variables[id].name.starts_with("@i") && argument.is_none() {
+                    self.registers[id] = Some(self.fresh(function.variables[id].ty));
+                    continue;
+                }
                 if next_saved < 14 {
                     return Err(unsupported("more register variables than callee-saved registers"));
                 }

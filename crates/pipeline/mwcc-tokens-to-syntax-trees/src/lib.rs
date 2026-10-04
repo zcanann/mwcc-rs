@@ -2534,6 +2534,10 @@ blr\n\
             Expression::Cast { operand, .. } => operand.as_ref(),
             expression => expression,
         };
+        let expanded = match expanded {
+            Expression::InlineResult { value } => value.as_ref(),
+            expression => expression,
+        };
         assert!(
             matches!(
                 expanded,

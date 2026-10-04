@@ -234,6 +234,9 @@ pub(super) fn substitute_expression(
         Expression::IndexedUpdateValue { value } => Expression::IndexedUpdateValue {
             value: Box::new(substitute_expression(value, replacements)),
         },
+        Expression::InlineResult { value } => Expression::InlineResult {
+            value: Box::new(substitute_expression(value, replacements)),
+        },
         Expression::Dereference { pointer } => {
             // The frontend gives a scalar C++ reference parameter the explicit
             // form `*(T*)parameter`: its ABI slot remains pointer-shaped while

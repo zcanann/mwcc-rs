@@ -78,6 +78,11 @@ pub enum Expression {
     IndexedUpdateValue {
         value: Box<Expression>,
     },
+    /// The value of a substituted single-return inline call (its body
+    /// expression): -O0 holds it in a variable of its own.
+    InlineResult {
+        value: Box<Expression>,
+    },
     /// `*pointer` — load the pointed-to value.
     Dereference {
         pointer: Box<Expression>,

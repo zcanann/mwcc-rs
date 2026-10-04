@@ -1220,6 +1220,13 @@ impl Parser {
                                     .collect();
                                 self.inline_substitution_count += 1;
                                 let substituted = substitute_variables(body, &map);
+                                // (An address keeps its identity: a member call
+                                // takes it as `this`.)
+                                let substituted = if matches!(substituted, Expression::AddressOf { .. }) {
+                                    substituted
+                                } else {
+                                    Expression::InlineResult { value: Box::new(substituted) }
+                                };
                                 self.expression_struct_tag =
                                     self.function_return_structs.get(&name).cloned();
                                 substituted
@@ -2759,6 +2766,9 @@ pub(crate) fn substitute_variables(
             target: Box::new(substitute_variables(target, map)),
             value: Box::new(substitute_variables(value, map)),
         },
+        Expression::InlineResult { value } => Expression::InlineResult {
+            value: Box::new(substitute_variables(value, map)),
+        },
         other => other.clone(),
     }
 }
@@ -2813,7 +2823,8 @@ fn is_side_effect_free_read(expression: &Expression) -> bool {
         | Expression::Dereference { pointer: operand }
         | Expression::AddressOf { operand }
         | Expression::Member { base: operand, .. }
-        | Expression::MemberAddress { base: operand, .. } => is_side_effect_free_read(operand),
+        | Expression::MemberAddress { base: operand, .. }
+        | Expression::InlineResult { value: operand } => is_side_effect_free_read(operand),
         Expression::Index { base, index } => {
             is_side_effect_free_read(base) && is_side_effect_free_read(index)
         }
@@ -2835,7 +2846,8 @@ fn unconditional_use_count(expression: &Expression, name: &str) -> Option<usize>
         | Expression::Dereference { pointer: operand }
         | Expression::AddressOf { operand }
         | Expression::Member { base: operand, .. }
-        | Expression::MemberAddress { base: operand, .. } => unconditional_use_count(operand, name),
+        | Expression::MemberAddress { base: operand, .. }
+        | Expression::InlineResult { value: operand } => unconditional_use_count(operand, name),
         Expression::Index { base, index } => {
             Some(unconditional_use_count(base, name)? + unconditional_use_count(index, name)?)
         }

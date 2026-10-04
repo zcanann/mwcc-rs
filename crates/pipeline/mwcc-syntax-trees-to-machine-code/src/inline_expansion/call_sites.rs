@@ -121,7 +121,7 @@ fn collect_expression_calls(expression: &Expression, counts: &mut HashMap<String
         | Expression::BitFieldRead {
             extracted: operand, ..
         }
-        | Expression::IndexedUpdateValue { value: operand }
+        | Expression::IndexedUpdateValue { value: operand } | Expression::InlineResult { value: operand }
         | Expression::Dereference { pointer: operand }
         | Expression::AddressOf { operand }
         | Expression::PostStep {
