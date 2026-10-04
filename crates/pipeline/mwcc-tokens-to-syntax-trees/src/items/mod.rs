@@ -1521,7 +1521,7 @@ impl Parser {
             {
                 self.advance();
             }
-            self.parse_type().ok()?;
+            let return_type = self.parse_type().ok()?;
             // An array-typedef parameter's subscripts need the row stride, which
             // inline substitution does not carry — don't record such a body.
             if self.last_array_typedef.take().is_some() {
@@ -1577,6 +1577,17 @@ impl Parser {
             if *self.peek() != Token::BraceClose {
                 return None;
             }
+            // (The value converts to the declared return type: a bit-field
+            // returned as `s32` compares signed.)
+            let body = match body {
+                Expression::BitFieldRead { .. }
+                    if matches!(return_type, Type::Int | Type::UnsignedInt)
+                        && std::env::var_os("MWCC_INLINE_UNCONVERTED_RESULTS").is_none() =>
+                {
+                    Expression::Cast { target_type: return_type, operand: Box::new(body) }
+                }
+                body => body,
+            };
             Some((name, parameters, body))
         })();
         self.position = saved;
