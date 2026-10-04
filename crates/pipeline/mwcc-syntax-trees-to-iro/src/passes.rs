@@ -184,6 +184,9 @@ pub fn run(function: &mut Function, branch_preserving: bool, reassociates_sums: 
     if enabled("FOLD") {
         for_each_expression(&mut function.body, &mut |expression| fold(expression));
     }
+    if enabled("MERGED_UPDATES") {
+        merge_successive_updates(&mut function.body);
+    }
     if enabled("CONSTANT_BRANCHES") {
         for_each_expression(&mut function.body, &mut |expression| logical_constants(expression));
         constant_branches(&mut function.body);
@@ -3821,5 +3824,140 @@ pub fn hoist_call_spanning_addresses(function: &mut Function, eligible: &dyn Fn(
         places(&mut function.body, &name, &base);
         for_each_expression(&mut function.body, &mut |e| rewrite(e, &name, &base));
         function.body.insert(0, Stmt::Assign { variable, value: Expr { kind: ExprKind::GlobalAddress(name.clone()), ty } });
+    }
+}
+
+/// Successive constant updates of one word variable combine: `x += 2;
+/// x += 2;` is `x += 4` (in any statement list).
+pub fn merge_successive_updates(body: &mut Vec<Stmt>) {
+    for statement in body.iter_mut() {
+        match statement {
+            Stmt::If { then_body, else_body, .. } => {
+                merge_successive_updates(then_body);
+                merge_successive_updates(else_body);
+            }
+            Stmt::Loop { body, step, .. } => {
+                merge_successive_updates(body);
+                merge_successive_updates(step);
+            }
+            Stmt::Counted { body, .. } => merge_successive_updates(body),
+            Stmt::Switch { arms, .. } => arms.iter_mut().for_each(merge_successive_updates),
+            _ => {}
+        }
+    }
+    // (`x = x + k` or `x = x - k`: the signed step.)
+    fn step(statement: &Stmt) -> Option<(VarId, i64, Type)> {
+        let Stmt::Assign { variable, value } = statement else { return None };
+        if !matches!(value.ty, Type::Int | Type::UnsignedInt) {
+            return None;
+        }
+        match &value.kind {
+            ExprKind::Binary(BinaryOp::Add, base, k) if base.as_var() == Some(*variable) => Some((*variable, k.as_int()?, value.ty)),
+            ExprKind::Binary(BinaryOp::Subtract, base, k) if base.as_var() == Some(*variable) => Some((*variable, -k.as_int()?, value.ty)),
+            _ => None,
+        }
+    }
+    let mut index = 0;
+    while index + 1 < body.len() {
+        match (step(&body[index]), step(&body[index + 1])) {
+            (Some((variable, first, ty)), Some((next, second, _))) if variable == next => {
+                let total = i64::from((first + second) as i32);
+                let base = Expr { kind: ExprKind::Var(variable), ty };
+                body[index] = Stmt::Assign { variable, value: Expr::binary(BinaryOp::Add, base, Expr::typed_int(total, ty), ty) };
+                body.remove(index + 1);
+            }
+            _ => index += 1,
+        }
+    }
+}
+
+/// Constants carried through a straight run of top-level statements: a
+/// register local set to a literal is that literal in later reads and
+/// updates (`s = 0; s = s + 6; *p = s;` stores 6) until control flow.
+pub fn straight_constants(function: &mut Function) {
+    let mut known: Vec<(VarId, Expr)> = Vec::new();
+    let eligible = |function: &Function, id: VarId| {
+        let variable = &function.variables[id];
+        matches!(variable.kind, VariableKind::Local | VariableKind::Temporary)
+            && variable.frame.is_none()
+            && !variable.volatile
+            && !variable.raw
+            && matches!(variable.ty, Type::Int | Type::UnsignedInt)
+    };
+    for index in 0..function.body.len() {
+        let simple = matches!(function.body[index], Stmt::Assign { .. } | Stmt::Store { .. } | Stmt::Eval(_) | Stmt::SetReturn(_));
+        if !simple {
+            known.clear();
+            continue;
+        }
+        // (Reads take the known constants; in a statement that calls, only
+        // the call's arguments do: a value used after the call stays put.)
+        // (Unless the constant folds away entirely: `e = 0; e |= f();`.)
+        let folds_away = {
+            let mut copy = function.body[index].clone();
+            let mut used = Vec::new();
+            for (variable, value) in &known {
+                let before = format!("{copy:?}");
+                substitute(std::slice::from_mut(&mut copy), *variable, value);
+                if format!("{copy:?}") != before {
+                    used.push(value.clone());
+                }
+            }
+            for_each_expression(std::slice::from_mut(&mut copy), &mut |e| {
+                algebra(e);
+                fold(e);
+            });
+            let original = format!("{:?}", function.body[index]);
+            let listing = format!("{copy:?}");
+            let count = |text: &str, value: &Expr| text.matches(&format!("kind: {:?}", value.kind)).count();
+            (!used.is_empty() && used.iter().all(|value| count(&listing, value) <= count(&original, value))).then_some(copy)
+        };
+        if let Some(folded) = folds_away {
+            function.body[index] = folded;
+        } else if format!("{:?}", function.body[index]).contains("Call {") && std::env::var_os("MWCC_IRO_STRAIGHT_CALLS_FULL").is_none() {
+            fn arguments(e: &mut Expr, known: &[(VarId, Expr)]) {
+                if let ExprKind::Call { arguments: list, .. } = &mut e.kind {
+                    for argument in list.iter_mut() {
+                        for (variable, value) in known {
+                            let mut statement = [Stmt::Eval(argument.clone())];
+                            substitute(&mut statement, *variable, value);
+                            if let [Stmt::Eval(substituted)] = statement {
+                                *argument = substituted;
+                            }
+                        }
+                    }
+                    return;
+                }
+                children(e, &mut |child| arguments(child, known));
+            }
+            let snapshot = known.clone();
+            for_each_expression(std::slice::from_mut(&mut function.body[index]), &mut |e| arguments(e, &snapshot));
+            if let Stmt::Assign { variable, .. } = &function.body[index] {
+                let variable = *variable;
+                known.retain(|(id, _)| *id != variable);
+            }
+            continue;
+        }
+        for (variable, value) in &known {
+            match &mut function.body[index] {
+                Stmt::Assign { value: assigned, .. } => {
+                    let mut statement = [Stmt::Eval(assigned.clone())];
+                    substitute(&mut statement, *variable, value);
+                    if let [Stmt::Eval(substituted)] = statement {
+                        *assigned = substituted;
+                    }
+                }
+                statement => substitute(std::slice::from_mut(statement), *variable, value),
+            }
+        }
+        for_each_expression(std::slice::from_mut(&mut function.body[index]), &mut |e| fold(e));
+        if let Stmt::Assign { variable, value } = &function.body[index] {
+            let variable = *variable;
+            known.retain(|(id, _)| *id != variable);
+            if value.as_int().is_some() && eligible(function, variable) {
+                known.push((variable, Expr { ty: function.variables[variable].ty, ..value.clone() }));
+            }
+        }
+        // (A call may change nothing of these: register locals only.)
     }
 }

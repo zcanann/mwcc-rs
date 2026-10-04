@@ -141,6 +141,10 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     // (Without an explicit speed goal, -O3/-O4 count in CTR unrolled.)
     if unit.strength_reduction && !unit.branch_preserving && std::env::var_os("MWCC_IRO_NO_PARTIAL_UNROLL").is_none() {
         unroll::unroll_partially(&mut built.function, unit.unrolling, unit.forwards_stores);
+        if std::env::var_os("MWCC_IRO_NO_STRAIGHT_CONSTANTS").is_none() {
+            passes::merge_successive_updates(&mut built.function.body);
+            passes::straight_constants(&mut built.function);
+        }
         passes::for_each_expression(&mut built.function.body, &mut |expression| passes::fold(expression));
         passes::displacements(&mut built.function.body, unit.reassociates_sums);
     }
