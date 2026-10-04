@@ -91,6 +91,7 @@ pub fn lower(
         unoptimized,
         memory_base: 0,
         memory_offset: 0,
+        variable_bits: HashMap::new(),
         address_operand: 0,
         stored_value: 0,
         addressing: false,
@@ -192,6 +193,8 @@ struct Lowerer<'a, 'u> {
     memory_base: usize,
     /// The displacement of the access `memory_base` is the base of.
     memory_offset: i32,
+    /// Bits a variable assigned in this block can have.
+    variable_bits: HashMap<VarId, u32>,
     /// The global address operand of the sum forming a memory base.
     address_operand: usize,
     /// The value being stored (an address in it keeps its halves tied on
@@ -335,6 +338,7 @@ impl Lowerer<'_, '_> {
         // not available.
         self.loaded_globals.clear();
         self.extended.clear();
+        self.variable_bits.clear();
         self.constants.clear();
         self.common.clear();
         self.float_constants.clear();
@@ -2141,6 +2145,33 @@ impl Lowerer<'_, '_> {
     }
 
     fn assign(&mut self, variable: VarId, value: &Expr) -> Compilation<()> {
+        let bits = self.value_bits(value);
+        let assigned = self.assign_value(variable, value);
+        if bits == u32::MAX || self.homes[variable].is_some() {
+            self.variable_bits.remove(&variable);
+        } else {
+            self.variable_bits.insert(variable, bits);
+        }
+        assigned
+    }
+
+    /// The bits `expression` can have, a variable's from its assignment in
+    /// this block.
+    fn value_bits(&self, expression: &Expr) -> u32 {
+        match &expression.kind {
+            ExprKind::Var(id) => self.variable_bits.get(id).copied().unwrap_or(u32::MAX),
+            ExprKind::Binary(op, left, right) => match (op, right.as_int()) {
+                (BinaryOp::ShiftLeft, Some(n)) if (0..32).contains(&n) => self.value_bits(left) << n,
+                (BinaryOp::ShiftRight, Some(n)) if (0..32).contains(&n) && is_unsigned(promote(left.ty)) => self.value_bits(left) >> n,
+                (BinaryOp::BitAnd, _) => self.value_bits(left) & self.value_bits(right),
+                (BinaryOp::BitOr, _) => self.value_bits(left) | self.value_bits(right),
+                _ => u32::MAX,
+            },
+            _ => possible_bits(expression),
+        }
+    }
+
+    fn assign_value(&mut self, variable: VarId, value: &Expr) -> Compilation<()> {
         if let Some(offset) = self.homes[variable] {
             self.forget_frame_loads();
             let (source, _) = self.expression(value)?;
@@ -4843,6 +4874,20 @@ impl Lowerer<'_, '_> {
                         .map(|(_, form)| (n as u8, form))
                 })
             });
+        // (A mask keeping every bit the value can have is no operation.)
+        if op == BinaryOp::BitAnd && !self.unoptimized && !toggle("MWCC_PCODE_KEEP_NOOP_MASKS") {
+            if let Some(mask) = right.as_int() {
+                if self.value_bits(left) & !(mask as u32) == 0 {
+                    return Ok(match target {
+                        Some(d) if d != a => {
+                            self.copy(ty, d, a);
+                            (d, ty)
+                        }
+                        _ => (a, ty),
+                    });
+                }
+            }
+        }
         if let Some((shift, form)) = shift_add {
             let shifted = self.temporary();
             self.emit_plain(Instruction::ShiftLeftImmediate { a: shifted, s: a, shift });
