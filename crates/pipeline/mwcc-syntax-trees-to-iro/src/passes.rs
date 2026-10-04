@@ -2403,6 +2403,34 @@ fn select(
             return Some(vec![destination.assign(value)]);
         }
     }
+    // `x != 0 ? -1 : 0` (and `x == 0 ? 0 : -1`, and `x ? -1 : 0`) is the
+    // sign of `-x | x`; GC/3.x takes a plain value's from its top bit.
+    if std::env::var_os("MWCC_IRO_NO_NONZERO_MASK_SELECT").is_none() {
+        let arms = (when_true.as_int(), when_false.as_int());
+        let word = |e: &Expr| matches!(e.ty, Type::Int | Type::UnsignedInt);
+        let (nonzero, logical) = match &condition.kind {
+            ExprKind::Binary(BinaryOp::NotEqual, x, zero) if zero.as_int() == Some(0) && word(x) && arms == (Some(-1), Some(0)) => (Some(x.as_ref()), false),
+            ExprKind::Binary(BinaryOp::Equal, x, zero) if zero.as_int() == Some(0) && word(x) && arms == (Some(0), Some(-1)) => (Some(x.as_ref()), false),
+            ExprKind::Binary(op, ..) if op.is_comparison() || matches!(op, BinaryOp::LogicalAnd | BinaryOp::LogicalOr) => (None, false),
+            _ if word(condition) && arms == (Some(-1), Some(0)) => (Some(condition), UNSIGNED_MAXIMA.with(std::cell::Cell::get)),
+            _ => (None, false),
+        };
+        if let Some(x) = nonzero {
+            let negated = Expr { kind: ExprKind::Unary(UnaryOp::Negate, Box::new(x.clone())), ty: x.ty };
+            let either = Expr::binary(BinaryOp::BitOr, negated, x.clone(), x.ty);
+            let mask = if logical {
+                let unsigned = Expr { kind: ExprKind::Convert(Box::new(x.clone())), ty: Type::UnsignedInt };
+                let negated = Expr { kind: ExprKind::Unary(UnaryOp::Negate, Box::new(unsigned.clone())), ty: Type::UnsignedInt };
+                let either = Expr::binary(BinaryOp::BitOr, negated, unsigned, Type::UnsignedInt);
+                let bit = Expr::binary(BinaryOp::ShiftRight, either, Expr::typed_int(31, Type::Int), Type::UnsignedInt);
+                Expr { kind: ExprKind::Unary(UnaryOp::Negate, Box::new(bit)), ty: Type::Int }
+            } else {
+                let as_signed = Expr { ty: Type::Int, ..either };
+                Expr::binary(BinaryOp::ShiftRight, as_signed, Expr::typed_int(31, Type::Int), Type::Int)
+            };
+            return Some(vec![destination.assign(mask)]);
+        }
+    }
     // `x < 0 ? -1 : 0` (and `x >= 0 ? 0 : -1`) is the sign mask `x >> 31`.
     if let ExprKind::Binary(op @ (BinaryOp::Less | BinaryOp::GreaterEqual), x, zero) = &condition.kind {
         let arms = (when_true.as_int(), when_false.as_int());

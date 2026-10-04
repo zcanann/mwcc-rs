@@ -2863,6 +2863,36 @@ impl Lowerer<'_, '_> {
                         let mask = Expr::binary(BinaryOp::ShiftRight, (**x).clone(), Expr::typed_int(31, Type::Int), Type::Int);
                         return self.expression_with_target(&mask, target);
                     }
+                    // (`x != 0 ? -1 : 0` is the sign of `-x | x`.)
+                    let word = |e: &Expr| matches!(e.ty, Type::Int | Type::UnsignedInt);
+                    let nonzero_of = match (&condition.kind, when_true.as_int(), when_false.as_int()) {
+                        (ExprKind::Binary(BinaryOp::NotEqual, x, zero), Some(-1), Some(0))
+                        | (ExprKind::Binary(BinaryOp::Equal, x, zero), Some(0), Some(-1))
+                            if zero.as_int() == Some(0) && word(x) =>
+                        {
+                            Some((x.as_ref(), true))
+                        }
+                        (_, Some(-1), Some(0)) if word(condition) && !matches!(&condition.kind, ExprKind::Binary(op, ..) if op.is_comparison()) => {
+                            Some((condition.as_ref(), !self.unit.forwards_stores))
+                        }
+                        _ => None,
+                    };
+                    if let Some((x, arithmetic)) = nonzero_of.filter(|_| !toggle("MWCC_PCODE_NO_NONZERO_MASK")) {
+                        let (value, _) = self.expression(x)?;
+                        let negated = self.temporary();
+                        self.emit_plain(Instruction::Negate { d: negated, a: value });
+                        let either = self.temporary();
+                        self.emit_plain(Instruction::Or { a: either, s: negated, b: value });
+                        let d = self.result(target);
+                        if arithmetic {
+                            self.emit_plain(Instruction::ShiftRightAlgebraicImmediate { a: d, s: either, shift: 31 });
+                        } else {
+                            let bit = self.temporary();
+                            self.emit_plain(Instruction::ShiftRightLogicalImmediate { a: bit, s: either, shift: 31 });
+                            self.emit_plain(Instruction::Negate { d, a: bit });
+                        }
+                        return Ok((d, ty));
+                    }
                 }
                 let d = self.result_for(ty, target);
                 // (An arm that is the destination itself: only the other
@@ -5116,7 +5146,10 @@ impl Lowerer<'_, '_> {
             };
             match &e.kind {
                 ExprKind::Binary(_, x, y) => (other(x) && y.as_int().is_some()) || (x.as_int().is_some() && other(y)),
-                ExprKind::Unary(UnaryOp::Negate, x) => other(x),
+                // (Also the negation of the other operand itself: `-x | x`.)
+                ExprKind::Unary(UnaryOp::Negate, x) => {
+                    other(x) || (unpromoted(x).as_var().is_some() && unpromoted(x).as_var() == right_var && !toggle("MWCC_PCODE_SELF_NEGATION_SWAP"))
+                }
                 _ => false,
             }
         };
