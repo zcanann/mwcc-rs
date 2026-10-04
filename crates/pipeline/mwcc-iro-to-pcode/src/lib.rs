@@ -90,6 +90,7 @@ pub fn lower(
         constants: HashMap::new(),
         unoptimized,
         memory_base: 0,
+        memory_offset: 0,
         stored_value: 0,
         addressing: false,
         returned: 0,
@@ -188,6 +189,8 @@ struct Lowerer<'a, 'u> {
     /// The memory access base being lowered (by address): its sum computes
     /// the base before the index.
     memory_base: usize,
+    /// The displacement of the access `memory_base` is the base of.
+    memory_offset: i32,
     /// The value being stored (an address in it keeps its halves tied on
     /// GC/3.x).
     stored_value: usize,
@@ -1428,10 +1431,12 @@ impl Lowerer<'_, '_> {
     /// A base and displacement for `base + offset`: a displacement beyond 16
     /// bits adds its high half first (`addis t,base,hi; lwz d,lo(t)`).
     /// A memory access base.
-    fn base_expression(&mut self, base: &Expr) -> Compilation<(u32, Type)> {
+    fn base_expression(&mut self, base: &Expr, offset: i32) -> Compilation<(u32, Type)> {
         let outer = std::mem::replace(&mut self.memory_base, base as *const Expr as usize);
+        let outer_offset = std::mem::replace(&mut self.memory_offset, offset);
         let result = self.expression(base);
         self.memory_base = outer;
+        self.memory_offset = outer_offset;
         result
     }
 
@@ -3298,10 +3303,10 @@ impl Lowerer<'_, '_> {
                 !self.unit.strength_reduction && self.absolute_base(base) && !toggle("MWCC_PCODE_O2_ADDRESS_FIRST")
             }) {
                 let (b, _) = self.expression(index)?;
-                let (a, _) = self.base_expression(base)?;
+                let (a, _) = self.base_expression(base, offset)?;
                 return self.indexed_load(ty, a, b, target);
             }
-            let (a, _) = self.base_expression(base)?;
+            let (a, _) = self.base_expression(base, offset)?;
             match index {
                 Some(index) => {
                     let (b, _) = self.expression(index)?;
@@ -4712,7 +4717,10 @@ impl Lowerer<'_, '_> {
         // An absolute array's index is computed before its address (at -O4
         // unless the sum is a memory access base).
         let addressing = std::mem::take(&mut self.addressing);
-        let index_first = (self.unoptimized || !addressing)
+        // (GC/1.0-1.2.5n: also a base accessed at 0.)
+        let index_first = (self.unoptimized
+            || !addressing
+            || (self.unit.early_frame && self.memory_offset == 0 && !toggle("MWCC_PCODE_EARLY_ADDRESS_FIRST")))
             && op == BinaryOp::Add
             && immediate.is_none()
             && self.absolute_base(left)
@@ -5550,11 +5558,11 @@ impl Lowerer<'_, '_> {
                 if !self.unit.strength_reduction && self.absolute_base(base) && !toggle("MWCC_PCODE_O2_ADDRESS_FIRST") =>
             {
                 let (b, _) = self.expression(index)?;
-                let (a, _) = self.base_expression(base)?;
+                let (a, _) = self.base_expression(base, *offset)?;
                 (a, i16::try_from(*offset).map_err(|_| unsupported("large member offset"))?, Some(b), None)
             }
             Place::Memory { base, index, offset } => {
-                let (base, _) = self.base_expression(base)?;
+                let (base, _) = self.base_expression(base, *offset)?;
                 let index = match index {
                     Some(index) => Some(self.expression(index)?.0),
                     None => None,

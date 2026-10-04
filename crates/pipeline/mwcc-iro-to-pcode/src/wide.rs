@@ -308,7 +308,7 @@ impl Lowerer<'_, '_> {
                 Ok((d_high, d_low))
             }
             ExprKind::Load { base, index: None, offset } => {
-                let (address, _) = self.base_expression(base)?;
+                let (address, _) = self.base_expression(base, *offset)?;
                 let (address, displacement) = self.displacement(address, *offset)?;
                 let next = displacement.checked_add(4).ok_or_else(|| unsupported("a wide load past the displacement"))?;
                 let (high, _) = self.load(Type::Int, address, displacement, None, None)?;
@@ -388,7 +388,7 @@ impl Lowerer<'_, '_> {
         let (high, low) = self.wide(value)?;
         match place {
             Place::Memory { base, index: None, offset } => {
-                let (address, _) = self.base_expression(base)?;
+                let (address, _) = self.base_expression(base, *offset)?;
                 let (address, displacement) = self.displacement(address, *offset)?;
                 let next = displacement.checked_add(4).ok_or_else(|| unsupported("a wide store past the displacement"))?;
                 self.emit_based(Instruction::StoreWord { s: low, a: address, offset: next }, address);
