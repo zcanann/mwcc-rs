@@ -2824,7 +2824,12 @@ impl Lowerer<'_, '_> {
                     let reads_destination = |e: &Expr| {
                         (0..self.function.variables.len()).any(|id| self.registers[id] == Some(d) && e.mentions(id))
                     };
-                    if !(cheap(first) && !loads(second)) || both_variables || reads_destination(condition) || reads_destination(second) {
+                    // (GC/1.0-1.2.5n select between two constants on two paths.)
+                    let constants = self.unit.branch_preserving
+                        && constant(when_true)
+                        && constant(when_false)
+                        && !toggle("MWCC_PCODE_EARLY_HOISTED_CONSTANT_SELECT");
+                    if !(cheap(first) && !loads(second)) || both_variables || constants || reads_destination(condition) || reads_destination(second) {
                         return self.two_path_select(condition, when_true, when_false, ty, d);
                     }
                     let join = self.new_label();
