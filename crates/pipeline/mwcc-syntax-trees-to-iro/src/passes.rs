@@ -430,6 +430,9 @@ pub fn run_unoptimized(function: &mut Function) {
         }
     }
     for_each_expression(&mut function.body, &mut |expression| literals(expression));
+    if std::env::var_os("MWCC_IRO_O0_UNSUNK_CONSTANTS").is_none() {
+        for_each_expression(&mut function.body, &mut |expression| sunk_constants(expression));
+    }
     if std::env::var_os("MWCC_IRO_NO_CONSTANT_BRANCHES").is_none() {
         for_each_expression(&mut function.body, &mut |expression| logical_constants(expression));
         constant_branches(&mut function.body);
@@ -443,6 +446,36 @@ pub fn run_unoptimized(function: &mut Function) {
         indexed_copies(&mut function.body);
     }
     narrowing(function);
+}
+
+/// -O0: the front end moves a sum's constant: `(a + b) + k` is
+/// `a + (b + k)`, and `a + (b + k)` is `(b + a) + k`.
+fn sunk_constants(expression: &mut Expr) {
+    children(expression, &mut sunk_constants);
+    if !matches!(expression.ty, Type::Int | Type::UnsignedInt) {
+        return;
+    }
+    let ty = expression.ty;
+    let ExprKind::Binary(BinaryOp::Add, left, right) = &expression.kind else { return };
+    let sum = |e: &Expr| match &e.kind {
+        ExprKind::Binary(BinaryOp::Add, x, k) if k.as_int().is_some() && x.as_int().is_none() && !pointer_like(x.ty) => {
+            Some(((**x).clone(), (**k).clone()))
+        }
+        _ => None,
+    };
+    if let (Some(k), ExprKind::Binary(BinaryOp::Add, a, b)) = (right.as_int(), &left.kind) {
+        if a.as_int().is_none() && b.as_int().is_none() && !pointer_like(a.ty) && !pointer_like(b.ty) {
+            let inner = Expr::binary(BinaryOp::Add, (**b).clone(), Expr::typed_int(k, right.ty), ty);
+            *expression = Expr::binary(BinaryOp::Add, (**a).clone(), inner, ty);
+            return;
+        }
+    }
+    if left.as_int().is_none() && !pointer_like(left.ty) {
+        if let Some((b, k)) = sum(right) {
+            let inner = Expr::binary(BinaryOp::Add, b, (**left).clone(), ty);
+            *expression = Expr::binary(BinaryOp::Add, inner, k, ty);
+        }
+    }
 }
 
 /// -O0: a struct copied from or to `p + x` at displacement `d` has its
