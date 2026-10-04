@@ -1022,6 +1022,19 @@ impl Builder<'_, '_> {
         };
         let begin = 31 - (shift + width - 1);
         let end = 31 - shift;
+        // (Only the field's low bits are inserted: a narrow value wide
+        // enough goes in unextended.)
+        let value = match value.kind {
+            ExprKind::Convert(inner)
+                if is_narrow(inner.ty)
+                    && 8 * mwcc_iro::width(inner.ty) as u8 >= width
+                    && !self.unit.unoptimized
+                    && std::env::var_os("MWCC_IRO_EXTENDED_FIELD_VALUES").is_none() =>
+            {
+                *inner
+            }
+            kind => Expr { kind, ty: value.ty },
+        };
         let inserted = Expr {
             kind: ExprKind::Idiom(mwcc_iro::Idiom::Insert { base: Box::new(old), value: Box::new(value), shift, begin, end }),
             ty: Type::Int,
