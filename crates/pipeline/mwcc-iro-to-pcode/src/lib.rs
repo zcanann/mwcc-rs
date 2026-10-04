@@ -1621,7 +1621,39 @@ impl Lowerer<'_, '_> {
                 }
                 self.place_label(top);
                 self.loops.push((exit, next));
-                for statement in body {
+                // (Unscheduled with strength reduction, the body's trailing
+                // induction steps join the latch too.)
+                let body_latch_from = if !self.unit.schedules
+                    && self.unit.strength_reduction
+                    && effects.is_empty()
+                    && condition.as_ref().is_some_and(|condition| {
+                        matches!(&condition.kind, ExprKind::Binary(op, left, _) if op.is_comparison() && !is_wide(left.ty) && !is_float(left.ty))
+                    })
+                    && condition.as_ref().is_some_and(|condition| matches!(&condition.kind, ExprKind::Binary(_, _, right) if right.as_int().is_some()))
+                    && !format!("{body:?}").contains("Continue")
+                    && !format!("{body:?}").contains("Break")
+                    && !format!("{body:?}").contains("Label")
+                    && !toggle("MWCC_PCODE_NO_BODY_LATCH_STEPS")
+                {
+                    let condition = condition.as_ref().expect("checked");
+                    let induction = |statement: &Stmt| match statement {
+                        Stmt::Assign { variable, value } => {
+                            matches!(&value.kind, ExprKind::Binary(BinaryOp::Add, base, k) if base.as_var() == Some(*variable) && k.as_int().is_some())
+                                && !condition.mentions(*variable)
+                                && step.iter().all(|other| !matches!(other, Stmt::Assign { variable: v, .. } if v == variable))
+                                && body.iter().filter(|other| matches!(other, Stmt::Assign { variable: v, .. } if v == variable)).count() == 1
+                        }
+                        _ => false,
+                    };
+                    let mut from = body.len();
+                    while from > 0 && induction(&body[from - 1]) {
+                        from -= 1;
+                    }
+                    from
+                } else {
+                    body.len()
+                };
+                for statement in &body[..body_latch_from] {
                     self.statement(statement)?;
                 }
                 self.place_if_targeted(next);
@@ -1662,9 +1694,9 @@ impl Lowerer<'_, '_> {
                 match condition {
                     // A loop never repeated (`do ... while (0)`) has no test.
                     Some(condition) if condition.as_int() == Some(0) => {}
-                    Some(Expr { kind: ExprKind::Binary(op, left, right), .. }) if latch_from < step.len() => {
+                    Some(Expr { kind: ExprKind::Binary(op, left, right), .. }) if latch_from < step.len() || body_latch_from < body.len() => {
                         let (bit, true_when_set) = self.compare(*op, left, right)?;
-                        for statement in &step[latch_from..] {
+                        for statement in body[body_latch_from..].iter().chain(&step[latch_from..]) {
                             self.statement(statement)?;
                         }
                         let options = if true_when_set { 12 } else { 4 };
