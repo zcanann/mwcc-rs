@@ -389,6 +389,22 @@ pub fn run_unoptimized(function: &mut Function) {
                 let value = if mwcc_iro::is_unsigned(operand.ty) { f64::from(value as u32) } else { value as f64 };
                 Some(Expr { kind: ExprKind::Float(value), ty: expression.ty })
             }
+            // (An address's constant offsets combine: `(p + 20) + 8` is
+            // `p + 28`.)
+            ExprKind::Binary(BinaryOp::Add, left, right)
+                if pointer_like(expression.ty)
+                    && std::env::var_os("MWCC_IRO_O0_SEPARATE_OFFSETS").is_none()
+                    && match (&left.kind, &right.kind) {
+                        (ExprKind::Binary(BinaryOp::Add, _, inner), _) => inner.as_int().is_some() && right.as_int().is_some(),
+                        (_, ExprKind::Binary(BinaryOp::Add, _, inner)) => inner.as_int().is_some() && left.as_int().is_some(),
+                        _ => false,
+                    } =>
+            {
+                let (sum, constant) = if right.as_int().is_some() { (left, right) } else { (right, left) };
+                let ExprKind::Binary(_, base, inner) = &sum.kind else { unreachable!("matched above") };
+                let total = inner.as_int().unwrap_or(0) + constant.as_int().unwrap_or(0);
+                Some(Expr::binary(BinaryOp::Add, (**base).clone(), Expr::typed_int(total, inner.ty), expression.ty))
+            }
             ExprKind::Binary(op, left, right) => match (left.as_int(), right.as_int()) {
                 (Some(_), Some(_)) if mwcc_iro::is_wide(expression.ty) || mwcc_iro::is_wide(left.ty) || mwcc_iro::is_wide(right.ty) => {
                     fold_wide(*op, left, right, expression.ty).map(|value| Expr::typed_int(value, expression.ty))
