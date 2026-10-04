@@ -3230,7 +3230,22 @@ pub fn forward_single_uses(function: &mut Function) {
             && !rest.iter().any(|s| matches!(s, Stmt::Assign { variable: v, .. } if *v == variable))
             && !has_label(&function.body)
             && !toggle_env("MWCC_IRO_NO_FORWARDED_NARROW_UPDATES");
-        if !eligible && !update {
+        // (Or a parameter set to a constant that only the next statement
+        // reads.)
+        let constant = !eligible
+            && !update
+            && matches!(candidate.kind, VariableKind::Parameter)
+            && candidate.frame.is_none()
+            && !candidate.volatile
+            && !candidate.raw
+            && value.as_int().is_some()
+            && reads(std::slice::from_ref(&function.body[index + 1]), variable) >= 1
+            && reads(&rest[1..], variable) == 0
+            && !rest.iter().any(|s| matches!(s, Stmt::Assign { variable: v, .. } if *v == variable))
+            && matches!(&function.body[index + 1], Stmt::Store { .. } | Stmt::Assign { .. } | Stmt::Eval(_) | Stmt::SetReturn(_))
+            && !has_label(&function.body)
+            && !toggle_env("MWCC_IRO_NO_FORWARDED_PARAMETER_CONSTANTS");
+        if !eligible && !update && !constant {
             index += 1;
             continue;
         }
