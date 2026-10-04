@@ -118,6 +118,8 @@ pub struct Unit<'a> {
     pub forwards_stores: bool,
     /// Loop strength reduction (`-O3`/`-O4`).
     pub strength_reduction: bool,
+    /// Instruction scheduling (`-O4`).
+    pub schedules: bool,
     /// GC/1.3-2.x subtract a word converted to signed `long long` with a
     /// zero high word.
     pub zero_wide_subtrahends: bool,

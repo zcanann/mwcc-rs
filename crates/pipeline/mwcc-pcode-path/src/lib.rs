@@ -254,6 +254,7 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
             || request.config.build.label.starts_with("Wii/"),
         branch_preserving: early_frame || patch_frame,
         strength_reduction: matches!(behavior.optimization, mwcc_versions::Optimization::O3 | mwcc_versions::Optimization::O4),
+        schedules: behavior.schedule_latency_slots,
         zero_wide_subtrahends: request.config.build.label.starts_with("GC/1.3") || request.config.build.label.starts_with("GC/2."),
         unrolling: matches!(behavior.optimization, mwcc_versions::Optimization::O3 | mwcc_versions::Optimization::O4)
             && request.config.flags.explicit_speed_goal,

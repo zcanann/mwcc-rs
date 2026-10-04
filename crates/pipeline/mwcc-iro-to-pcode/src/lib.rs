@@ -1048,7 +1048,7 @@ impl Lowerer<'_, '_> {
         let mut late: Vec<(u32, &Expr)> = Vec::new();
         let mut general = FIRST_GENERAL_ARGUMENT;
         for argument in arguments {
-            if self.unit.forwards_stores
+            if (self.unit.forwards_stores || !self.unit.schedules)
                 && !is_float(argument.ty)
                 && !is_wide(argument.ty)
                 && matches!(argument.kind, ExprKind::Load { .. })
@@ -5742,7 +5742,7 @@ impl Lowerer<'_, '_> {
                 // A constant argument is loaded straight into its register.
                 // (GC/3.x loads a loaded word after the other arguments'
                 // copies.)
-                let late_load = self.unit.forwards_stores
+                let late_load = (self.unit.forwards_stores || !self.unit.schedules)
                     && !self.unoptimized
                     && !pass
                     && !is_float(argument.ty)
