@@ -37,6 +37,8 @@ pub struct GlobalInfo {
     /// A `static const` scalar's value (its bits): the unit emits no object,
     /// so every read is the constant.
     pub folded: Option<i64>,
+    /// An object this unit defines (not only declares `extern`).
+    pub defined: bool,
 }
 
 /// The callee name of an indirect call: the target address is the call's

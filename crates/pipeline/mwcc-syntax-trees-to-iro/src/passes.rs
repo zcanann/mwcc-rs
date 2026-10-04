@@ -3788,7 +3788,7 @@ pub fn dead_stores(body: &mut Vec<Stmt>, removable: &dyn Fn(&Place) -> bool) {
 /// GC/1.0-1.2.5n form a global's address once, on entry, when the function
 /// uses it as a memory base on both sides of a call: the address lives in
 /// a saved register for the whole function.
-pub fn hoist_call_spanning_addresses(function: &mut Function, eligible: &dyn Fn(&str) -> bool) {
+pub fn hoist_call_spanning_addresses(function: &mut Function, eligible: &dyn Fn(&str) -> bool, defined: &dyn Fn(&str) -> bool) {
     // (Program-order events: a use of a global, as memory or not, or a call.)
     enum Event {
         Use(String, bool),
@@ -3894,7 +3894,13 @@ pub fn hoist_call_spanning_addresses(function: &mut Function, eligible: &dyn Fn(
             })
             .collect();
         let memory = uses.iter().any(|&(_, memory)| memory);
-        let spans = uses.windows(2).any(|pair| events[pair[0].0..pair[1].0].iter().any(|e| matches!(e, Event::Call)));
+        let spans = uses.windows(2).any(|pair| events[pair[0].0..pair[1].0].iter().any(|e| matches!(e, Event::Call)))
+            // (Or, of an object the unit defines, two uses after a call:
+            // its address formed on entry lives across it.)
+            || (uses.len() >= 2
+                && defined(name)
+                && events[..uses[0].0].iter().any(|e| matches!(e, Event::Call))
+                && std::env::var_os("MWCC_IRO_NO_ENTRY_ADDRESSES_AFTER_CALLS").is_none());
         if memory && spans {
             names.push(name.clone());
         }

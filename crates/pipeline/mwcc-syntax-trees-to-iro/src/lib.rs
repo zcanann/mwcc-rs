@@ -61,7 +61,8 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
                 !global.small_data && !global.is_function && global.fixed_address.is_none() && global.folded.is_none()
             })
         };
-        passes::hoist_call_spanning_addresses(&mut built.function, &eligible);
+        let defined = |name: &str| unit.globals.get(name).is_some_and(|global| global.defined);
+        passes::hoist_call_spanning_addresses(&mut built.function, &eligible, &defined);
     }
     if unit.forwards_stores && std::env::var_os("MWCC_IRO_NO_DEAD_STORES").is_none() {
         let names: Vec<String> = built.function.variables.iter().map(|variable| variable.name.clone()).collect();

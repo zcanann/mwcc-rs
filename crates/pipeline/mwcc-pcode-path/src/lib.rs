@@ -125,6 +125,7 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
                         && global.address_initializer.is_none()
                         && global.data_bytes.is_none())
                     .then(|| global.initializer.as_ref().and_then(|values| values.first().copied()).unwrap_or(0)),
+                    defined: defined.contains(global.name.as_str()),
                 },
             )
         })
@@ -189,6 +190,7 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
                 anchor,
                 fixed_address: None,
                     folded: None,
+                defined: true,
             },
         );
     }
@@ -203,6 +205,7 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
             anchor: None,
             fixed_address: Some(address),
             folded: None,
+            defined: false,
         });
     }
     // A function named as a value is its (absolute) address.
@@ -220,6 +223,7 @@ fn lower_function(request: &PcodeRequest<'_>) -> Compilation<MachineFunction> {
                     anchor: None,
                     fixed_address: None,
                     folded: None,
+                    defined: false,
                 },
             );
         }
