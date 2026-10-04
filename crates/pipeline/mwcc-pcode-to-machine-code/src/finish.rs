@@ -74,6 +74,10 @@ pub fn finish(
     if options.early_frame && !options.unoptimized && !toggle("MWCC_PCODE_NO_UPDATE_LOADS") {
         update_loads(&mut pcode);
     }
+    // (GC/1.3 on, a sum read only as a load's base is its index.)
+    if !options.early_frame && !options.unoptimized && !toggle("MWCC_PCODE_NO_INDEXED_SUM_LOADS") {
+        fold_indexed_loads(&mut pcode);
+    }
     if options.schedule && !toggle("MWCC_PCODE_NO_PRESCHEDULE") {
         for block in &mut pcode.blocks {
             schedule::schedule_block(&mut block.instructions, true);
@@ -767,6 +771,65 @@ fn propagate_physical_copies(pcode: &mut PCodeFunction) -> bool {
 /// A copy `mr v,rN` that stayed (v outlives rN): after scheduling, uses of
 /// `v` in its block read rN until either is redefined. (Not a `v` used in
 /// other blocks or across a call.)
+/// `add x,a,b; l* d,0(x)` with `x` read only by the load: `l*x d,a,b`.
+fn fold_indexed_loads(pcode: &mut PCodeFunction) {
+    let general = mwcc_pcode::Class::General;
+    let mut reads: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
+    for instruction in pcode.blocks.iter().flat_map(|block| &block.instructions) {
+        for register in instruction.uses(general) {
+            *reads.entry(register).or_default() += 1;
+        }
+    }
+    for block in &mut pcode.blocks {
+        let mut index = 0;
+        while index < block.instructions.len() {
+            let Instruction::Add { d: sum, a, b } = block.instructions[index].instruction else {
+                index += 1;
+                continue;
+            };
+            if sum < 32 || a == 0 || reads.get(&sum) != Some(&1) {
+                index += 1;
+                continue;
+            }
+            let mut reader = None;
+            for later in index + 1..block.instructions.len() {
+                let instruction = &block.instructions[later];
+                if instruction.uses(general).contains(&sum) {
+                    reader = Some(later);
+                    break;
+                }
+                if instruction.defs(general).iter().any(|&register| register == a || register == b) {
+                    break;
+                }
+            }
+            let Some(later) = reader else {
+                index += 1;
+                continue;
+            };
+            let load = &mut block.instructions[later];
+            let indexed = match load.instruction {
+                Instruction::LoadWord { d, a: base, offset: 0 } if base == sum => Some(Instruction::LoadWordIndexed { d, a, b }),
+                Instruction::LoadByteZero { d, a: base, offset: 0 } if base == sum => Some(Instruction::LoadByteZeroIndexed { d, a, b }),
+                Instruction::LoadHalfwordZero { d, a: base, offset: 0 } if base == sum => Some(Instruction::LoadHalfwordZeroIndexed { d, a, b }),
+                Instruction::LoadHalfwordAlgebraic { d, a: base, offset: 0 } if base == sum => {
+                    Some(Instruction::LoadHalfwordAlgebraicIndexed { d, a, b })
+                }
+                Instruction::LoadFloatSingle { d, a: base, offset: 0 } if base == sum => Some(Instruction::LoadFloatSingleIndexed { d, a, b }),
+                Instruction::LoadFloatDouble { d, a: base, offset: 0 } if base == sum => Some(Instruction::LoadFloatDoubleIndexed { d, a, b }),
+                _ => None,
+            };
+            match indexed {
+                Some(instruction) if load.relocation.is_none() => {
+                    load.instruction = instruction;
+                    load.not_r0.push(a);
+                    block.instructions.remove(index);
+                }
+                _ => index += 1,
+            }
+        }
+    }
+}
+
 fn forward_physical_reads(pcode: &mut PCodeFunction) {
     use mwcc_pcode::Class;
     use mwcc_vreg::RegisterRole;
