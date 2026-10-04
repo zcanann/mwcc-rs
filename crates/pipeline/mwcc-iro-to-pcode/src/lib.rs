@@ -2682,6 +2682,15 @@ impl Lowerer<'_, '_> {
                         return Ok((register, ty));
                     }
                 }
+                // (Into a destination, a known address is copied.)
+                if let (Some(d), false) = (target, self.unoptimized || toggle("MWCC_PCODE_NO_TARGET_ADDRESS_REUSE")) {
+                    if let Some(&(register, ty, _)) = self.common.get(&key) {
+                        if register != d {
+                            self.copy(ty, d, register);
+                        }
+                        return Ok((d, ty));
+                    }
+                }
                 let global = self.unit.globals[name];
                 let external = || RelocationTarget::External(name.clone());
                 let d = if let Some(anchor) = self.anchored.get(name).copied() {
