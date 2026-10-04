@@ -4760,7 +4760,18 @@ impl Lowerer<'_, '_> {
             && !toggle("MWCC_PCODE_NO_INTEGER_NEED_ORDER");
         let need_first = need_order && self.unoptimized;
         let early = if index_first || calls_first || subtrahend_first || need_first { Some(self.expression(right)?.0) } else { None };
-        let (a, _) = self.expression(left)?;
+        // (GC/1.0-1.2.5n mask a loaded byte in its destination: `lbz r3;
+        // clrlwi r3,r3,31`.)
+        let in_place = self.unit.early_frame
+            && !self.unoptimized
+            && op == BinaryOp::BitAnd
+            && target.is_some()
+            && mask_bounds(right).is_some()
+            && right.ty == mwcc_iro::BIT_FIELD_SHIFT
+            && matches!(unpromoted(left).kind, ExprKind::Load { .. } | ExprKind::Global(_))
+            && matches!(unpromoted(left).ty, Type::UnsignedChar)
+            && !toggle("MWCC_PCODE_EARLY_MASK_TEMPORARY");
+        let (a, _) = if in_place { self.expression_with_target(left, target)? } else { self.expression(left)? };
         // GC/3.x: `x * (2^n ± 1)` = `(x << n) ± x`; `x * (1 - 2^n)` = `x - (x << n)`.
         let shift_add = (op == BinaryOp::Multiply && self.unit.shift_add_multiply)
             .then(|| right.as_int())

@@ -3120,6 +3120,15 @@ fn references_variable(body: &[Stmt], variable: VarId) -> bool {
 fn mark_bit_field_shift(expression: &mut Expr) {
     match &mut expression.kind {
         ExprKind::Binary(BinaryOp::ShiftRight, _, count) if count.as_int().is_some() => count.ty = mwcc_iro::BIT_FIELD_SHIFT,
+        // (An unshifted field's mask carries the marker instead.)
+        ExprKind::Binary(BinaryOp::BitAnd, left, mask)
+            if mask.as_int().is_some()
+                && matches!(left.kind, ExprKind::Load { .. } | ExprKind::Global(_) | ExprKind::Convert(_))
+                && !matches!(&left.kind, ExprKind::Convert(inner) if !matches!(inner.kind, ExprKind::Load { .. } | ExprKind::Global(_)))
+                && std::env::var_os("MWCC_IRO_UNMARKED_FIELD_MASKS").is_none() =>
+        {
+            mask.ty = mwcc_iro::BIT_FIELD_SHIFT;
+        }
         ExprKind::Binary(_, left, _) => mark_bit_field_shift(left),
         ExprKind::Convert(operand) => mark_bit_field_shift(operand),
         _ => {}
