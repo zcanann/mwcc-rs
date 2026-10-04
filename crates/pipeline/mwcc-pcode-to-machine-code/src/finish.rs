@@ -74,9 +74,9 @@ pub fn finish(
     if options.early_frame && !options.unoptimized && !toggle("MWCC_PCODE_NO_UPDATE_LOADS") {
         update_loads(&mut pcode);
     }
-    // (GC/1.3 on, a sum read only as a load's base is its index.)
+    // (GC/1.3 on, a sum read only as an access's base is its index.)
     if !options.early_frame && !options.unoptimized && !toggle("MWCC_PCODE_NO_INDEXED_SUM_LOADS") {
-        fold_indexed_loads(&mut pcode);
+        fold_indexed_loads(&mut pcode, false);
     }
     if options.schedule && !toggle("MWCC_PCODE_NO_PRESCHEDULE") {
         for block in &mut pcode.blocks {
@@ -103,6 +103,10 @@ pub fn finish(
     }
     if options.early_frame && !options.unoptimized && !toggle("MWCC_PCODE_NO_CONSTANT_LOW_FOLDS") {
         fold_constant_lows(&mut pcode);
+    }
+    // (GC/1.0-1.2.5n fold the sum once colored: not with r0 as its base.)
+    if options.early_frame && !options.unoptimized && !toggle("MWCC_PCODE_NO_EARLY_INDEXED_SUMS") {
+        fold_indexed_loads(&mut pcode, true);
     }
     // (GC/3.x folds at -O0 too.)
     if !options.unoptimized || options.fold_absolute_into_own_base {
@@ -852,8 +856,10 @@ fn fold_constant_lows(pcode: &mut PCodeFunction) {
     }
 }
 
-/// `add x,a,b; l* d,0(x)` with `x` read only by the load: `l*x d,a,b`.
-fn fold_indexed_loads(pcode: &mut PCodeFunction) {
+/// `add x,a,b; l* d,0(x)` (or a store) with `x` read only by the access:
+/// `l*x d,a,b`. `colored`: after coloring, `x` dead after the access and
+/// `a` not r0.
+fn fold_indexed_loads(pcode: &mut PCodeFunction, colored: bool) {
     let general = mwcc_pcode::Class::General;
     let mut reads: std::collections::HashMap<u32, usize> = std::collections::HashMap::new();
     for instruction in pcode.blocks.iter().flat_map(|block| &block.instructions) {
@@ -861,14 +867,31 @@ fn fold_indexed_loads(pcode: &mut PCodeFunction) {
             *reads.entry(register).or_default() += 1;
         }
     }
-    for block in &mut pcode.blocks {
+    let live_out = if colored { general_live_out(pcode) } else { Vec::new() };
+    for (number, block) in pcode.blocks.iter_mut().enumerate() {
         let mut index = 0;
         while index < block.instructions.len() {
             let Instruction::Add { d: sum, a, b } = block.instructions[index].instruction else {
                 index += 1;
                 continue;
             };
-            if sum < 32 || a == 0 || reads.get(&sum) != Some(&1) {
+            if a == 0 || (!colored && (sum < 32 || reads.get(&sum) != Some(&1))) {
+                index += 1;
+                continue;
+            }
+            // (Colored: not a global's formed address, `lis; addi`.)
+            if colored
+                && block.instructions[..index]
+                    .iter()
+                    .rev()
+                    .find(|instruction| instruction.defs(general).contains(&a))
+                    .is_some_and(|definer| {
+                        matches!(definer.instruction, Instruction::AddImmediateShifted { a: 0, .. })
+                            || (matches!(definer.instruction, Instruction::AddImmediate { .. })
+                                && definer.relocation.as_ref().is_some_and(|relocation| relocation.kind == RelocationKind::Addr16Lo))
+                    })
+                && !toggle("MWCC_PCODE_EARLY_INDEXED_ADDRESSES")
+            {
                 index += 1;
                 continue;
             }
@@ -887,6 +910,28 @@ fn fold_indexed_loads(pcode: &mut PCodeFunction) {
                 index += 1;
                 continue;
             };
+            // (Colored: the sum is dead after its one reader.)
+            if colored {
+                let redefined = block.instructions[later].defs(general).contains(&sum);
+                let mut read = None;
+                if !redefined {
+                    for instruction in &block.instructions[later + 1..] {
+                        if instruction.uses(general).contains(&sum) {
+                            read = Some(true);
+                            break;
+                        }
+                        if instruction.defs(general).contains(&sum) {
+                            read = Some(false);
+                            break;
+                        }
+                    }
+                }
+                let live = !redefined && read.unwrap_or(sum < 32 && live_out[number] & (1 << sum) != 0);
+                if live {
+                    index += 1;
+                    continue;
+                }
+            }
             let load = &mut block.instructions[later];
             let indexed = match load.instruction {
                 Instruction::LoadWord { d, a: base, offset: 0 } if base == sum => Some(Instruction::LoadWordIndexed { d, a, b }),
@@ -897,6 +942,15 @@ fn fold_indexed_loads(pcode: &mut PCodeFunction) {
                 }
                 Instruction::LoadFloatSingle { d, a: base, offset: 0 } if base == sum => Some(Instruction::LoadFloatSingleIndexed { d, a, b }),
                 Instruction::LoadFloatDouble { d, a: base, offset: 0 } if base == sum => Some(Instruction::LoadFloatDoubleIndexed { d, a, b }),
+                Instruction::StoreWord { s, a: base, offset: 0 } if base == sum && s != sum && !toggle("MWCC_PCODE_NO_INDEXED_SUM_STORES") => {
+                    Some(Instruction::StoreWordIndexed { s, a, b })
+                }
+                Instruction::StoreHalfword { s, a: base, offset: 0 } if base == sum && s != sum && !toggle("MWCC_PCODE_NO_INDEXED_SUM_STORES") => {
+                    Some(Instruction::StoreHalfwordIndexed { s, a, b })
+                }
+                Instruction::StoreByte { s, a: base, offset: 0 } if base == sum && s != sum && !toggle("MWCC_PCODE_NO_INDEXED_SUM_STORES") => {
+                    Some(Instruction::StoreByteIndexed { s, a, b })
+                }
                 _ => None,
             };
             match indexed {
