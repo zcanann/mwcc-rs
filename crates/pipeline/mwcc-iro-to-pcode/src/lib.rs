@@ -1991,8 +1991,11 @@ impl Lowerer<'_, '_> {
         };
         let fits = (mwcc_syntax_trees_to_iro_fits(value, return_type) || bounded || (halfword_truth && self.unit.forwards_stores))
             && !(truth && is_narrow(return_type) && !self.unit.returns_bool && !(halfword_truth && self.unit.forwards_stores) && std::env::var_os("MWCC_PCODE_TRUTH_FITS").is_none());
+        // (A narrow parameter returned as a wider narrow type is extended
+        // as it arrived.)
+        let parameter = matches!(value.kind, ExprKind::Var(id) if id < self.function.parameter_count) && is_narrow(return_type);
         if let Some(destination) = self.return_register {
-            let raw = self.is_raw(value);
+            let raw = self.is_raw(value) || parameter;
             let (register, ty) = self.expression_with_target(value, Some(destination))?;
             let (register, _) = if fits {
                 (register, ty)
@@ -2037,7 +2040,7 @@ impl Lowerer<'_, '_> {
         }
         // The final instruction targets r3: the conversion when there is one.
         let converts = !fits && is_narrow(return_type) && value.ty != return_type;
-        let raw = self.is_raw(value);
+        let raw = self.is_raw(value) || parameter;
         let outer = std::mem::replace(&mut self.returned, if converts { 0 } else { value as *const Expr as usize });
         let lowered = self.expression_with_target(value, if converts { None } else { direct });
         self.returned = outer;
@@ -3127,6 +3130,15 @@ impl Lowerer<'_, '_> {
         let extend_as = if is_narrow(to) && is_narrow(from) && raw && mwcc_iro::width(from) < mwcc_iro::width(to) {
             // A raw narrower value extends as itself (`s8` to `s16`: extsb).
             Some(from)
+        } else if is_narrow(to)
+            && is_narrow(from)
+            && mwcc_iro::width(from) < mwcc_iro::width(to)
+            && (is_unsigned_narrow(from) || !is_unsigned_narrow(to))
+            && !toggle("MWCC_PCODE_NO_NARROW_FITS")
+        {
+            // (An extended narrower value already fits a type holding its
+            // whole range: `u8` as `s16`.)
+            None
         } else if is_narrow(to) {
             (from != to && !zero_extended_load).then_some(to)
         } else if is_general_word(to) && is_narrow(from) && raw {
