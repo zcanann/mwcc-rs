@@ -872,8 +872,16 @@ impl Lowerer<'_, '_> {
                 // An unreferenced parameter is never stored.
             } else if references_weighted(&function.body, id, 2) <= 1 {
                 // (A parameter used as an address takes a register.)
-                // Homes are laid out in declaration order from r1+8.
-                let size: i16 = if function.variables[id].ty == Type::Double { 8 } else { 4 };
+                // Homes are laid out in declaration order from r1+8, each
+                // at its natural size and alignment.
+                let ty = function.variables[id].ty;
+                let size: i16 = if ty == Type::Double {
+                    8
+                } else if is_narrow(ty) && !toggle("MWCC_PCODE_O0_WORD_HOMES") {
+                    mwcc_iro::width(ty) as i16
+                } else {
+                    4
+                };
                 home_bytes = (home_bytes + size - 1) / size * size;
                 self.homes[id] = Some(8 + home_bytes);
                 home_bytes += size;
@@ -3007,7 +3015,10 @@ impl Lowerer<'_, '_> {
                 if raw
                     && operand.ty == Type::Char
                     && !is_narrow(ty)
-                    && matches!(operand.kind, ExprKind::Load { .. } | ExprKind::Global(_))
+                    && (matches!(operand.kind, ExprKind::Load { .. } | ExprKind::Global(_))
+                        // (Or a -O0 variable reloaded from its home.)
+                        || (self.unoptimized && matches!(operand.kind, ExprKind::Var(id) if self.homes[id].is_some())
+                            && !toggle("MWCC_PCODE_O0_NO_INPLACE_EXTSB")))
                     // Into a destination register (a returned value).
                     && (target.is_some() || std::env::var_os("MWCC_PCODE_INPLACE_EXTSB").is_some())
                     && std::env::var_os("MWCC_PCODE_NO_INPLACE_EXTSB").is_none()
