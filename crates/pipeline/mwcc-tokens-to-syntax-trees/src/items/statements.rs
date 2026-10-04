@@ -119,10 +119,14 @@ impl Parser {
                 right: Box::new(rhs),
             };
             // (A floating variable's update is marked too: its operands
-            // keep source order.)
+            // keep source order. So is a narrow integer one: -O0 converts
+            // only some updates back to the type.)
             let value = match &first {
                 Expression::Variable(name)
-                    if matches!(self.variable_types.get(name), Some(Type::Float | Type::Double)) =>
+                    if matches!(
+                        self.variable_types.get(name),
+                        Some(Type::Float | Type::Double | Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort)
+                    ) =>
                 {
                     Expression::IndexedUpdateValue { value: Box::new(value) }
                 }

@@ -2641,12 +2641,9 @@ fn increment_assignment(target: Expression, operator: BinaryOperator) -> Express
         left: Box::new(target),
         right: Box::new(Expression::IntegerLiteral(1)),
     };
-    let value = if matches!(&assignment_target, Expression::Variable(_)) {
-        value
-    } else {
-        Expression::IndexedUpdateValue {
-            value: Box::new(value),
-        }
+    // (A variable's step is marked as an update too.)
+    let value = Expression::IndexedUpdateValue {
+        value: Box::new(value),
     };
     let cast = target_type_of(&value).cloned();
     let assignment = Expression::Assign {

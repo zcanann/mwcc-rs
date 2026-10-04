@@ -1069,13 +1069,14 @@ mod tests {
                     operand,
                 } if matches!(operand.as_ref(), Expression::Assign { target, value }
                     if matches!(target.as_ref(), Expression::Variable(variable) if variable == "p")
-                        && matches!(value.as_ref(), Expression::Binary { left, .. }
+                        && matches!(value.as_ref(), Expression::IndexedUpdateValue { value }
+                            if matches!(value.as_ref(), Expression::Binary { left, .. }
                             if matches!(left.as_ref(), Expression::Cast {
                                 target_type: mwcc_syntax_trees::Type::Pointer(
                                     mwcc_syntax_trees::Pointee::UnsignedChar
                                 ),
                                 ..
-                            }))))
+                            })))))
         ));
     }
 

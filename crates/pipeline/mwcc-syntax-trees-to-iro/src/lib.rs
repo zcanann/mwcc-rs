@@ -1036,7 +1036,7 @@ impl Builder<'_, '_> {
         if let Expression::Variable(name) = target {
             if let Some(&variable) = self.names.get(name).filter(|&&id| self.variables[id].frame.is_none()) {
                 let ty = self.variables[variable].ty;
-                return Ok(vec![Stmt::Assign { variable, value: assigned(self.expression(value)?, ty) }]);
+                return Ok(vec![Stmt::Assign { variable, value: update_assigned(value, self.expression(value)?, ty) }]);
             }
         }
         let (place, ty) = self.place(target)?;
@@ -1388,7 +1388,7 @@ impl Builder<'_, '_> {
                     }
                 }
                 let ty = self.variables[variable].ty;
-                Stmt::Assign { variable, value: assigned(self.expression(value)?, ty) }
+                Stmt::Assign { variable, value: update_assigned(value, self.expression(value)?, ty) }
             }
             Statement::Expression(expression) => return self.effects(expression),
             Statement::Loop { kind, initializer, condition, step, body } => {
@@ -2867,6 +2867,29 @@ fn folded_constant(value: i64, ty: Type) -> Option<i64> {
     }
 }
 
+/// `assigned`, but a -O0 compound update `x op= y` of a narrow variable is
+/// computed in its type, unconverted, when `y` has that type or the update
+/// adds or subtracts a constant.
+fn update_assigned(syntax: &Expression, value: Expr, ty: Type) -> Expr {
+    if NARROW_ASSIGNMENTS_CONVERT.with(std::cell::Cell::get) && is_narrow(ty) && matches!(syntax, Expression::IndexedUpdateValue { .. }) {
+        if let ExprKind::Binary(op, _, right) = &value.kind {
+            let mut operand = right.as_ref();
+            while let ExprKind::Convert(inner) = &operand.kind {
+                operand = inner;
+            }
+            let stepped = matches!(op, BinaryOp::Add | BinaryOp::Subtract) && right.as_int().is_some();
+            if stepped {
+                return value;
+            }
+            // (Computed in the type itself: no conversion follows.)
+            if operand.ty == ty {
+                return Expr { ty, ..value };
+            }
+        }
+    }
+    assigned(value, ty)
+}
+
 fn assigned(value: Expr, ty: Type) -> Expr {
     if is_float(ty) || is_float(value.ty) {
         converted(value, ty)
@@ -2875,7 +2898,7 @@ fn assigned(value: Expr, ty: Type) -> Expr {
             if let Some(constant) = value.as_int().and_then(|constant| folded_constant(constant, ty)) {
                 return Expr { kind: ExprKind::Int(constant), ty };
             }
-            let stepped = matches!(&value.kind, ExprKind::Binary(BinaryOp::Add | BinaryOp::Subtract, _, step) if step.as_int().is_some());
+            let stepped = false;
             // (A promotion of a value of the type itself is that value.)
             if let ExprKind::Convert(operand) = &value.kind {
                 if operand.ty == ty {

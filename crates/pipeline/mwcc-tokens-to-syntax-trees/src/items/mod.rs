@@ -6818,7 +6818,8 @@ fn lower_discarded_post_step(expression: Expression) -> Expression {
                 left: target.clone(),
                 right: Box::new(Expression::IntegerLiteral(1)),
             };
-            let value = update_value(&target, value);
+            // (A variable's step is marked as an update too.)
+            let value = Expression::IndexedUpdateValue { value: Box::new(value) };
             Expression::Assign {
                 target,
                 value: Box::new(value),
