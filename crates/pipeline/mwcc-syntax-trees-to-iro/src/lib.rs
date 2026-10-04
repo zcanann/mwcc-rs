@@ -43,6 +43,7 @@ pub fn build(function: &ast::Function, unit: &Unit<'_>) -> Compilation<Built> {
     passes::UNSIGNED_MAXIMA.with(|flag| flag.set(unit.forwards_stores));
     passes::LOOP_FORWARDING.with(|flag| flag.set(!unit.strength_reduction && !unit.early_frame));
     passes::WIDE_UNROLLING.with(|flag| flag.set(unit.forwards_stores));
+    passes::UPDATES_PAST_COPIES.with(|flag| flag.set(unit.forwards_stores || std::env::var_os("MWCC_IRO_UPDATES_PAST_COPIES").is_some()));
     passes::EQUALITY_BIT_FOLDS.with(|flag| flag.set(!unit.branch_preserving || std::env::var_os("MWCC_IRO_EARLY_EQUALITY_BIT_FOLDS").is_some()));
     passes::FILL_UNROLLING.with(|flag| flag.set(unit.fill_unrolling && std::env::var_os("MWCC_IRO_NO_PLAIN_FILL_UNROLLING").is_none()));
     let mut built = build_unoptimized(function, unit)?;

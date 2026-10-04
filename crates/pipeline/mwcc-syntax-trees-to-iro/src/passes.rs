@@ -257,6 +257,19 @@ thread_local! {
     pub static EQUALITY_BIT_FOLDS: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
 }
 
+thread_local! {
+    /// An update forwards past reads of a copy of the old value (GC/3.x).
+    pub static UPDATES_PAST_COPIES: std::cell::Cell<bool> = const { std::cell::Cell::new(true) };
+}
+
+/// Whether `statement` reads `variable` anywhere.
+fn statement_mentions(statement: &Stmt, variable: VarId) -> bool {
+    let mut found = false;
+    let mut copy = vec![statement.clone()];
+    for_each_expression(&mut copy, &mut |e| found |= e.mentions(variable));
+    found
+}
+
 pub fn narrowing(function: &mut Function) {
     let variables: Vec<Type> = function.variables.iter().map(|variable| variable.ty).collect();
     narrowing_in(&mut function.body, function.return_type, &variables);
@@ -2986,8 +2999,19 @@ pub fn forward_updates(function: &mut Function) {
             .unwrap_or(rest.len());
         let mut addressed_anywhere = false;
         for_each_expression(&mut function.body.clone(), &mut |e| addressed_anywhere |= addressed(e, variable));
+        // (Before GC/3.x, nor past reads of a copy of the old value: it
+        // stays live, so the update keeps its own register.)
+        let copies: Vec<VarId> = function.body[..index]
+            .iter()
+            .filter_map(|statement| match statement {
+                Stmt::Assign { variable: copy, value } if value.as_var() == Some(variable) => Some(*copy),
+                _ => None,
+            })
+            .collect();
+        let past_copies = !UPDATES_PAST_COPIES.with(std::cell::Cell::get)
+            && rest[..end].iter().any(|statement| copies.iter().any(|&copy| statement_mentions(statement, copy)));
         // (Nor a variable a loop assigns.)
-        if addressed_anywhere || assigns(&rest[..end], variable) || assigned_in_loop(&function.body, variable) {
+        if addressed_anywhere || past_copies || assigns(&rest[..end], variable) || assigned_in_loop(&function.body, variable) {
             index += 1;
             continue;
         }
