@@ -1062,7 +1062,7 @@ impl Builder<'_, '_> {
             let value = Expr { kind: ExprKind::Load { base: Box::new(source), index: None, offset: 0 }, ty };
             return Ok(vec![Stmt::Store { place, ty, value, compound: false }]);
         }
-        Ok(vec![Stmt::Store { place, ty, value: assigned(self.expression(value)?, ty), compound: matches!(value, Expression::IndexedUpdateValue { .. }) }])
+        Ok(vec![Stmt::Store { place, ty, value: update_assigned(value, self.expression(value)?, ty), compound: matches!(value, Expression::IndexedUpdateValue { .. }) }])
     }
 
     /// A statement, preceded by the assignments hoisted out of its

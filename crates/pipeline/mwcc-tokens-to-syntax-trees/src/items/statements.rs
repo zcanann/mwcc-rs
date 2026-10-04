@@ -125,7 +125,7 @@ impl Parser {
                 Expression::Variable(name)
                     if matches!(
                         self.variable_types.get(name),
-                        Some(Type::Float | Type::Double | Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort)
+                        Some(Type::Float | Type::Double | Type::Char | Type::UnsignedChar | Type::Short | Type::UnsignedShort) | None
                     ) =>
                 {
                     Expression::IndexedUpdateValue { value: Box::new(value) }
