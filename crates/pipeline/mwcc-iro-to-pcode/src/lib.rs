@@ -2011,7 +2011,11 @@ impl Lowerer<'_, '_> {
             && value.ty != Type::Char
             && narrow_fits(value.ty, return_type)
             && !toggle("MWCC_PCODE_NO_NARROW_FITS");
-        let fits = (mwcc_syntax_trees_to_iro_fits(value, return_type) || bounded || narrower || (halfword_truth && self.unit.forwards_stores))
+        // (-O0 narrows a masked value regardless.)
+        let masked = self.unoptimized
+            && matches!(value.kind, ExprKind::Binary(BinaryOp::BitAnd, ..))
+            && !toggle("MWCC_PCODE_O0_FITTING_VALUES");
+        let fits = ((mwcc_syntax_trees_to_iro_fits(value, return_type) && !masked) || bounded || narrower || (halfword_truth && self.unit.forwards_stores))
             && !(truth && is_narrow(return_type) && !self.unit.returns_bool && !(halfword_truth && self.unit.forwards_stores) && std::env::var_os("MWCC_PCODE_TRUTH_FITS").is_none());
         // (A narrow parameter returned as a wider narrow type is extended
         // as it arrived.)
@@ -2974,8 +2978,10 @@ impl Lowerer<'_, '_> {
             }
             ExprKind::Convert(operand)
                 if is_unsigned_narrow(ty)
-                    // (-O0 narrows a bit-field's value regardless.)
-                    && !(self.unoptimized && bit_field_extraction(operand) && !toggle("MWCC_PCODE_O0_FITTING_FIELDS"))
+                    // (-O0 narrows a value regardless.)
+                    && !(self.unoptimized
+                        && (bit_field_extraction(operand) || !toggle("MWCC_PCODE_O0_FITTING_VALUES"))
+                        && !toggle("MWCC_PCODE_O0_FITTING_FIELDS"))
                     && {
                         SUM_BOUNDS.with(|flag| flag.set(self.unit.branch_preserving));
                         max_value(operand).is_some_and(|max| max < 1u64 << (8 * width(ty)))

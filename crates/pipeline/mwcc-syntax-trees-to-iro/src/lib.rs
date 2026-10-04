@@ -1921,6 +1921,23 @@ impl Builder<'_, '_> {
             Expression::BitFieldRead { extracted, promoted_type, .. } => {
                 let mut value = self.expression(extracted)?;
                 mark_bit_field_shift(&mut value);
+                // (-O0 reads a field through its pointer as a plain value: a
+                // same-type conversion keeps the pointer from counting as a
+                // base, so a parameter used so stays in its home.)
+                if self.unit.unoptimized && std::env::var_os("MWCC_IRO_O0_FIELD_BASES").is_none() {
+                    fn plain_base(e: &mut Expr) {
+                        if let ExprKind::Load { base, .. } = &mut e.kind {
+                            if matches!(base.kind, ExprKind::Var(_)) {
+                                let ty = base.ty;
+                                let inner = std::mem::replace(base.as_mut(), Expr::int(0));
+                                **base = Expr { kind: ExprKind::Convert(Box::new(inner)), ty };
+                            }
+                            return;
+                        }
+                        passes::children(e, &mut plain_base);
+                    }
+                    plain_base(&mut value);
+                }
                 // (-O0 narrows a compared field to its storage unit first.)
                 if self.unit.unoptimized && self.comparing_field && std::env::var_os("MWCC_IRO_O0_UNNARROWED_FIELDS").is_none() {
                     fn unit_type(e: &Expr) -> Option<Type> {
