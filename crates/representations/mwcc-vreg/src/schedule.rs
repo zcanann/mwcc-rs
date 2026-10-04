@@ -834,6 +834,8 @@ fn latency_rank(instruction: &Instruction) -> u8 {
     match instruction {
         DivideWord { .. }
         | DivideWordUnsigned { .. }
+        | DivideWordRecord { .. }
+        | DivideWordUnsignedRecord { .. }
         | FloatDivideSingle { .. }
         | FloatDivideDouble { .. } => 3,
         // The DOUBLE multiply family ranks with its single cousins: measured in

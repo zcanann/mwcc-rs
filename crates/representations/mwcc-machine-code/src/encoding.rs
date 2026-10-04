@@ -47,6 +47,8 @@ impl Instruction {
             Instruction::MultiplyHighWordUnsigned { d, a, b } => xo_form(d, a, b, 11),
             Instruction::MultiplyImmediate { d, a, immediate } => d_form(7, d, a, immediate as u16),
             Instruction::DivideWord { d, a, b } => xo_form(d, a, b, 491),
+            Instruction::DivideWordRecord { d, a, b } => xo_form(d, a, b, 491) | 1,
+            Instruction::DivideWordUnsignedRecord { d, a, b } => xo_form(d, a, b, 459) | 1,
             Instruction::DivideWordUnsigned { d, a, b } => xo_form(d, a, b, 459),
             // slwi rA,rS,n == rlwinm rA,rS,n,0,31-n
             Instruction::ShiftLeftImmediate { a, s, shift } => {

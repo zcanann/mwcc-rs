@@ -81,7 +81,7 @@ pub fn for_each_register(instruction: &mut Instruction, mut visit: impl FnMut(Re
         Add { d, a, b } | AddRecord { d, a, b } | MultiplyLowRecord { d, a, b } | SubtractFrom { d, a, b } | SubtractFromRecord { d, a, b } | SubtractFromCarrying { d, a, b } | AddExtended { d, a, b }
         | AddCarrying { d, a, b } | SubtractFromExtended { d, a, b } | SubtractFromExtendedRecord { d, a, b }
         | MultiplyLow { d, a, b } | MultiplyHighWord { d, a, b } | MultiplyHighWordUnsigned { d, a, b }
-        | DivideWord { d, a, b } | DivideWordUnsigned { d, a, b } => {
+        | DivideWord { d, a, b } | DivideWordUnsigned { d, a, b } | DivideWordRecord { d, a, b } | DivideWordUnsignedRecord { d, a, b } => {
             visit(D, G, d);
             visit(U, G, a);
             visit(U, G, b);

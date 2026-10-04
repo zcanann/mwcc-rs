@@ -95,6 +95,8 @@ pub enum Instruction {
     MultiplyImmediate { d: RegisterField, a: RegisterField, immediate: i16 },
     /// `divw rD, rA, rB` — signed divide.
     DivideWord { d: RegisterField, a: RegisterField, b: RegisterField },
+    DivideWordRecord { d: RegisterField, a: RegisterField, b: RegisterField },
+    DivideWordUnsignedRecord { d: RegisterField, a: RegisterField, b: RegisterField },
     /// `divwu rD, rA, rB` — unsigned divide.
     DivideWordUnsigned { d: RegisterField, a: RegisterField, b: RegisterField },
     /// `slwi rA, rS, shift` — shift left by `shift` (1..=31), via `rlwinm`.

@@ -2173,6 +2173,8 @@ impl Lowerer<'_, '_> {
             Add { d, a, b } if d == register => AddRecord { d, a, b },
             SubtractFrom { d, a, b } if d == register => SubtractFromRecord { d, a, b },
             Negate { d, a } if d == register => NegateRecord { d, a },
+            DivideWord { d, a, b } if d == register && !toggle("MWCC_PCODE_NO_DIVIDE_RECORD") => DivideWordRecord { d, a, b },
+            DivideWordUnsigned { d, a, b } if d == register && !toggle("MWCC_PCODE_NO_DIVIDE_RECORD") => DivideWordUnsignedRecord { d, a, b },
             Xor { a, s, b } if a == register => XorRecord { a, s, b },
             Or { a, s, b } if a == register && s != b => OrRecord { a, s, b },
             And { a, s, b } if a == register => AndRecord { a, s, b },
