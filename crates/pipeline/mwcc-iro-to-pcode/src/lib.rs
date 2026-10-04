@@ -2145,6 +2145,28 @@ impl Lowerer<'_, '_> {
     }
 
     fn assign(&mut self, variable: VarId, value: &Expr) -> Compilation<()> {
+        // (`v = insert(v, 0)` into bits v already has clear changes nothing.)
+        let mut inner = value;
+        while let ExprKind::Convert(operand) = &inner.kind {
+            inner = operand;
+        }
+        if let ExprKind::Idiom(Idiom::Insert { base, value: inserted, shift, begin, end }) = &inner.kind {
+            let mut base_variable = base.as_ref();
+            while let ExprKind::Convert(operand) = &base_variable.kind {
+                base_variable = operand;
+            }
+            let field = field_bits(*begin, *end);
+            if !self.unoptimized
+                && self.unit.forwards_stores
+                && base_variable.as_var() == Some(variable)
+                && inserted.as_int().is_some_and(|v| (v as u32).rotate_left(u32::from(*shift)) & field == 0)
+                && self.value_bits(base) & field == 0
+                && self.homes[variable].is_none()
+                && !toggle("MWCC_PCODE_NO_CONSTANT_INSERT_FOLDS")
+            {
+                return Ok(());
+            }
+        }
         let bits = self.value_bits(value);
         let assigned = self.assign_value(variable, value);
         if bits == u32::MAX || self.homes[variable].is_some() {
@@ -2160,6 +2182,11 @@ impl Lowerer<'_, '_> {
     fn value_bits(&self, expression: &Expr) -> u32 {
         match &expression.kind {
             ExprKind::Var(id) => self.variable_bits.get(id).copied().unwrap_or(u32::MAX),
+            ExprKind::Convert(operand)
+                if matches!(operand.ty, Type::Int | Type::UnsignedInt) && matches!(expression.ty, Type::Int | Type::UnsignedInt) =>
+            {
+                self.value_bits(operand)
+            }
             ExprKind::Binary(op, left, right) => match (op, right.as_int()) {
                 (BinaryOp::ShiftLeft, Some(n)) if (0..32).contains(&n) => self.value_bits(left) << n,
                 (BinaryOp::ShiftRight, Some(n)) if (0..32).contains(&n) && is_unsigned(promote(left.ty)) => self.value_bits(left) >> n,
@@ -2167,6 +2194,10 @@ impl Lowerer<'_, '_> {
                 (BinaryOp::BitOr, _) => self.value_bits(left) | self.value_bits(right),
                 _ => u32::MAX,
             },
+            ExprKind::Idiom(Idiom::Insert { base, value, shift, begin, end }) => {
+                let field = field_bits(*begin, *end);
+                (self.value_bits(base) & !field) | (self.value_bits(value).rotate_left(u32::from(*shift)) & field)
+            }
             _ => possible_bits(expression),
         }
     }
@@ -3929,6 +3960,39 @@ impl Lowerer<'_, '_> {
                 });
                 Ok((d, ty))
             }
+            // (A constant inserted: nothing into bits already clear, `ori`
+            // when it sets the whole field.)
+            Idiom::Insert { base, value, shift, begin, end }
+                if !self.unoptimized
+                    && value.as_int().is_some()
+                    && self.unit.forwards_stores
+                    && !toggle("MWCC_PCODE_NO_CONSTANT_INSERT_FOLDS")
+                    && {
+                        let field = field_bits(*begin, *end);
+                        let bits = (value.as_int().unwrap_or(0) as u32).rotate_left(u32::from(*shift)) & field;
+                        bits == field && (field >> 16 == 0 || field & 0xffff == 0)
+                    } =>
+            {
+                let field = field_bits(*begin, *end);
+                let bits = (value.as_int().unwrap_or(0) as u32).rotate_left(u32::from(*shift)) & field;
+                let (b, _) = self.expression(base)?;
+                if bits == 0 {
+                    return Ok(match target {
+                        Some(d) if d != b => {
+                            self.copy(Type::Int, d, b);
+                            (d, Type::Int)
+                        }
+                        _ => (b, Type::Int),
+                    });
+                }
+                let d = self.result(target);
+                self.emit_plain(if field >> 16 == 0 {
+                    Instruction::OrImmediate { a: d, s: b, immediate: field as u16 }
+                } else {
+                    Instruction::OrImmediateShifted { a: d, s: b, immediate: (field >> 16) as u16 }
+                });
+                Ok((d, Type::Int))
+            }
             Idiom::Insert { base, value, shift, begin, end } => {
                 // The inserted value is computed before the old unit loads.
                 // -O0 inserts a promoted narrow value as it is (no
@@ -3983,11 +4047,18 @@ impl Lowerer<'_, '_> {
                     self.emit_plain(extension(unit, extended, x));
                     x = extended;
                 }
-                let (b, _) = self.expression(base)?;
                 // rlwimi overwrites its destination before reading the
                 // source: the destination must not hold the source.
                 let target = target.filter(|&d| d != x);
-                let d = self.result(target);
+                // (A constant unit forms in the destination itself.)
+                let (b, d) = if unpromoted(base).as_int().is_some() && !self.unoptimized && !toggle("MWCC_PCODE_CONSTANT_INSERT_BASE_COPY") {
+                    let d = self.result(target);
+                    let (b, _) = self.expression_with_target(base, Some(d))?;
+                    (b, d)
+                } else {
+                    let (b, _) = self.expression(base)?;
+                    (b, self.result(target))
+                };
                 if b != d {
                     self.emit_plain(Instruction::Or { a: d, s: b, b });
                 }
