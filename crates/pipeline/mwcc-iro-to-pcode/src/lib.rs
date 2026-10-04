@@ -3875,7 +3875,7 @@ impl Lowerer<'_, '_> {
                 // (A value `(y >> n) & m` whose inserted bits lie inside m and
                 // below the shifted-out ones is y rotated by `shift - n`.)
                 let mut shift = *shift;
-                let rotated = if self.unoptimized || self.unit.early_frame || toggle("MWCC_PCODE_NO_ROTATED_INSERT") {
+                let rotated = if self.unoptimized || (self.unit.early_frame && toggle("MWCC_PCODE_EARLY_UNROTATED_INSERT")) || toggle("MWCC_PCODE_NO_ROTATED_INSERT") {
                     None
                 } else {
                     let (shifted, mask) = match &value.kind {
