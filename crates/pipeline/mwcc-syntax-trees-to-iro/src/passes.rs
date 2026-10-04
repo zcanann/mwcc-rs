@@ -4041,7 +4041,11 @@ pub fn forward_single_uses_in_loops(function: &mut Function) {
                 && !value.mentions(variable)
                 && clear
                 && reader.is_some_and(|at| {
-                    !(reads_memory(&value) && reads_memory_in(&list[at]))
+                    // (Read as a memory base: a store's or a load's.)
+                    let based = matches!(&list[at], Stmt::Store { place: Place::Memory { base, .. }, .. } if base.as_var() == Some(variable))
+                        || format!("{:?}", list[at]).contains(&format!("Load {{ base: Expr {{ kind: Var({variable})"));
+                    based
+                        && !(reads_memory(&value) && reads_memory_in(&list[at]))
                         && matches!(&list[at], Stmt::Store { .. } | Stmt::Assign { .. } | Stmt::Eval(_))
                         && count_reads(std::slice::from_ref(&list[at]), variable) == 1
                 })
