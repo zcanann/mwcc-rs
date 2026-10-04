@@ -73,6 +73,9 @@ pub fn lower(
         pending_tables: Vec::new(),
         labels: Vec::new(),
         exit_label: Label(0),
+        direct_exit_label: None,
+        final_return: None,
+        computed_final_return: false,
         return_register: None,
         extended: HashMap::new(),
         constants: HashMap::new(),
@@ -159,6 +162,11 @@ struct Lowerer<'a, 'u> {
     /// Label targets once placed: label -> block.
     labels: Vec<Option<usize>>,
     exit_label: Label,
+    /// Where an early return that set the result register itself joins.
+    direct_exit_label: Option<Label>,
+    /// The function's last statement (a final return keeps the variable).
+    final_return: Option<usize>,
+    computed_final_return: bool,
     /// The return variable when returns go through one.
     return_register: Option<u32>,
     /// Extensions of raw narrow parameters made in the current block.
@@ -1490,6 +1498,22 @@ impl Lowerer<'_, '_> {
             && !format!("{:?}", function.body).contains("LocalAddress")
             && only_tail_calls(&function.body, true, function.return_type);
         self.exit_label = self.new_label();
+        self.direct_exit_label = Some(self.new_label());
+        self.final_return = function.body.last().map(|statement| statement as *const Stmt as usize);
+        // (Before a computed final value, the returns all merge through
+        // the variable: only constants return directly.)
+        self.computed_final_return = {
+            let computed = |value: &Expr| matches!(value.kind, ExprKind::Binary(..) | ExprKind::Select { .. });
+            let count = function.body.len();
+            match function.body.last() {
+                Some(Stmt::Return(Some(value)) | Stmt::SetReturn(value)) => {
+                    computed(value)
+                        || matches!((&value.kind, count.checked_sub(2).map(|index| &function.body[index])),
+                            (ExprKind::Var(id), Some(Stmt::Assign { variable, value })) if id == variable && computed(value))
+                }
+                _ => false,
+            }
+        };
         // (With strength reduction before GC/3.x, the anchors any top-level
         // loop uses are formed on entry and kept throughout.)
         if self.unit.strength_reduction && !self.unit.forwards_stores && !self.unit.early_frame && !toggle("MWCC_PCODE_NO_ENTRY_ANCHORS") {
@@ -1529,7 +1553,10 @@ impl Lowerer<'_, '_> {
             // return block that receives the epilogue follows it.
             let return_type = self.function.return_type;
             self.copy(return_type, result_register(return_type), register);
-            self.start_block(true);
+            let block = self.start_block(true);
+            if let Some(direct_exit) = self.direct_exit_label {
+                self.labels[direct_exit.0] = Some(block);
+            }
         }
         if self.restore_violation {
             return Err(unsupported("a branch into a block that inherited known values"));
@@ -1895,6 +1922,25 @@ impl Lowerer<'_, '_> {
             }
             Stmt::SetReturn(value) => self.return_value(value),
             Stmt::Return(value) => {
+                // (An early return of a word sets the result register itself
+                // and joins after the return variable's copy.)
+                if let (Some(value), Some(direct_exit)) = (value, self.direct_exit_label) {
+                    if self.return_register.is_some()
+                        && self.final_return != Some(statement as *const Stmt as usize)
+                        && (value.as_int().is_some() || !self.computed_final_return)
+                        && !self.unoptimized
+                        && is_general_word(self.function.return_type)
+                        && !is_wide(self.function.return_type)
+                        && !toggle("MWCC_PCODE_RETURNS_THROUGH_VARIABLE")
+                    {
+                        let register = self.return_register.replace(result_register(self.function.return_type));
+                        let lowered = self.return_value(value);
+                        self.return_register = register;
+                        lowered?;
+                        self.jump(direct_exit);
+                        return Ok(());
+                    }
+                }
                 if let Some(value) = value {
                     self.return_value(value)?;
                 }
