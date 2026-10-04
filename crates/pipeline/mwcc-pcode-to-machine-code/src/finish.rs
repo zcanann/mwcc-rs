@@ -1674,9 +1674,22 @@ fn move_records(pcode: &mut PCodeFunction, record: bool) {
     for block in &mut pcode.blocks {
         let mut index = 0;
         while index < block.instructions.len() {
-            let Instruction::CompareWordImmediate { a: tested, immediate: 0 } = block.instructions[index].instruction else {
-                index += 1;
-                continue;
+            // (A logical compare with 0 too when only equality is tested:
+            // the block's branch reads cr0's EQ bit alone.)
+            let equality_only = || {
+                let rest = &block.instructions[index + 1..];
+                let reads_cr = rest.iter().filter(|i| format!("{:?}", i.instruction).contains("condition_bit") || matches!(i.instruction, Instruction::MoveFromConditionRegister { .. })).count();
+                reads_cr == 1
+                    && matches!(rest.last().map(|i| &i.instruction), Some(Instruction::BranchConditionalForward { condition_bit: 2, .. } | Instruction::BranchConditionalToLinkRegister { condition_bit: 2, .. }))
+                    && !toggle("MWCC_PCODE_NO_LOGICAL_MOVE_RECORDS")
+            };
+            let tested = match block.instructions[index].instruction {
+                Instruction::CompareWordImmediate { a, immediate: 0 } => a,
+                Instruction::CompareLogicalWordImmediate { a, immediate: 0 } if equality_only() => a,
+                _ => {
+                    index += 1;
+                    continue;
+                }
             };
             let mut at = index;
             let mut found = None;
@@ -1701,7 +1714,10 @@ fn move_records(pcode: &mut PCodeFunction, record: bool) {
                     // (Only a plain copy whose source still holds the value.)
                     let unchanged = (at + 1..index).all(|k| !block.instructions[k].defs(Class::General).contains(&s));
                     if matches!(block.instructions[at].instruction, Instruction::Or { .. }) && unchanged {
-                        block.instructions[index].instruction = Instruction::CompareWordImmediate { a: s, immediate: 0 };
+                        block.instructions[index].instruction = match block.instructions[index].instruction {
+                            Instruction::CompareLogicalWordImmediate { .. } => Instruction::CompareLogicalWordImmediate { a: s, immediate: 0 },
+                            _ => Instruction::CompareWordImmediate { a: s, immediate: 0 },
+                        };
                     }
                     index += 1;
                     continue;
