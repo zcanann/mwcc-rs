@@ -474,9 +474,12 @@ pub fn schedule_block(instructions: &mut Vec<PInstr>, virtual_registers: bool) {
                         Memory::None => continue,
                     };
                     // (Stores keep their order when one is at a computed
-                    // address inside a known global.)
+                    // address inside a known global, unless both name
+                    // different globals.)
                     let tagged_stores = matches!(later_memory_kind, Memory::Store(_))
-                        && (instructions[index].object.is_some() || instructions[*later].object.is_some());
+                        && (instructions[index].object.is_some() || instructions[*later].object.is_some())
+                        && !(std::env::var_os("MWCC_SCHED_TAGGED_TOGETHER").is_none()
+                            && matches!((object, other), (Some(ObjectKey::Symbol(a)), Some(ObjectKey::Symbol(b))) if a != b));
                     let aliased = may_alias(object, other);
                     // (Two stores to different named objects keep their
                     // order in the final pass without waiting.)
