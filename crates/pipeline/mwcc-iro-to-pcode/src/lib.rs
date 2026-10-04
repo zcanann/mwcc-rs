@@ -2884,6 +2884,12 @@ impl Lowerer<'_, '_> {
                 });
                 Ok((destination, ty))
             }
+            // (GC/1.0-1.2.5n form a fixed array's address and access its
+            // element; a peephole folds the address's low half.)
+            ExprKind::Load { base, index: None, offset } if base.as_int().is_some() && self.formed_absolute(base, *offset) => {
+                let (address, _) = self.expression(base)?;
+                self.load(ty, address, *offset as i16, None, target)
+            }
             ExprKind::Load { base, index: None, offset } if base.as_int().is_some() => {
                 let (high, low) = split_address(base.as_int().expect("checked") + i64::from(*offset))?;
                 let a = self.address_high(high)?;
@@ -3370,6 +3376,17 @@ impl Lowerer<'_, '_> {
         }
         let address = self.global_address(name);
         self.load(global.ty, address, 0, None, target)
+    }
+
+    /// Whether a fixed array's element at `offset` is accessed through its
+    /// formed address (GC/1.0-1.2.5n).
+    fn formed_absolute(&self, base: &Expr, offset: i32) -> bool {
+        self.unit.early_frame
+            && !self.unoptimized
+            && offset != 0
+            && i16::try_from(offset).is_ok()
+            && base.as_int().is_some_and(|address| address & 0xffff != 0)
+            && !toggle("MWCC_PCODE_EARLY_SPLIT_ABSOLUTE")
     }
 
     /// The high half of a constant address, as a memory base.
@@ -5458,6 +5475,10 @@ impl Lowerer<'_, '_> {
                 let slot = self.frame_offsets[id].ok_or_else(|| unsupported("frame slot"))?;
                 let offset = i16::try_from(i32::from(slot) + *offset).map_err(|_| unsupported("a large frame"))?;
                 (1, offset, None, None)
+            }
+            Place::Memory { base, index: None, offset } if base.as_int().is_some() && self.formed_absolute(base, *offset) => {
+                let (address, _) = self.expression(base)?;
+                (address, *offset as i16, None, None)
             }
             Place::Memory { base, index: None, offset } if base.as_int().is_some() => {
                 let (high, low) = split_address(base.as_int().expect("checked") + i64::from(*offset))?;

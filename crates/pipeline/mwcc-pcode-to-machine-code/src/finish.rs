@@ -101,6 +101,9 @@ pub fn finish(
     if !options.early_frame && !options.unoptimized && !toggle("MWCC_PCODE_NO_REDUNDANT_COPIES") {
         remove_redundant_copies(&mut pcode);
     }
+    if options.early_frame && !options.unoptimized && !toggle("MWCC_PCODE_NO_CONSTANT_LOW_FOLDS") {
+        fold_constant_lows(&mut pcode);
+    }
     // (GC/3.x folds at -O0 too.)
     if !options.unoptimized || options.fold_absolute_into_own_base {
         fold_absolute_displacements(&mut pcode, options.fold_absolute_into_own_base);
@@ -771,6 +774,84 @@ fn propagate_physical_copies(pcode: &mut PCodeFunction) -> bool {
 /// A copy `mr v,rN` that stayed (v outlives rN): after scheduling, uses of
 /// `v` in its block read rN until either is redefined. (Not a `v` used in
 /// other blocks or across a call.)
+/// GC/1.0-1.2.5n: `lis t,h; addi t,t,l; <access> k(t)` folds the low half
+/// into the access (`k+l(t)`) when nothing reads `t` after it and the
+/// access stores, or loads at 0 or into another register.
+fn fold_constant_lows(pcode: &mut PCodeFunction) {
+    use mwcc_pcode::Class;
+    let live_out = general_live_out(pcode);
+    for (number, block) in pcode.blocks.iter_mut().enumerate() {
+        let mut index = 1;
+        while index + 1 < block.instructions.len() {
+            let (t, low) = match (&block.instructions[index - 1].instruction, &block.instructions[index].instruction) {
+                (Instruction::AddImmediateShifted { d: high, a: 0, .. }, Instruction::AddImmediate { d, a, immediate })
+                    if d == a
+                        && high == d
+                        && block.instructions[index].relocation.is_none()
+                        && block.instructions[index - 1].relocation.is_none() =>
+                {
+                    (*d, *immediate)
+                }
+                _ => {
+                    index += 1;
+                    continue;
+                }
+            };
+            let Some(at) = (index + 1..block.instructions.len()).find(|&at| {
+                let instruction = &block.instructions[at];
+                instruction.uses(Class::General).contains(&t) || instruction.defs(Class::General).contains(&t)
+            }) else {
+                index += 1;
+                continue;
+            };
+            let access = &block.instructions[at];
+            let redefines = access.defs(Class::General).contains(&t);
+            let read_later = !redefines && {
+                let mut read = None;
+                for instruction in &block.instructions[at + 1..] {
+                    if instruction.uses(Class::General).contains(&t) {
+                        read = Some(true);
+                        break;
+                    }
+                    if instruction.defs(Class::General).contains(&t) {
+                        read = Some(false);
+                        break;
+                    }
+                }
+                read.unwrap_or(live_out[number] & (1 << t) != 0)
+            };
+            let fold = |offset: i16| i16::try_from(i32::from(offset) + i32::from(low)).ok();
+            let folded = match access.instruction.clone() {
+                Instruction::LoadWord { d, a, offset } if a == t && (d != t || offset == 0) => {
+                    fold(offset).map(|offset| Instruction::LoadWord { d, a, offset })
+                }
+                Instruction::LoadHalfwordZero { d, a, offset } if a == t && (d != t || offset == 0) => {
+                    fold(offset).map(|offset| Instruction::LoadHalfwordZero { d, a, offset })
+                }
+                Instruction::LoadHalfwordAlgebraic { d, a, offset } if a == t && (d != t || offset == 0) => {
+                    fold(offset).map(|offset| Instruction::LoadHalfwordAlgebraic { d, a, offset })
+                }
+                Instruction::LoadByteZero { d, a, offset } if a == t && (d != t || offset == 0) => {
+                    fold(offset).map(|offset| Instruction::LoadByteZero { d, a, offset })
+                }
+                Instruction::StoreWord { s, a, offset } if a == t && s != t => fold(offset).map(|offset| Instruction::StoreWord { s, a, offset }),
+                Instruction::StoreHalfword { s, a, offset } if a == t && s != t => {
+                    fold(offset).map(|offset| Instruction::StoreHalfword { s, a, offset })
+                }
+                Instruction::StoreByte { s, a, offset } if a == t && s != t => fold(offset).map(|offset| Instruction::StoreByte { s, a, offset }),
+                _ => None,
+            };
+            match folded {
+                Some(instruction) if !read_later => {
+                    block.instructions[at].instruction = instruction;
+                    block.instructions.remove(index);
+                }
+                _ => index += 1,
+            }
+        }
+    }
+}
+
 /// `add x,a,b; l* d,0(x)` with `x` read only by the load: `l*x d,a,b`.
 fn fold_indexed_loads(pcode: &mut PCodeFunction) {
     let general = mwcc_pcode::Class::General;
